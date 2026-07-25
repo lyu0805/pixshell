@@ -114,7 +114,8 @@ jobs:
   build-mac-x64:
     name: Build macOS x64 DMG
     needs: prepare-release
-    runs-on: macos-13
+    # macos-13 runners are scarce/deprecated; build x64 DMG via arch cross-compile on macos-14.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
