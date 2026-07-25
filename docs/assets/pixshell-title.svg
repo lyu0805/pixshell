@@ -1,40 +1,40 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="220" viewBox="0 0 1000 220" role="img" aria-label="PixShell">
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="160" viewBox="0 0 920 160" role="img" aria-label="PixShell">
   <defs>
     <linearGradient id="text" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#f8fafc"/>
-      <stop offset="50%" stop-color="#dbeafe"/>
+      <stop offset="55%" stop-color="#e2e8f0"/>
       <stop offset="100%" stop-color="#7dd3fc"/>
     </linearGradient>
   </defs>
-  <g>
-    <!-- logo above title, both centered -->
-    <g transform="translate(500, 8)">
-      <g transform="translate(-48,0)">
-        <rect x="0" y="0" width="96" height="96" rx="22" fill="#020617" stroke="#334155" stroke-width="3"/>
-        <g transform="translate(8,8) scale(2.5)">
-          <rect x="2" y="2" width="28" height="28" fill="#000000"/>
-          <rect x="4" y="4" width="24" height="24" fill="#1e1e2e"/>
-          <rect x="4" y="4" width="24" height="2" fill="#313244"/>
-          <rect x="4" y="4" width="2" height="24" fill="#313244"/>
-          <rect x="6" y="6" width="20" height="16" fill="#000000"/>
-          <rect x="7" y="7" width="18" height="14" fill="#0f172a"/>
-          <rect x="7" y="10" width="18" height="1" fill="#1e293b"/>
-          <rect x="7" y="14" width="18" height="1" fill="#1e293b"/>
-          <rect x="9" y="9" width="2" height="2" fill="#38bdf8"/>
-          <rect x="11" y="11" width="2" height="2" fill="#38bdf8"/>
-          <rect x="9" y="13" width="2" height="2" fill="#38bdf8"/>
-          <rect x="14" y="12" width="4" height="4" fill="#4ade80"/>
-          <rect x="6" y="24" width="20" height="4" fill="#181825"/>
-          <rect x="8" y="25" width="4" height="2" fill="#f38ba8"/>
-          <rect x="14" y="25" width="4" height="2" fill="#f9e2af"/>
-          <rect x="22" y="25" width="2" height="2" fill="#a6e3a1"/>
-        </g>
+  <!-- centered horizontal lockup: logo | PixShell -->
+  <g transform="translate(460,80)">
+    <!-- logo -->
+    <g transform="translate(-300,-50)">
+      <rect x="0" y="0" width="100" height="100" rx="22" fill="#020617" stroke="#334155" stroke-width="3"/>
+      <g transform="translate(8,8) scale(2.625)">
+        <rect x="2" y="2" width="28" height="28" fill="#000000"/>
+        <rect x="4" y="4" width="24" height="24" fill="#1e1e2e"/>
+        <rect x="4" y="4" width="24" height="2" fill="#313244"/>
+        <rect x="4" y="4" width="2" height="24" fill="#313244"/>
+        <rect x="6" y="6" width="20" height="16" fill="#000000"/>
+        <rect x="7" y="7" width="18" height="14" fill="#0f172a"/>
+        <rect x="7" y="10" width="18" height="1" fill="#1e293b"/>
+        <rect x="7" y="14" width="18" height="1" fill="#1e293b"/>
+        <rect x="9" y="9" width="2" height="2" fill="#38bdf8"/>
+        <rect x="11" y="11" width="2" height="2" fill="#38bdf8"/>
+        <rect x="9" y="13" width="2" height="2" fill="#38bdf8"/>
+        <rect x="14" y="12" width="4" height="4" fill="#4ade80"/>
+        <rect x="6" y="24" width="20" height="4" fill="#181825"/>
+        <rect x="8" y="25" width="4" height="2" fill="#f38ba8"/>
+        <rect x="14" y="25" width="4" height="2" fill="#f9e2af"/>
+        <rect x="22" y="25" width="2" height="2" fill="#a6e3a1"/>
       </g>
     </g>
-    <text x="500" y="168" text-anchor="middle"
+    <!-- name to the right of logo, vertically centered -->
+    <text x="-170" y="14" text-anchor="start" dominant-baseline="middle"
           font-family="SF Pro Display, Segoe UI, Helvetica Neue, Arial, sans-serif"
-          font-size="108" font-weight="800" letter-spacing="2"
+          font-size="96" font-weight="800" letter-spacing="1.5"
           fill="url(#text)">PixShell</text>
   </g>
 </svg>
