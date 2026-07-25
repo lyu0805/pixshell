@@ -10,6 +10,7 @@ files:
   - start.js
   - scripts/import-hosts.js
   - scripts/import-quick.js
+  - scripts/import-config.js
   - build/icon.png
   - build/icon.ico
   - build/icon.icns
