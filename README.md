@@ -1,12 +1,10 @@
 <div align="center">
 
-<img src="packages/app/renderer/icons/logo.svg" alt="PixShell logo" width="120" height="120">
+<img src="docs/assets/pixshell-title.svg" alt="PixShell" width="820">
 
-# PixShell
+<br/>
 
-**Cross-platform SSH / SFTP desktop client**
-
-[English](#english) | [中文](#中文)
+[English](#english) · [中文](#中文)
 
 <br/>
 
