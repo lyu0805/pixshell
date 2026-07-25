@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" shape-rendering="crispEdges">
+  <!-- Match logo.svg: black outer / dark bezel / navy screen / green accent / cyan glare -->
+  <rect x="1" y="1" width="14" height="14" fill="#000000" />
+  <rect x="2" y="2" width="12" height="12" fill="#2d2d3a" />
+  <rect x="3" y="3" width="10" height="10" fill="#0f172a" />
+  <!-- Pixel plus -->
+  <rect x="7" y="5" width="2" height="6" fill="#4ade80" />
+  <rect x="5" y="7" width="6" height="2" fill="#4ade80" />
+  <!-- Glare like logo -->
+  <rect x="11" y="4" width="1" height="1" fill="#38bdf8" />
+</svg>

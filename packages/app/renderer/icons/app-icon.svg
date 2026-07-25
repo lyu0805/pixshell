@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" shape-rendering="crispEdges">
+  <!-- PxlKit 32x32 App Icon -->
+  <!-- Outer 2px Solid Black Pixel Border -->
+  <rect x="2" y="2" width="28" height="28" fill="#000000" />
+  
+  <!-- Retro NES / Gameboy Console Frame -->
+  <rect x="4" y="4" width="24" height="24" fill="#1e1e2e" />
+  <rect x="4" y="4" width="24" height="2" fill="#313244" />
+  <rect x="4" y="4" width="2" height="24" fill="#313244" />
+
+  <!-- Inner CRT Terminal Screen -->
+  <rect x="6" y="6" width="20" height="16" fill="#000000" />
+  <rect x="7" y="7" width="18" height="14" fill="#0f172a" />
+  
+  <!-- CRT Matrix Pixel Grid Lines -->
+  <rect x="7" y="10" width="18" height="1" fill="#1e293b" />
+  <rect x="7" y="14" width="18" height="1" fill="#1e293b" />
+
+  <!-- PxlKit Pixel Prompt '>' (Neon Cyan) -->
+  <rect x="9" y="9" width="2" height="2" fill="#38bdf8" />
+  <rect x="11" y="11" width="2" height="2" fill="#38bdf8" />
+  <rect x="9" y="13" width="2" height="2" fill="#38bdf8" />
+
+  <!-- Pixel Cursor Block (Neon Green) -->
+  <rect x="14" y="12" width="4" height="4" fill="#4ade80" />
+
+  <!-- Bottom Arcade Controls Section -->
+  <rect x="6" y="24" width="20" height="4" fill="#181825" />
+  <!-- Red D-Pad / Badge Button -->
+  <rect x="8" y="25" width="4" height="2" fill="#f38ba8" />
+  <!-- Yellow Action Button -->
+  <rect x="14" y="25" width="4" height="2" fill="#f9e2af" />
+  <!-- Green Power LED -->
+  <rect x="22" y="25" width="2" height="2" fill="#a6e3a1" />
+</svg>

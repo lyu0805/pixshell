@@ -1,0 +1,132 @@
+@import "./tokens.css";
+
+/* dense main chrome */
+.fs-shell {
+  display: grid;
+  grid-template-rows: var(--px-titlebar-h) 1fr var(--px-status-h);
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+.fs-body {
+  display: grid;
+  grid-template-columns: var(--px-sidebar-w) 1fr;
+  min-height: 0;
+}
+
+.fs-sidebar {
+  border-right: var(--px-border-w) solid var(--px-border);
+  background: var(--px-bg-1);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 0;
+}
+
+.fs-sidebar-header {
+  padding: 8px;
+  border-bottom: var(--px-border-w) solid var(--px-border);
+  font-size: 12px;
+  color: var(--px-accent);
+  letter-spacing: 1px;
+}
+
+.fs-host-list {
+  overflow: auto;
+  padding: 4px;
+  font-family: var(--px-font-mono);
+  font-size: 12px;
+}
+
+.fs-host-item {
+  padding: 6px 8px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  color: var(--px-text-dim);
+}
+
+.fs-host-item:hover {
+  border-color: var(--px-border);
+  color: var(--px-text);
+}
+
+.fs-host-item.active {
+  border-color: var(--px-accent);
+  color: var(--px-accent);
+  background: #2a2410;
+}
+
+.fs-sidebar-bottom {
+  border-top: var(--px-border-w) solid var(--px-border);
+  height: 140px;
+  padding: 6px;
+  font-size: 11px;
+  color: var(--px-text-dim);
+}
+
+.fs-main {
+  display: grid;
+  grid-template-rows: 32px 1fr var(--px-command-h);
+  min-width: 0;
+  min-height: 0;
+}
+
+.fs-tabs {
+  display: flex;
+  align-items: flex-end;
+  padding: 4px 6px 0;
+  background: var(--px-bg-0);
+  border-bottom: var(--px-border-w) solid var(--px-border);
+  overflow-x: auto;
+}
+
+.fs-center {
+  display: grid;
+  grid-template-rows: 1fr 220px;
+  min-height: 0;
+}
+
+.fs-terminal {
+  min-height: 0;
+  background: #000;
+  border-bottom: var(--px-border-w) solid var(--px-border);
+  font-family: var(--px-font-mono);
+  padding: 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: #c6f6c6;
+}
+
+.fs-bottom-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 0;
+}
+
+.fs-sftp,
+.fs-aux {
+  min-height: 0;
+  overflow: auto;
+  padding: 6px;
+  font-family: var(--px-font-mono);
+  font-size: 12px;
+  background: var(--px-bg-1);
+}
+
+.fs-sftp {
+  border-right: var(--px-border-w) solid var(--px-border);
+}
+
+.fs-command {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  background: var(--px-bg-2);
+  border-top: var(--px-border-w) solid var(--px-border);
+}
+
+.fs-command input {
+  width: 100%;
+}

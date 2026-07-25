@@ -1,0 +1,65 @@
+# dependencies / build
+node_modules/
+.npm-cache/
+.runtime-path
+dist/
+out/
+.turbo/
+build/tmp/
+*.log
+.DS_Store
+.idea/
+.vscode/
+.env
+.env.*
+*.bak
+*.bak-*
+*.bak-legacy
+.scratch/
+
+# never publish local summary notes or runtime logs
+代码说明概要.md
+logs/**
+!logs/.gitkeep
+
+# never publish private dumps or local host imports
+_private/
+**/imported-hosts.json
+**/imported-quick.json
+**/knownhosts-summary.json
+**/legacy-quick-commands.json
+docs/archive/
+
+# experimental local prototypes
+prototypes/jar-drop/
+prototypes/pixel-shell/
+
+# local offline helper scripts (kept on machine only)
+scripts/local-*/
+
+# runtime user config / secrets
+hosts.json
+settings.json
+quick-commands.json
+**/*.pem
+**/*.ppk
+**/*.key
+**/id_rsa
+**/id_ed25519
+**/known_hosts
+
+# binary analysis artifacts
+*.i64
+*.id0
+*.id1
+*.nam
+*.til
+prototypes/**/serve.json
+
+# private planning notes (local only)
+优化建议+开发方向.md
+**/renderer.js.bak*
+*.bak-legacy
+
+# keep local tools private
+scripts/local-tools/

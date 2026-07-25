@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" shape-rendering="crispEdges">
+  <!-- PxlKit Style 16x16 Terminal Monitor Icon -->
+  <!-- Outer 1px Pixel Border (Black) -->
+  <rect x="1" y="2" width="14" height="11" fill="#000000" />
+  <!-- Bezel (Dark Gray) -->
+  <rect x="2" y="3" width="12" height="9" fill="#2d2d3a" />
+  <!-- Screen (Deep Navy CRT) -->
+  <rect x="3" y="4" width="10" height="7" fill="#0f172a" />
+  <!-- CRT Screen Glare (Top Right 1px) -->
+  <rect x="11" y="5" width="1" height="1" fill="#38bdf8" />
+  <!-- Pixel '>' Prompt (Bright Yellow-Green) -->
+  <rect x="4" y="5" width="1" height="1" fill="#4ade80" />
+  <rect x="5" y="6" width="1" height="1" fill="#4ade80" />
+  <rect x="4" y="7" width="1" height="1" fill="#4ade80" />
+  <!-- Pixel Cursor (Cyan Block) -->
+  <rect x="7" y="7" width="2" height="2" fill="#38bdf8" />
+  <!-- Stand & Base (Black/Gray) -->
+  <rect x="6" y="13" width="4" height="1" fill="#000000" />
+  <rect x="4" y="14" width="8" height="1" fill="#000000" />
+  <rect x="5" y="14" width="6" height="1" fill="#64748b" />
+</svg>

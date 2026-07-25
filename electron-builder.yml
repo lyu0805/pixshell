@@ -1,0 +1,48 @@
+# Packaging targets — multi-platform distribution surface
+appId: com.pixshell.app
+productName: PixShell
+directories:
+  output: dist
+  buildResources: build
+files:
+  - packages/**/*
+  - package.json
+  - start.js
+  - scripts/import-hosts.js
+  - scripts/import-quick.js
+  - build/icon.png
+  - build/icon.ico
+  - build/icon.icns
+  - '!**/*.bak'
+  - '!**/*.bak-*'
+  - '!**/*.bak-legacy'
+  - '!**/hosts.json'
+  - '!**/settings.json'
+  - '!**/quick-commands.json'
+  - '!**/*.pem'
+  - '!**/*.ppk'
+  - '!**/*.key'
+extraMetadata:
+  main: packages/app/main/main.js
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.icns
+  target:
+    - dmg
+    - zip
+win:
+  icon: build/icon.ico
+  target:
+    - nsis
+    - portable
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: PixShell
+linux:
+  icon: build/icon.png
+  target:
+    - AppImage

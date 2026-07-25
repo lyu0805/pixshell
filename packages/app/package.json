@@ -1,0 +1,12 @@
+{
+  "name": "@fs/app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron shell — dense ops layout + pixel UI + ssh2",
+  "main": "main/main.js",
+  "scripts": {
+    "dev": "node dev-server.js",
+    "start": "electron main/main.js",
+    "build": "echo app build placeholder"
+  }
+}

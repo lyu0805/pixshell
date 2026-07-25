@@ -1,0 +1,42 @@
+/* PixShell extras — always theme-token based (loaded after shell.css) */
+.quick-filter { margin: 0 0 2px; }
+.hidden-mon { display: none !important; }
+
+.drag-over {
+  outline: 2px dashed var(--accent) !important;
+  outline-offset: -4px;
+  background: var(--accent-soft) !important;
+}
+
+.sftp-table tr.selected td {
+  background: var(--accent-soft) !important;
+  color: var(--text) !important;
+}
+
+.tab { cursor: default; }
+.tab:active { opacity: 0.9; }
+
+#sftpPath:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.cmd-input:focus {
+  border-color: var(--accent) !important;
+  box-shadow: var(--focus-ring) !important;
+}
+
+.side-panel-body .dock-panel { padding: 0; }
+#panelSftp { height: 100%; }
+
+/* Ensure secondary menus sit above tools panel */
+.flyout-menu { z-index: 540 !important; }
+.flyout-menu .mm-sub { z-index: 550 !important; }
+.flyout-panel { z-index: 530 !important; }
+
+/* Theme-consistent empty states */
+.empty,
+.lm-empty {
+  color: var(--muted) !important;
+  background: transparent !important;
+}

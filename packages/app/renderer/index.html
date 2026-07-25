@@ -1,0 +1,770 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:;" />
+  <title>PixShell</title>
+  <link rel="stylesheet" href="./shell.css?v=native-110" />
+  <link rel="stylesheet" href="./shell-extra.css?v=native-110" />
+  <link rel="stylesheet" href="./vendor/xterm/xterm.css" />
+</head>
+<body class="theme-dark is-mac">
+  <div class="app" id="app">
+    <!-- 独立浮窗模式：仅渲染此根（主机列表/编辑器等） -->
+    <div class="float-root" id="floatRoot" hidden></div>
+
+    <!-- menubar (integrated pixel window titlebar) -->
+    <div class="menubar" id="menubar">
+      <div class="menubar-left">
+        <!-- macOS uses native traffic lights (Electron trafficLightPosition); HTML buttons for non-mac -->
+        <div class="mac-traffic-lights" id="trafficLights">
+          <button type="button" class="mac-btn mac-close" id="btnWinClose" title="关闭窗口" aria-label="关闭"></button>
+          <button type="button" class="mac-btn mac-minimize" id="btnWinMin" title="最小化窗口" aria-label="最小化"></button>
+          <button type="button" class="mac-btn mac-maximize" id="btnWinMax" title="最大化窗口" aria-label="最大化"></button>
+        </div>
+        <!-- logo 图标 = 连接管理器；版本号在状态栏 CLI 上方 -->
+        <button type="button" class="brand-btn icon-only" id="btnConnMgr" title="连接管理器" aria-label="连接管理器">
+          <img class="menubar-logo" src="./icons/logo.svg" alt="" width="16" height="16" />
+        </button>
+        <button type="button" class="tb-btn quiet pixel-btn icon-only" id="btnNew" title="新建连接" aria-label="新建连接">
+          <img class="menubar-logo" src="./icons/plus.svg" alt="" width="16" height="16" />
+        </button>
+      </div>
+      <div class="tabbar" id="tabs" role="tablist" aria-label="会话标签"></div>
+      <div class="menubar-right">
+        <button type="button" class="icon-tb" id="btnThemeToggle" title="切换浅色/深色主题" aria-label="主题">☾</button>
+        <button type="button" class="icon-tb pixel-btn" id="btnToolsPanel" title="工具" aria-label="工具">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <rect x="1" y="1" width="6" height="6"/>
+            <rect x="9" y="1" width="6" height="6"/>
+            <rect x="1" y="9" width="6" height="6"/>
+            <rect x="9" y="9" width="6" height="6"/>
+          </svg>
+        </button>
+        <button type="button" class="icon-tb pixel-btn" id="btnMainMenu" title="菜单" aria-label="菜单">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <rect x="2" y="3" width="12" height="2"/>
+            <rect x="2" y="7" width="12" height="2"/>
+            <rect x="2" y="11" width="12" height="2"/>
+          </svg>
+        </button>
+        <div class="win-controls" id="winControls" aria-hidden="true">
+          <button type="button" class="win-btn" data-win="min" title="最小化">–</button>
+          <button type="button" class="win-btn" data-win="max" title="最大化">□</button>
+          <button type="button" class="win-btn win-close" data-win="close" title="关闭">×</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 工具面板（宫格按钮弹出） -->
+    <div class="flyout-panel" id="toolsPanel" hidden>
+      <div class="tools-host-row">
+        <select id="toolsHostSelect" class="tools-host-select" title="当前主机">
+          <option value="">选择主机…</option>
+        </select>
+      </div>
+      <div class="tools-btns">
+        <button type="button" class="tools-chip" data-act="tab-route">路由追踪</button>
+        <button type="button" class="tools-chip" data-act="tab-process">进程管理</button>
+        <button type="button" class="tools-chip" data-act="tab-network">网络监控</button>
+        <button type="button" class="tools-chip" data-act="speed-test">速度测试</button>
+        <button type="button" class="tools-chip" data-act="custom-accel">自定义加速</button>
+      </div>
+      <div class="tools-dl-row">
+        <span class="tools-dl-lab">下载:</span>
+        <span id="toolsDlPath" class="tools-dl-path" title="下载目录">-</span>
+        <button type="button" class="icon-mini" id="btnDlPick" title="选择下载目录"><img class="px-ico" src="./icons/dir_icon.png" alt="" /></button>
+        <button type="button" class="icon-mini" id="btnDlOpen" title="打开下载目录"><img class="px-ico" src="./icons/folder_home.png" alt="" /></button>
+      </div>
+      <div class="tools-dl-box" id="toolsDlBox"><div class="lm-empty">下载任务将显示在这里</div></div>
+    </div>
+
+    <!-- 主菜单（汉堡） -->
+    <div class="flyout-menu" id="mainMenu" hidden>
+      <div class="mm-item has-sub" data-sub="file">
+        <span>文件</span><span class="mm-arrow">›</span>
+        <div class="mm-sub" hidden>
+          <button type="button" data-act="conn-mgr">连接管理器…</button>
+          <button type="button" data-act="new">新建连接…</button>
+          <button type="button" data-act="connect">连接</button>
+          <button type="button" data-act="disconnect">断开</button>
+          <button type="button" data-act="reconnect">重新连接</button>
+          <div class="menu-sep"></div>
+          <button type="button" data-act="import-hosts">导入主机…</button>
+          <button type="button" data-act="import-quick">导入快捷命令…</button>
+          <div class="menu-sep"></div>
+          <button type="button" data-act="settings">设置…</button>
+        </div>
+      </div>
+      <div class="mm-item has-sub" data-sub="view">
+        <span>查看</span><span class="mm-arrow">›</span>
+        <div class="mm-sub" hidden>
+          <button type="button" data-act="toggle-side">显示/隐藏侧栏</button>
+          <button type="button" data-act="toggle-bottom">显示/隐藏底栏</button>
+          <button type="button" data-act="bottom-files">文件面板</button>
+          <button type="button" data-act="bottom-cmds">命令面板</button>
+          <div class="menu-sep"></div>
+          <button type="button" data-act="sysinfo">系统信息</button>
+          <button type="button" data-act="tab-process">进程管理</button>
+          <button type="button" data-act="tab-network">网络监控</button>
+        </div>
+      </div>
+      <div class="mm-item has-sub" data-sub="opt">
+        <span>选项</span><span class="mm-arrow">›</span>
+        <div class="mm-sub" hidden>
+          <button type="button" data-act="settings">设置…</button>
+          <button type="button" data-act="external-cli">外部 CLI / AI Agent…</button>
+          <button type="button" data-act="custom-accel">自定义加速</button>
+          <div class="menu-sep"></div>
+          <button type="button" data-act="copy">复制</button>
+          <button type="button" data-act="paste">粘贴</button>
+          <button type="button" data-act="clear-term">清屏</button>
+        </div>
+      </div>
+      <div class="menu-sep"></div>
+      <button type="button" class="mm-btn" data-act="key-mgr">密钥管理器</button>
+      <div class="mm-item has-sub" data-sub="cloud">
+        <span>云端同步</span><span class="mm-arrow">›</span>
+        <div class="mm-sub" hidden>
+          <button type="button" data-act="backup-config">备份选项配置…</button>
+          <div class="menu-sep"></div>
+          <button type="button" data-act="backup-local">本地备份</button>
+          <button type="button" data-act="backup-webdav">WebDAV</button>
+          <button type="button" data-act="backup-github">GitHub</button>
+          <button type="button" data-act="backup-google">谷歌云盘</button>
+          <button type="button" data-act="backup-microsoft">微软 OneDrive</button>
+          <button type="button" data-act="backup-baidu">百度网盘</button>
+          <button type="button" data-act="backup-quark">夸克网盘</button>
+          <div class="menu-sep"></div>
+          <button type="button" data-act="backup-export">立即导出本地包…</button>
+          <button type="button" data-act="backup-import">从本地包导入…</button>
+        </div>
+      </div>
+      <button type="button" class="mm-btn" data-act="update">软件更新</button>
+      <div class="menu-sep"></div>
+      <div class="mm-item has-sub" data-sub="help">
+        <span>帮助</span><span class="mm-arrow">›</span>
+        <div class="mm-sub" hidden>
+          <button type="button" data-act="about">关于 PixShell</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="main-row">
+      <!-- LEFT: always-on monitor strip (classic style) -->
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <button type="button" class="sidebar-toggle" id="btnSideToggle" title="隐藏侧栏">⟨</button>
+          <span class="sync-dot" id="syncDot" title="SSH 连接状态" aria-hidden="true"></span>
+          <button type="button" class="conn-state-btn" id="btnConnToggle" title="点击连接">
+            <span class="conn-state-text" id="connStateText">未连接</span>
+          </button>
+          <span class="sb-spacer"></span>
+        </div>
+        <div class="ip-row">
+          <span>IP <b id="lmIp">-</b></span>
+          <button type="button" class="link-btn" id="btnCopyIp">复制</button>
+        </div>
+        <button type="button" class="sysinfo-btn" id="btnSysInfo" title="打开完整系统信息页">系统信息</button>
+        <div class="sidebar-scroll" id="sidebarScroll">
+          <div class="lm-sec-title" title="远程主机实时资源">实时监控</div>
+          <div class="lm-metrics">
+            <div class="lm-line">运行 <span id="monUptime">-</span></div>
+            <div class="lm-line">负载 <span id="monLoad">-</span></div>
+            <div class="lm-bar-row">
+              <span class="lm-lab">CPU</span>
+              <div class="lm-bar cpu"><i id="lmCpuBar"></i><span class="lm-pct" id="monCpu">0%</span></div>
+              <span class="lm-size" id="monCpuSize"></span>
+            </div>
+            <div class="lm-bar-row">
+              <span class="lm-lab">内存</span>
+              <div class="lm-bar mem"><i id="lmMemBar"></i><span class="lm-pct" id="monMem">0%</span></div>
+              <span class="lm-size" id="monMemSize">-</span>
+            </div>
+            <div class="lm-bar-row">
+              <span class="lm-lab">交换</span>
+              <div class="lm-bar swap"><i id="lmSwapBar"></i><span class="lm-pct" id="monSwap">0%</span></div>
+              <span class="lm-size" id="monSwapSize">-</span>
+            </div>
+          </div>
+          <div class="lm-sec-title" title="按内存占用排序的远程进程">进程 TOP</div>
+          <div class="lm-procs">
+            <table class="lm-proc-table">
+              <thead><tr><th class="col-mem">内存</th><th class="col-cpu">CPU</th><th class="col-cmd">命令</th></tr></thead>
+              <tbody id="lmProcList"><tr><td colspan="3" class="lm-empty">连接后显示</td></tr></tbody>
+            </table>
+          </div>
+          <div class="lm-sec-title" title="网卡吞吐实时曲线">网络</div>
+          <div class="lm-net">
+            <div class="lm-net-title"><span id="lmNetUp">↑0</span> <span id="lmNetDown">↓0</span> <span id="lmNetIf">-</span></div>
+            <canvas id="netSpark" width="200" height="48"></canvas>
+          </div>
+          <div class="lm-sec-title" title="到网关/主机的延迟">延迟</div>
+          <div class="lm-ping">
+            <div class="lm-net-title"><span id="lmPing">0ms</span> <span id="lmPingTarget">网关</span></div>
+            <canvas id="pingSpark" width="200" height="36"></canvas>
+          </div>
+          <div class="lm-sec-title" title="磁盘分区用量">磁盘</div>
+          <div class="lm-disks">
+            <table class="disk-table"><thead><tr><th>路径</th><th>可用/大小</th></tr></thead>
+              <tbody id="lmDiskList"><tr><td colspan="2" class="lm-empty">-</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </aside>
+      <div class="sidebar-resizer" id="sidebarResizer" title="拖动调整宽度 · 点击展开侧栏"></div>
+      <!-- 侧栏收起后固定可见的恢复按钮（不依赖双击） -->
+      <button type="button" class="side-restore" id="btnSideRestore" title="显示侧栏" aria-label="显示侧栏" hidden>⟩ 侧栏</button>
+
+      <section class="workspace">
+        <div class="work-center">
+          <!-- content area: terminal OR tool tables OR quick connect -->
+          <div class="content-pane" id="contentPane">
+            <div id="reconnectBanner" class="reconnect-banner">重连中…</div>
+            <!-- SSH 连接动画（替代终端里的 Connecting 文本） -->
+            <div id="connectOverlay" class="connect-overlay" hidden>
+              <div class="connect-card">
+                <div class="connect-orbit" aria-hidden="true">
+                  <span class="connect-ring"></span>
+                  <span class="connect-dot"></span>
+                  <span class="connect-dot d2"></span>
+                  <span class="connect-dot d3"></span>
+                </div>
+                <div class="connect-title" id="connectOverlayTitle">正在连接</div>
+                <div class="connect-sub mono" id="connectOverlaySub">…</div>
+                <div class="connect-bar"><i id="connectBarFill"></i></div>
+                <div class="connect-hint">建立安全通道 · 认证 · 打开 Shell</div>
+              </div>
+            </div>
+            <div id="xtermHost" class="xterm-host"></div>
+            <div id="quickConnect" class="quick-connect" hidden>
+              <div class="qc-head"><span>快速连接（历史）</span><button type="button" class="mini-btn" id="btnQcClear">清空历史</button></div>
+              <div id="qcList" class="qc-list"></div>
+            </div>
+            <div id="hostBrowser" class="host-browser" hidden></div>
+            <div id="toolHost" class="tool-host" hidden>
+              <div class="tool-toolbar" id="toolToolbar"></div>
+              <div class="tool-body" id="toolBody"></div>
+            </div>
+            <div id="sysInfoHost" class="sysinfo-host" hidden>
+              <div class="sysinfo-toolbar">
+                <button type="button" class="mini-btn" id="btnSysInfoRefresh">刷新</button>
+                <span class="sysinfo-hint" id="sysInfoHint">连接后显示系统信息</span>
+              </div>
+              <div id="sysInfoView" class="sysinfo-view">
+                <pre id="infoOut">连接后显示系统信息</pre>
+              </div>
+            </div>
+          </div>
+          <!-- 命令输入：在文件/命令底栏上方（真机布局） -->
+          <div class="cmd-bar" id="cmdBar">
+            <label class="cmd-label" for="cmd">命令</label>
+            <input id="cmd" class="cmd-input" type="text" spellcheck="false" autocomplete="off"
+              placeholder="Enter 发送到当前 SSH · ↑↓ 历史 · Tab 补全" />
+            <button type="button" class="cmd-btn" id="btnHist" title="命令历史（点选填入，不直接发送）" aria-haspopup="listbox" aria-expanded="false">历史</button>
+            <button type="button" class="cmd-btn primary" id="btnSend">发送</button>
+            <button type="button" class="cmd-btn icon-cmd" id="btnToggleBottom" title="隐藏文件/命令底栏" aria-label="隐藏底栏">▾</button>
+          </div>
+          <div class="h-resizer" id="bottomResizer" role="separator" aria-orientation="horizontal" aria-label="拖动调整文件与命令区高度" title="拖动调整文件/命令区高度 · 双击重置"></div>
+          <!-- BOTTOM: 文件 | 命令 switch -->
+          <div class="bottom-dock" id="bottomDock">
+            <div class="bottom-tabs">
+              <button type="button" class="bottom-tab active" data-bottom="files">文件</button>
+              <button type="button" class="bottom-tab" data-bottom="cmds">命令</button>
+            </div>
+            <div class="bottom-body">
+              <div class="bottom-panel active" id="panelFiles">
+                <div class="sftp-pathbar">
+                  <button type="button" class="mini-btn sftp-up-btn" id="sftpUp" title="返回上一层" aria-label="返回上一层">←</button>
+                  <span id="sftpPath" class="sftp-path-text" title="当前路径">/</span>
+                  <span class="sb-spacer"></span>
+                  <button type="button" class="mini-btn" id="sftpHist">历史</button>
+                  <button type="button" class="mini-btn" id="sftpRefresh" title="刷新">↻</button>
+                  <button type="button" class="mini-btn" id="sftpDownload" title="下载">↓</button>
+                  <button type="button" class="mini-btn" id="sftpUpload" title="上传">↑↑</button>
+                </div>
+                <div class="sftp-dual">
+                  <div class="sftp-tree" id="sftpTree"></div>
+                  <div class="sftp-table-wrap">
+                    <table class="sftp-table">
+                      <colgroup>
+                        <col class="col-name" />
+                        <col class="col-size" />
+                        <col class="col-type" />
+                        <col class="col-mtime" />
+                        <col class="col-perm" />
+                        <col class="col-user" />
+                      </colgroup>
+                      <thead><tr>
+                        <th class="col-name">文件名</th>
+                        <th class="col-size">大小</th>
+                        <th class="col-type">类型</th>
+                        <th class="col-mtime">修改时间</th>
+                        <th class="col-perm">权限</th>
+                        <th class="col-user">用户</th>
+                      </tr></thead>
+                      <tbody id="sftpBody"><tr class="empty"><td colspan="6">连接后显示远程文件</td></tr></tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+              <div class="bottom-panel" id="panelCmds">
+                <div class="cmd-board" id="cmdBoard">
+                  <div class="cmd-board-body" id="cmdBoardBody">
+                    <div class="cmd-groups" id="cmdGroups"></div>
+                    <div class="cmd-main">
+                      <div class="cmd-chips" id="cmdChips"></div>
+                    </div>
+                    <div class="cmd-editor-pane" id="cmdEditorPane">
+                      <div class="cmd-editor-title">
+                        <span>命令编辑器</span>
+                        <button type="button" class="cmd-editor-collapse" id="btnCmdEditorCollapse" title="向右收起命令编辑器" aria-label="收起命令编辑器">⟩</button>
+                      </div>
+                      <textarea id="cmdEditor" class="cmd-editor" spellcheck="false" placeholder="点选左侧命令可载入；编辑后点「发送编辑器」…"></textarea>
+                    </div>
+                    <button type="button" class="cmd-editor-expand" id="btnCmdEditorExpand" title="展开命令编辑器" aria-label="展开命令编辑器" hidden>⟨ 编辑</button>
+                  </div>
+                  <div class="cmd-send-bar" id="cmdSendBar">
+                    <span class="cmd-send-label">发送到</span>
+                    <select id="cmdTarget" class="cmd-target-select" title="选择目标 SSH 会话">
+                      <option value="current">当前会话</option>
+                      <option value="all">所有已连接会话</option>
+                    </select>
+                    <button type="button" class="cmd-btn" id="btnSendChip" title="发送左侧选中的快捷命令">发送选中</button>
+                    <button type="button" class="cmd-btn primary" id="btnSendEditor" title="发送右侧编辑器内容">发送编辑器</button>
+                    <span class="sb-spacer"></span>
+                    <button type="button" class="mini-btn" id="btnCmdOpt" title="命令板选项">选项</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="statusbar">
+      <div class="sb-left">
+        <div class="sb-brand" id="sidebarBrand" title="PixShell 版本">
+          <span class="sidebar-brand-name">PixShell</span>
+          <span class="sidebar-brand-ver" id="appVersion">0.1.0</span>
+        </div>
+        <span class="cli-status" id="statusLine" title="外部 CLI / AI-Agent 本地桥">
+          <span class="cli-dot" id="cliDot" aria-hidden="true"></span>
+          <span class="cli-text" id="cliText">CLI 未开启</span>
+        </span>
+      </div>
+      <span class="sb-spacer"></span>
+      <span id="statusHost" hidden aria-hidden="true"></span>
+      <span id="statusSsh2">ssh2 …</span>
+      <span class="sb-sep">|</span>
+      <span>UTF-8</span>
+    </div>
+  </div>
+
+  <!-- Connection Manager modal (classic style tree) -->
+  <div class="modal-mask" id="connMgrModal" hidden>
+    <div class="modal conn-mgr">
+      <div class="modal-title">连接管理器
+        <button type="button" class="icon-btn" id="btnConnMgrClose">×</button>
+      </div>
+      <div class="conn-mgr-toolbar">
+        <button type="button" class="mini-btn" id="btnMgrNew" title="新建连接">＋连接</button>
+        <button type="button" class="mini-btn" id="btnMgrFolder" title="新建分组">＋分组</button>
+        <button type="button" class="mini-btn" id="btnMgrEdit" title="编辑">编辑</button>
+        <button type="button" class="mini-btn" id="btnMgrDel" title="删除">删除</button>
+        <label class="inline-lab"><input type="checkbox" id="mgrShowDeleted" /> 显示已删除</label>
+        <span class="sb-spacer"></span>
+        <input type="search" id="mgrFilter" class="thin-input" placeholder="搜索…" style="width:160px" />
+        <select id="mgrScope" class="thin-input" style="width:72px"><option value="all">全部</option></select>
+      </div>
+      <div class="conn-mgr-body">
+        <!-- 旧 table 保留 id 兼容，默认隐藏；列表挂到 #connMgrListMount（flex 横排，勿塞进 table） -->
+        <table class="conn-table" id="connMgrTable" hidden aria-hidden="true" style="display:none">
+          <thead><tr><th style="width:28%">名称</th><th style="width:28%">主机</th><th style="width:10%">端口</th><th style="width:14%">用户</th><th>备注</th></tr></thead>
+          <tbody id="connMgrBody"></tbody>
+        </table>
+        <div id="connMgrListMount" class="host-browser conn-mgr-list-mount"></div>
+      </div>
+      <div class="modal-actions">
+                <label class="inline-lab"><input type="checkbox" id="mgrCloseAfter" checked /> 连接后关闭窗口</label>
+        <span class="sb-spacer"></span>
+        <button type="button" class="cmd-btn" id="btnMgrCancel">关闭</button>
+        <button type="button" class="cmd-btn primary" id="btnMgrConnect">连接</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- New/Edit host (multi-pane) -->
+  <div class="modal-mask" id="hostModal" hidden>
+    <div class="modal host-editor">
+      <div class="modal-title" id="modalTitle">连接设置
+        <button type="button" class="icon-btn" id="btnHostClose">×</button>
+      </div>
+      <div class="hed-body">
+        <div class="hed-nav">
+          <button type="button" class="active" data-hed="ssh">SSH连接</button>
+          <button type="button" data-hed="term">终端</button>
+          <button type="button" data-hed="proxy">代理服务器</button>
+          <button type="button" data-hed="tunnel">隧道</button>
+        </div>
+        <div class="hed-main">
+          <div class="hed-pane" data-hed-pane="ssh">
+            <fieldset class="hed-box">
+              <legend>常规</legend>
+              <div class="form-grid">
+                <label>名称</label><input id="fName" type="text" />
+                <label>主机</label>
+                <div class="hed-host-row">
+                  <input id="fHost" type="text" placeholder="IP / 域名" />
+                  <label class="inline-lab">端口</label>
+                  <input id="fPort" type="number" value="22" style="width:72px" />
+                </div>
+                <label>分组</label><input id="fGroup" type="text" placeholder="默认（空=连接根）" />
+                <label>备注</label><input id="fRemark" type="text" />
+              </div>
+            </fieldset>
+            <fieldset class="hed-box">
+              <legend>认证</legend>
+              <div class="form-grid">
+                <label>方法</label>
+                <select id="fAuthMethod">
+                  <option value="password">密码</option>
+                  <option value="publicKey">私钥</option>
+                  <option value="keyboardInteractive">键盘交互</option>
+                </select>
+                <label>用户名</label><input id="fUser" type="text" value="root" />
+                <label>密码</label><input id="fPass" type="password" autocomplete="off" placeholder="输入密码" />
+                <label>私钥</label>
+                <div class="hed-host-row key-drop-row" id="fKeyRow" title="可拖入私钥文件">
+                  <input id="fKey" type="text" placeholder="可选 ~/.ssh/id_rsa · 支持拖入文件" style="flex:1" />
+                  <button type="button" class="mini-btn" id="btnPickKey" title="选择私钥文件">打开</button>
+                </div>
+                <p class="form-tip" id="fKeyDropHint" style="margin:4px 0 0">点「打开」选择，或把 key 文件拖到输入框上。</p>
+              </div>
+              <div class="remember-row">
+                <label class="remember-lab">
+                  <input type="checkbox" id="fRememberPass" checked />
+                  <span>记住密码（保存到本机，下次自动填入）</span>
+                </label>
+              </div>
+            </fieldset>
+            <fieldset class="hed-box">
+              <legend>高级</legend>
+              <label class="inline-lab"><input type="checkbox" id="fExecChannel" checked /> 启用 Exec Channel（监控/系统信息依赖）</label>
+              <p class="form-tip">关闭 Exec Channel 后无法采集监控与系统信息。</p>
+            </fieldset>
+          </div>
+          <div class="hed-pane" data-hed-pane="term" hidden>
+            <fieldset class="hed-box">
+              <legend>终端</legend>
+              <div class="form-grid">
+                <label>字符编码</label>
+                <select id="fCharset">
+                  <option value="UTF-8">UTF-8</option>
+                  <option value="GBK">GBK</option>
+                  <option value="GB2312">GB2312</option>
+                </select>
+              </div>
+              <fieldset class="hed-box" style="margin-top:10px">
+                <legend>按键序列</legend>
+                <div class="form-grid">
+                  <label>Backspace</label>
+                  <select id="fBackspace">
+                    <option value="ASCII">ASCII - Backspace</option>
+                    <option value="DEL">DEL</option>
+                  </select>
+                  <label>Delete</label>
+                  <select id="fDelKey">
+                    <option value="VT220">VT220 - Delete</option>
+                    <option value="ASCII">ASCII</option>
+                  </select>
+                </div>
+              </fieldset>
+            </fieldset>
+          </div>
+          <div class="hed-pane" data-hed-pane="proxy" hidden>
+            <fieldset class="hed-box">
+              <legend>为该主机选择代理</legend>
+              <p class="form-tip">「不使用代理」= SSH 直连。下方可新增/编辑 SOCKS5 或 HTTP 代理。</p>
+              <div class="form-grid">
+                <label>代理</label>
+                <select id="fProxyId">
+                  <option value="">不使用代理</option>
+                </select>
+              </div>
+            </fieldset>
+            <fieldset class="hed-box">
+              <legend>代理列表</legend>
+              <div class="proxy-list-toolbar" style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+                <button type="button" class="mini-btn primary" id="btnProxyAdd">＋ 添加代理</button>
+                <button type="button" class="mini-btn" id="btnProxyEdit">编辑</button>
+                <button type="button" class="mini-btn" id="btnProxyDel">删除</button>
+              </div>
+              <table class="conn-table" id="proxyTable">
+                <thead><tr><th>名称</th><th>类型</th><th>地址</th><th>端口</th><th>认证</th></tr></thead>
+                <tbody id="proxyBody"><tr><td colspan="5" class="empty">暂无代理，点「添加代理」</td></tr></tbody>
+              </table>
+            </fieldset>
+            <fieldset class="hed-box" id="proxyEditBox" hidden>
+              <legend id="proxyEditLegend">添加代理</legend>
+              <div class="form-grid">
+                <label>名称</label><input type="text" id="pxName" placeholder="例如 公司 SOCKS" />
+                <label>类型</label>
+                <select id="pxType">
+                  <option value="socks5">SOCKS5</option>
+                  <option value="http">HTTP</option>
+                  <option value="https">HTTPS</option>
+                </select>
+                <label>主机</label><input type="text" id="pxHost" placeholder="127.0.0.1" />
+                <label>端口</label><input type="number" id="pxPort" min="1" max="65535" value="1080" />
+                <label>用户名</label><input type="text" id="pxUser" placeholder="可选" />
+                <label>密码</label><input type="password" id="pxPass" placeholder="可选" />
+              </div>
+              <div style="margin-top:10px;display:flex;gap:6px;justify-content:flex-end">
+                <button type="button" class="cmd-btn primary" id="btnProxySave">保存代理</button>
+                <button type="button" class="cmd-btn" id="btnProxyCancel">取消</button>
+              </div>
+            </fieldset>
+          </div>
+          <div class="hed-pane" data-hed-pane="tunnel" hidden>
+            <fieldset class="hed-box">
+              <legend>隧道列表</legend>
+              <div style="text-align:center;padding:28px 16px;color:var(--c-text-muted,#999)">
+                <div style="font-size:28px;margin-bottom:8px;opacity:.6">🚇</div>
+                <div style="font-size:14px;font-weight:600;margin-bottom:6px">端口转发 / 隧道 — 即将推出</div>
+                <div style="font-size:12px;line-height:1.5;opacity:.75">
+                  本地转发（Local Forward）与远程转发（Remote Forward）功能正在开发中，<br>
+                  后续版本将支持通过 SSH 隧道安全映射远程端口到本地、或反向暴露本地服务。
+                </div>
+              </div>
+            </fieldset>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <span class="sb-spacer"></span>
+        <button type="button" class="cmd-btn primary" id="btnModalSave">确定</button>
+        <button type="button" class="cmd-btn" id="btnModalSaveOnly">应用</button>
+        <button type="button" class="cmd-btn" id="btnModalCancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <div class="modal-mask float-modal-mask" id="settingsModal" hidden>
+    <div class="modal settings-modal">
+      <div class="modal-title">设置
+        <button type="button" class="icon-btn" id="btnSetClose" title="关闭">×</button>
+      </div>
+      <div class="modal-body settings-body">
+        <div class="settings-section">
+          <div class="settings-sec-title">界面</div>
+          <div class="form-grid">
+            <label>外观主题</label>
+            <select id="setThemeMode">
+              <option value="dark">深色</option>
+              <option value="light">浅色</option>
+            </select>
+            <label>侧栏宽度</label><input id="setSideW" type="number" min="180" max="360" value="240" />
+            <label>底栏高度</label><input id="setBottomH" type="number" min="120" max="480" value="260" />
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-sec-title">终端</div>
+          <div class="form-grid">
+            <label>配色方案</label>
+            <select id="setScheme" title="ANSI 16 色 + 背景/前景/光标"></select>
+            <label>字体</label>
+            <select id="setFontFamily">
+              <option value="JetBrains Mono">JetBrains Mono（多国回退）</option>
+              <option value="Cascadia Code">Cascadia Code（多国回退）</option>
+              <option value="Fira Code">Fira Code（多国回退）</option>
+              <option value="Source Code Pro">Source Code Pro（多国回退）</option>
+              <option value="Meslo">Meslo（多国回退）</option>
+              <option value="DejaVu Sans Mono">DejaVu Sans Mono（多国回退）</option>
+              <option value="Ubuntu Mono">Ubuntu Mono（多国回退）</option>
+              <option value="PT Mono">PT Mono（多国回退）</option>
+              <option value="Menlo">系统等宽 + 多国</option>
+            </select>
+            <label>字号</label>
+            <input id="setFontSize" type="number" min="10" max="28" value="13" />
+            <label>光标样式</label>
+            <select id="setCursorStyle">
+              <option value="block">块状 (block)</option>
+              <option value="underline">下划线 (underline)</option>
+              <option value="bar">竖线 (bar)</option>
+            </select>
+            <label>光标闪烁</label>
+            <input id="setCursorBlink" type="checkbox" checked />
+            <label title="粗体使用亮色（ls/git 等彩色输出更醒目）">粗体亮色</label>
+            <input id="setBoldBright" type="checkbox" checked title="drawBoldTextInBrightColors" />
+            <label title="内置文本编辑器语法高亮，默认开启">编辑器语法高亮</label>
+            <input id="setEditorSyntaxHl" type="checkbox" checked />
+            <label title="内置编辑器自动换行">编辑器换行</label>
+            <input id="setEditorWordWrap" type="checkbox" />
+            <label title="终端输出实时标记：路径/IP/端口/URL/MAC/时间/大小/错误警告成功/关键词">终端实时高亮</label>
+            <input id="setTermLiveHl" type="checkbox" checked />
+            <label>仿真类型</label>
+            <select id="setTermType" title="SSH TERM 环境变量 / 终端标识">
+              <option value="xterm-256color">xterm-256color</option>
+              <option value="xterm">xterm</option>
+              <option value="vt100">vt100</option>
+              <option value="vt220">vt220</option>
+              <option value="linux">linux</option>
+              <option value="screen">screen</option>
+              <option value="screen-256color">screen-256color</option>
+              <option value="tmux-256color">tmux-256color</option>
+            </select>
+          </div>
+          <div class="term-preview" id="termPreview" aria-hidden="true">
+            <div class="term-preview-bar">预览</div>
+            <pre class="term-preview-body" id="termPreviewBody"></pre>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-sec-title">会话 / 监控</div>
+          <div class="form-grid">
+            <label>SFTP↔Shell 联动</label><input id="setSyncSftp" type="checkbox" />
+            <label>自动重连</label><input id="setAutoReconnect" type="checkbox" checked />
+            <label>监控间隔 s</label><input id="setMonInterval" type="number" min="2" max="60" value="5" />
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-sec-title">外部 CLI</div>
+          <div class="form-grid">
+            <label>外部 CLI 集成</label><input id="setExternalCli" type="checkbox" />
+            <label>CLI 端口</label><input id="setCliPort" type="number" min="1024" max="65535" value="8766" />
+          </div>
+          <div class="form-hint" id="cliStatusHint" style="margin-top:10px;font-size:12px;opacity:.85;line-height:1.45">
+            外部 AI（Claude / Codex / OpenCode）通过 <code>pixshell-cli</code> 操作本机会话。仅监听 127.0.0.1。
+          </div>
+          <div class="modal-actions" style="justify-content:flex-start;padding:8px 0 0;gap:8px">
+            <button type="button" class="cmd-btn" id="btnCliInstallSkills">安装 Agent Skills</button>
+            <button type="button" class="cmd-btn" id="btnCliCopyTokenPath">复制 Token 路径</button>
+            <button type="button" class="cmd-btn" id="btnCliRotateToken" title="生成新 Token，旧 Token 立即失效">轮换 Token</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="cmd-btn" id="btnSetCancel">取消</button>
+        <button type="button" class="cmd-btn primary" id="btnSetSave">保存</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- 备份 / 云端同步配置（仅主动配置后启用） -->
+  <div class="modal-mask float-modal-mask" id="backupModal" hidden>
+    <div class="modal backup-modal">
+      <div class="modal-title">备份选项
+        <button type="button" class="icon-btn" id="btnBackupClose">×</button>
+      </div>
+      <div class="modal-body backup-body">
+        <p class="form-hint" style="margin-top:0">默认全部关闭。勾选「启用」并保存后，对应云端同步菜单才会真正执行备份。</p>
+        <div class="backup-grid" id="backupGrid"></div>
+        <div class="backup-detail" id="backupDetail" hidden>
+          <div class="backup-detail-title" id="backupDetailTitle">提供商配置</div>
+          <div class="form-grid" id="backupDetailForm"></div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="cmd-btn" id="btnBackupExportNow">导出本地包…</button>
+        <button type="button" class="cmd-btn" id="btnBackupImportNow">导入本地包…</button>
+        <span class="sb-spacer"></span>
+        <button type="button" class="cmd-btn" id="btnBackupCancel">取消</button>
+        <button type="button" class="cmd-btn primary" id="btnBackupSave">保存配置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 终端背景预设 -->
+  <div class="modal-mask" id="termBgModal" hidden>
+    <div class="modal term-bg-modal" role="dialog" aria-labelledby="termBgTitle">
+      <div class="modal-title" id="termBgTitle">终端背景
+        <button type="button" class="icon-btn" id="btnTermBgClose">×</button>
+      </div>
+      <div class="modal-body term-bg-body">
+        <div class="term-bg-preview" id="termBgPreview" aria-hidden="true">
+          <div class="term-bg-preview-bar">root@host:~</div>
+          <pre class="term-bg-preview-text" id="termBgPreviewText">$ ls -la
+drwxr-xr-x  12 root root  4096 Jul 25 12:00 .
+-rw-r--r--   1 root root   220 Jul 25 12:00 .bashrc
+$ _</pre>
+        </div>
+        <div class="term-bg-label">预设</div>
+        <div class="term-bg-grid" id="termBgGrid"></div>
+        <div class="term-bg-custom-row">
+          <label class="term-bg-label" for="termBgCustom">自定义</label>
+          <input type="color" id="termBgColorPick" value="#0f1419" title="取色" />
+          <input type="text" id="termBgCustom" class="thin-input" placeholder="#0f1419" style="flex:1;min-width:0" />
+          <button type="button" class="mini-btn" id="btnTermBgCustomApply">预览</button>
+        </div>
+        <p class="form-tip" style="margin:8px 0 0">选中预设会即时预览；点「应用」后写入设置。</p>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="cmd-btn" id="btnTermBgReset">恢复配色默认</button>
+        <span class="sb-spacer"></span>
+        <button type="button" class="cmd-btn" id="btnTermBgCancel">取消</button>
+        <button type="button" class="cmd-btn primary" id="btnTermBgOk">应用</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="./vendor/xterm/xterm.js"></script>
+  <script src="./vendor/addon-fit/addon-fit.js"></script>
+  <div class="cmd-hist-popup" id="cmdHistPopup" hidden role="dialog" aria-label="命令历史">
+    <div class="cmd-hist-list" id="cmdHistList" role="listbox"></div>
+    <div class="cmd-hist-footer">
+      <span class="cmd-hist-hint">点击填入命令栏 · 双击发送 · Esc 关闭</span>
+      <button type="button" class="cmd-btn" id="btnHistClear">清空列表</button>
+    </div>
+    <div class="cmd-hist-filter-row">
+      <input type="search" id="cmdHistFilter" class="cmd-hist-filter" placeholder="过滤历史…" autocomplete="off" spellcheck="false" />
+    </div>
+  </div>
+
+  <!-- 快捷命令板选项 -->
+  <div class="modal-mask" id="cmdOptModal" hidden>
+    <div class="modal cmd-opt-modal" style="width:min(520px,94vw);max-height:80vh">
+      <div class="modal-title">命令板选项
+        <button type="button" class="icon-btn" id="btnCmdOptClose">×</button>
+      </div>
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:10px;min-height:0">
+        <div class="cmd-opt-actions" style="display:flex;flex-wrap:wrap;gap:6px">
+          <button type="button" class="cmd-btn primary" id="btnCmdAdd">＋ 新建命令</button>
+          <button type="button" class="cmd-btn" id="btnCmdAddGroup">＋ 新建分组</button>
+          <button type="button" class="cmd-btn" id="btnCmdImport">导入…</button>
+          <button type="button" class="cmd-btn" id="btnCmdExport">导出…</button>
+        </div>
+        <div class="form-hint" style="font-size:11px;opacity:.85">管理快捷命令：新建、导入/导出 JSON。右键命令芯片可编辑/发送/删除。</div>
+        <div id="cmdOptList" class="cmd-opt-list" style="flex:1;min-height:160px;max-height:42vh;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:6px"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="cmd-btn" id="btnCmdOptDone">完成</button>
+      </div>
+    </div>
+  </div>
+  <!-- 编辑单条快捷命令 -->
+  <div class="modal-mask" id="cmdEditModal" hidden>
+    <div class="modal" style="width:min(480px,94vw)">
+      <div class="modal-title">编辑快捷命令
+        <button type="button" class="icon-btn" id="btnCmdEditClose">×</button>
+      </div>
+      <div class="modal-body form-grid">
+        <label>名称<input id="cmdEditName" class="thin-input" type="text" /></label>
+        <label>分组<input id="cmdEditGroup" class="thin-input" type="text" placeholder="系统" /></label>
+        <label style="grid-column:1/-1">命令<textarea id="cmdEditBody" class="cmd-editor" style="min-height:100px;width:100%" spellcheck="false"></textarea></label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="cmd-btn" id="btnCmdEditCancel">取消</button>
+        <button type="button" class="cmd-btn primary" id="btnCmdEditSave">保存</button>
+      </div>
+    </div>
+  </div>
+  <script src="./app.js?v=native-110"></script>
+</body>
+</html>

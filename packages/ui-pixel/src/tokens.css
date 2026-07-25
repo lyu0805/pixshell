@@ -1,0 +1,129 @@
+/* Pixel retro design tokens for PixShell shell */
+:root {
+  /* Limited palette */
+  --px-bg-0: #0d1117;
+  --px-bg-1: #141b24;
+  --px-bg-2: #1c2633;
+  --px-panel: #1a2330;
+  --px-border: #3d4f66;
+  --px-border-hi: #7ec8ff;
+  --px-text: #e6edf3;
+  --px-text-dim: #8b9bb0;
+  --px-accent: #ffcc33;
+  --px-accent-2: #3ddc97;
+  --px-danger: #ff5c5c;
+  --px-info: #5cb3ff;
+  --px-shadow: #000000;
+
+  --px-titlebar-h: 28px;
+  --px-sidebar-w: 200px;
+  --px-command-h: 56px;
+  --px-status-h: 24px;
+  --px-border-w: 2px;
+  --px-radius: 0px;
+  --px-font-ui: "Fusion Pixel", "Ark Pixel", "Zpix", "Microsoft YaHei UI", monospace;
+  --px-font-mono: "DejaVu Sans Mono", "Sarasa Mono SC", ui-monospace, monospace;
+  --px-font-pixel: "Press Start 2P", "Fusion Pixel", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: var(--px-bg-0);
+  color: var(--px-text);
+  font-family: var(--px-font-ui);
+  image-rendering: pixelated;
+}
+
+/* Hard pixel panel */
+.px-panel {
+  background: var(--px-panel);
+  border: var(--px-border-w) solid var(--px-border);
+  box-shadow: 4px 4px 0 var(--px-shadow);
+  border-radius: var(--px-radius);
+}
+
+.px-btn {
+  appearance: none;
+  background: var(--px-bg-2);
+  color: var(--px-text);
+  border: var(--px-border-w) solid var(--px-border-hi);
+  box-shadow: 3px 3px 0 var(--px-shadow);
+  padding: 6px 12px;
+  font-family: var(--px-font-ui);
+  cursor: pointer;
+}
+
+.px-btn:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--px-shadow);
+}
+
+.px-btn.primary {
+  background: var(--px-accent);
+  color: #1a1200;
+  border-color: #fff1a8;
+}
+
+.px-input {
+  background: var(--px-bg-0);
+  color: var(--px-text);
+  border: var(--px-border-w) solid var(--px-border);
+  padding: 6px 8px;
+  font-family: var(--px-font-mono);
+  outline: none;
+}
+
+.px-input:focus {
+  border-color: var(--px-accent);
+}
+
+.px-titlebar {
+  height: var(--px-titlebar-h);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--px-bg-2) 0,
+    var(--px-bg-2) 2px,
+    var(--px-bg-1) 2px,
+    var(--px-bg-1) 4px
+  );
+  border-bottom: var(--px-border-w) solid var(--px-border);
+  font-size: 12px;
+}
+
+.px-tab {
+  border: var(--px-border-w) solid var(--px-border);
+  background: var(--px-bg-1);
+  padding: 4px 10px;
+  margin-right: 4px;
+  color: var(--px-text-dim);
+}
+
+.px-tab.active {
+  background: var(--px-bg-2);
+  color: var(--px-accent);
+  border-bottom-color: var(--px-bg-2);
+}
+
+.px-status {
+  height: var(--px-status-h);
+  border-top: var(--px-border-w) solid var(--px-border);
+  background: var(--px-bg-1);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 8px;
+  font-family: var(--px-font-mono);
+  font-size: 11px;
+  color: var(--px-text-dim);
+}

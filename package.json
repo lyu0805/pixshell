@@ -1,0 +1,47 @@
+{
+  "name": "pixshell",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PixShell — cross-platform SSH/SFTP client",
+  "main": "packages/app/main/main.js",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "node start.js",
+    "dev:shell": "npx --yes serve@14 prototypes/pixel-shell -p 4789",
+    "start": "node start.js",
+    "electron": "node start.js",
+    "launch": "node start.js",
+    "cli": "node packages/cli/pixshell-cli.js",
+    "build": "echo build later",
+    "lint": "echo lint placeholder",
+    "chmod:command": "chmod +x \"./启动 PixShell.command\" \"./安装依赖.command\" \"./start.command\"",
+    "test": "node scripts/unit-checks.js",
+    "test:unit": "node scripts/unit-checks.js",
+    "icons": "node scripts/generate-icons.js",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
+  },
+  "bin": {
+    "pixshell-cli": "packages/cli/pixshell-cli.js"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "electron-store": "^8.2.0",
+    "ssh2": "^1.16.0",
+    "socks": "^2.8.3",
+    "zmodem.js": "^0.1.10",
+    "@xterm/addon-search": "^0.15.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "UNLICENSED"
+}

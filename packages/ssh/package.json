@@ -1,0 +1,10 @@
+{
+  "name": "@fs/ssh",
+  "version": "0.2.0",
+  "private": true,
+  "main": "src/index.js",
+  "description": "Native ssh2 session stack (SSHSession/Shell/SFTP/Multiplexer)",
+  "scripts": {
+    "test": "node -e \"require('./src/index.js'); console.log('ok', require('./src/index.js').isSsh2Available())\""
+  }
+}

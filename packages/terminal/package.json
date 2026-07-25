@@ -1,0 +1,6 @@
+{
+  "name": "@fs/terminal",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/schemes.js"
+}
