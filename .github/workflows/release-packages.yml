@@ -91,9 +91,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
       - name: Install dependencies
-        run: npm ci || npm install
+        run: npm install
       - name: Build mac arm64 DMG only
         run: npx electron-builder --mac dmg --arm64 --publish never
       - name: Upload mac arm64 asset
@@ -118,9 +117,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
       - name: Install dependencies
-        run: npm ci || npm install
+        run: npm install
       - name: Build mac x64 DMG only
         run: npx electron-builder --mac dmg --x64 --publish never
       - name: Upload mac x64 asset
@@ -149,10 +147,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
       - name: Install dependencies
         shell: bash
-        run: npm ci || npm install
+        run: npm install
       - name: Build Windows x64 NSIS + ZIP only
         shell: bash
         run: npx electron-builder --win nsis zip --x64 --publish never
@@ -178,9 +175,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
       - name: Install dependencies
-        run: npm ci || npm install
+        run: npm install
       - name: Build Linux x64 AppImage + ZIP only
         run: npx electron-builder --linux AppImage zip --x64 --publish never
       - name: Upload Linux assets
