@@ -85,6 +85,10 @@
     cmdEditorCollapsed: false,
     _reconnectInflight: false,
     _connectInflightHostId: null,
+    appVersion: '',
+    updateInfo: null,
+    updateStatus: 'checking', // checking | latest | update-available | none | error | unknown
+    _updateCheckInflight: null,
   }
 
   const passwordVault = new Map()
@@ -483,7 +487,7 @@
       cursorAccent: bg,
       selectionBackground: '#44475a',
       black: '#000000',
-      red: '#ff5555',
+      red: '#ff3b30',
       green: '#50fa7b',
       yellow: '#f1fa8c',
       blue: '#bd93f9',
@@ -652,6 +656,29 @@
     } catch (_) {}
   }
 
+  /** Hard-clear xterm viewport + scrollback so a closed tab cannot leak into the next session. */
+  function hardResetTerminalViewport() {
+    try {
+      if (typeof term?.reset === 'function') term.reset()
+      else if (typeof term?.clear === 'function') term.clear()
+    } catch (_) {}
+    try {
+      // Explicit erase screen + scrollback + home
+      term?.write?.('\x1b[2J\x1b[3J\x1b[H')
+    } catch (_) {}
+    try {
+      if (typeof term?.scrollToTop === 'function') term.scrollToTop()
+    } catch (_) {}
+  }
+
+  function clearTermSessionVisual(sid, { resetViewport = false } = {}) {
+    if (sid) {
+      try { termBuffers.delete(sid) } catch (_) {}
+      try { termBuffers.set(sid, '') } catch (_) {}
+    }
+    if (resetViewport) hardResetTerminalViewport()
+  }
+
   function repaintActiveTermBuffer() {
     if (!term) return
     const t = sessionTab()
@@ -802,17 +829,17 @@
       theme.cursorAccent = '#b8b8c2'
       theme.selectionBackground = 'rgba(0, 85, 212, 0.28)'
       theme.black = '#0b0b0d'
-      theme.red = '#b00020'
+      theme.red = '#b00014'
       theme.green = '#0b6b2c'
-      theme.yellow = '#8a5a00'
+      theme.yellow = '#9a4200'
       theme.blue = '#0b4db8'
       theme.magenta = '#6b2f9a'
       theme.cyan = '#0a6a78'
       theme.white = '#3a3a42'
       theme.brightBlack = '#4a4a52'
-      theme.brightRed = '#d00030'
+      theme.brightRed = '#d4001f'
       theme.brightGreen = '#0d8a38'
-      theme.brightYellow = '#a86c00'
+      theme.brightYellow = '#b84f00'
       theme.brightBlue = '#0d5fd4'
       theme.brightMagenta = '#8538c0'
       theme.brightCyan = '#0c8496'
@@ -846,11 +873,17 @@
           const B = Math.round(b + (255 - b) * mix)
           return '#' + [R, G, B].map((x) => x.toString(16).padStart(2, '0')).join('')
         }
-        for (const k of ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan']) {
-          if (theme[k]) theme[k] = boost(theme[k], 110, 0.45)
+        // 错误/警告优先：强制高饱和红 + 琥珀（参考常见 SSH 终端醒目告警色）
+        // 不要只做同等 boost，否则 vintage 方案的 red 仍偏暗
+        theme.red = '#ff2d20'
+        theme.brightRed = '#ff453a'
+        theme.yellow = '#ffcc00'
+        theme.brightYellow = '#ffd426'
+        for (const k of ['green', 'blue', 'magenta', 'cyan']) {
+          if (theme[k]) theme[k] = boost(theme[k], 120, 0.48)
         }
-        for (const k of ['brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan']) {
-          if (theme[k]) theme[k] = boost(theme[k], 150, 0.28)
+        for (const k of ['brightGreen', 'brightBlue', 'brightMagenta', 'brightCyan']) {
+          if (theme[k]) theme[k] = boost(theme[k], 160, 0.32)
         }
       }
       if (Math.abs(bgLum - lum(theme.foreground)) < 55) {
@@ -999,7 +1032,12 @@
         out += part
         continue
       }
-      out += decoratePlainChunk(part)
+      // Bare severity words first so ERROR/WARN always read as red/amber.
+      let plain = part
+      plain = plain.replace(/\b(ERROR|FATAL|CRITICAL|FAILED|FAILURE)\b/g, '\x1b[1;31m$1\x1b[0m')
+      plain = plain.replace(/\b(WARN(?:ING)?|DEPRECATED)\b/g, '\x1b[1;33m$1\x1b[0m')
+      if (plain !== part) out += plain
+      else out += decoratePlainChunk(part)
     }
     return out
   }
@@ -1175,8 +1213,8 @@
       num: '\x1b[38;5;144m',       // 浅褐数字
       hex: '\x1b[38;5;96m',        // 暗紫 hash
       perm: '\x1b[38;5;66m',       // 灰青权限
-      err: '\x1b[38;5;167m',       // 暗红（不再 bold 196）
-      warn: '\x1b[38;5;136m',      // 暗金警告
+      err: '\x1b[1;38;5;196m',     // 高亮红（错误必须一眼可见）
+      warn: '\x1b[1;38;5;214m',    // 高亮琥珀警告
       ok: '\x1b[38;5;71m',         // 暗绿成功
       kw: '\x1b[38;5;67m',         // 灰蓝关键词
       delim: '\x1b[38;5;240m',     // 更暗括号
@@ -1314,6 +1352,192 @@
     }
     const nameEl = document.querySelector('.sidebar-brand-name')
     if (nameEl) nameEl.textContent = 'PixShell'
+    paintBrandUpdateDot()
+  }
+
+  const PIXSHELL_REPO_URL = 'https://github.com/lyu0805/pixshell'
+  const PIXSHELL_RELEASES_URL = 'https://github.com/lyu0805/pixshell/releases'
+
+  function paintBrandUpdateDot() {
+    const brand = $('sidebarBrand')
+    const dot = $('brandUpdateDot')
+    const st = state.updateStatus || 'checking'
+    const info = state.updateInfo || null
+    const ver = state.appVersion || ($('appVersion')?.textContent || '0.1.0')
+    if (dot) {
+      dot.dataset.state = st
+      dot.classList.remove('on', 'off', 'err', 'warn')
+      if (st === 'latest') dot.classList.add('on')
+      else if (st === 'update-available') dot.classList.add('off')
+      else if (st === 'error') dot.classList.add('err')
+      else if (st === 'checking' || st === 'none' || st === 'unknown') dot.classList.add('warn')
+    }
+    if (brand) {
+      let tip = 'PixShell ' + ver
+      if (st === 'update-available' && info?.latestVersion) {
+        tip = `有新版本 ${info.latestVersion}（当前 ${ver}）· 点击打开发行页`
+      } else if (st === 'latest') {
+        tip = `已是最新版本 ${ver} · 点击打开发行页`
+      } else if (st === 'checking') {
+        tip = `PixShell ${ver} · 正在检查更新…`
+      } else if (st === 'none') {
+        tip = `PixShell ${ver} · 暂无发行版 · 点击打开仓库发行页`
+      } else if (st === 'error') {
+        tip = `PixShell ${ver} · 更新检查失败 · 点击打开发行页`
+      } else {
+        tip = `PixShell ${ver} · 点击打开发行页`
+      }
+      brand.title = tip
+      brand.setAttribute('aria-label', tip)
+    }
+  }
+
+  async function openPixShellReleases() {
+    try {
+      if (hasApi && typeof api.openReleases === 'function') {
+        const r = await api.openReleases()
+        if (r && r.ok) return true
+      }
+      if (hasApi && typeof api.openExternal === 'function') {
+        await api.openExternal(PIXSHELL_RELEASES_URL)
+        return true
+      }
+    } catch (_) {}
+    try {
+      window.open(PIXSHELL_RELEASES_URL, '_blank', 'noopener,noreferrer')
+      return true
+    } catch (_) {
+      return false
+    }
+  }
+
+  async function openPixShellRepo() {
+    try {
+      if (hasApi && typeof api.openRepo === 'function') {
+        const r = await api.openRepo()
+        if (r && r.ok) return true
+      }
+      if (hasApi && typeof api.openExternal === 'function') {
+        await api.openExternal(PIXSHELL_REPO_URL)
+        return true
+      }
+    } catch (_) {}
+    try {
+      window.open(PIXSHELL_REPO_URL, '_blank', 'noopener,noreferrer')
+      return true
+    } catch (_) {
+      return false
+    }
+  }
+
+  async function checkAppUpdate(opts = {}) {
+    const silent = !!opts.silent
+    if (!hasApi || typeof api.checkForUpdate !== 'function') {
+      state.updateStatus = 'unknown'
+      state.updateInfo = null
+      paintBrandUpdateDot()
+      if (!silent) toast('当前环境无法检查更新', true)
+      return null
+    }
+    if (state._updateCheckInflight) return state._updateCheckInflight
+    state.updateStatus = state.updateStatus === 'update-available' ? state.updateStatus : 'checking'
+    paintBrandUpdateDot()
+    state._updateCheckInflight = (async () => {
+      try {
+        const r = await api.checkForUpdate()
+        state.updateInfo = r || null
+        if (!r) {
+          state.updateStatus = 'error'
+        } else if (r.updateAvailable) {
+          state.updateStatus = 'update-available'
+        } else if (r.status === 'latest' || (r.ok && r.latestVersion && !r.updateAvailable)) {
+          state.updateStatus = 'latest'
+        } else if (r.status === 'none') {
+          // 仓库尚无发行版：视为当前已是最新（绿灯），避免误报红灯
+          state.updateStatus = 'latest'
+        } else if (r.ok === false || r.status === 'error') {
+          state.updateStatus = 'error'
+        } else {
+          state.updateStatus = r.status || 'unknown'
+        }
+        if (r?.currentVersion) setAppVersionLabel(r.currentVersion)
+        else paintBrandUpdateDot()
+        return r
+      } catch (e) {
+        state.updateStatus = 'error'
+        state.updateInfo = {
+          ok: false,
+          status: 'error',
+          error: String(e && e.message || e),
+          message: '检查更新失败',
+        }
+        paintBrandUpdateDot()
+        if (!silent) toast('检查更新失败: ' + (e && e.message ? e.message : e), true)
+        return state.updateInfo
+      } finally {
+        state._updateCheckInflight = null
+        paintBrandUpdateDot()
+      }
+    })()
+    return state._updateCheckInflight
+  }
+
+  async function runSoftwareUpdate({ fromMenu = false } = {}) {
+    if (!hasApi) {
+      toast('请用 node start.js 启动 Electron', true)
+      return
+    }
+    toast(fromMenu ? '正在检查软件更新…' : '正在检查更新…')
+    const info = (await checkAppUpdate({ silent: true })) || state.updateInfo
+    if (!info) {
+      toast('检查更新失败', true)
+      return
+    }
+    if (info.ok === false && info.status === 'error') {
+      toast(info.message || ('检查更新失败: ' + (info.error || '')), true)
+      try { await openPixShellReleases() } catch (_) {}
+      return
+    }
+    if (!info.updateAvailable) {
+      if (info.status === 'none') {
+        toast(info.message || '暂无发行版，已打开发行页')
+        await openPixShellReleases()
+        return
+      }
+      toast(info.message || `已是最新版本 ${info.currentVersion || state.appVersion || ''}`.trim())
+      return
+    }
+    // 有新版本 → 自动下载（无安装包则打开页面）
+    toast(`发现新版本 ${info.latestVersion || ''}，开始下载…`.trim())
+    try {
+      if (typeof api.downloadUpdate !== 'function') {
+        await openPixShellReleases()
+        toast('已打开发行页，请手动下载更新')
+        return
+      }
+      const r = await api.downloadUpdate(info)
+      if (r?.downloaded) {
+        toast(r.message || `已下载 ${r.name || '安装包'}`)
+        return
+      }
+      if (r?.skipped && r.reason === 'latest') {
+        toast(r.message || '已是最新版本')
+        return
+      }
+      if (r?.skipped && r.reason === 'no-asset') {
+        toast(r.message || '暂无当前平台安装包，已打开发行页')
+        return
+      }
+      if (r?.ok === false) {
+        toast(r.message || ('下载失败: ' + (r.error || '')), true)
+        await openPixShellReleases()
+        return
+      }
+      toast(r?.message || '更新处理完成')
+    } catch (e) {
+      toast('下载更新失败: ' + (e && e.message ? e.message : e), true)
+      try { await openPixShellReleases() } catch (_) {}
+    }
   }
 
   function handleCdLine(line) {
@@ -1448,13 +1672,18 @@
     try {
       if (tab.type === 'term') {
         showContent('term')
-        term?.reset?.()
-        if (tab.sessionId && termBuffers.has(tab.sessionId)) {
-          const buf = termBuffers.get(tab.sessionId)
-          const step = 8000
-          for (let i = 0; i < buf.length; i += step) term?.write(buf.slice(i, i + step))
+        if (tab.sessionId) {
+          const has = termBuffers.has(tab.sessionId)
+          const buf = has ? (termBuffers.get(tab.sessionId) || '') : ''
+          hardResetTerminalViewport()
+          if (buf) {
+            const step = 8000
+            for (let bi = 0; bi < buf.length; bi += step) term?.write(buf.slice(bi, bi + step))
+          } else if (!has) {
+            termBuffers.set(tab.sessionId, '')
+          }
         } else {
-          term?.writeln('\x1b[90m# ' + (tab.title || '') + ' · ' + (tab.status || 'idle') + '\x1b[0m')
+          hardResetTerminalViewport()
         }
         fitAddon?.fit()
         if (tab.sessionId && hasApi) {
@@ -1841,7 +2070,13 @@
     ) {
       hideConnectOverlay(false, { reason: 'close-tab' })
     }
-    if (sid && hasApi && tabOwnsSshSession(tab)) {
+    const wasActive = state.activeTabId === id
+    const isOwner = tabOwnsSshSession(tab)
+    // 关掉 term 标签时硬清视口，避免二次连接仍显示旧输出（ping 历史等）
+    if (tab.type === 'term' && term && (wasActive || isOwner)) {
+      hardResetTerminalViewport()
+    }
+    if (sid && hasApi && isOwner) {
       // 不阻塞 UI：disconnect 卡死也不能拖住关标签
       const disc = Promise.resolve()
         .then(() => api.disconnect(sid))
@@ -1849,7 +2084,7 @@
       try {
         await Promise.race([disc, timeout])
       } catch (_) {}
-      termBuffers.delete(sid)
+      clearTermSessionVisual(sid, { resetViewport: false })
       // Clear borrowed sessionId on sibling tool/sysinfo tabs so they don't look "live"
       for (const t of state.tabs) {
         if (t.id !== id && t.sessionId === sid) {
@@ -1857,6 +2092,8 @@
           if (t.status === 'connected' || t.status === 'reconnecting') t.status = 'closed'
         }
       }
+    } else if (sid && isOwner) {
+      clearTermSessionVisual(sid, { resetViewport: false })
     }
     state.tabs = state.tabs.filter((t) => t.id !== id)
     // 若已无任何 connecting 标签，再兜底关一次动画
@@ -2056,6 +2293,10 @@
       tab = state.tabs.find((x) => x.id === opts.reuseTabId)
     }
     if (tab) {
+      // Drop previous session association/buffer before reusing the tab chrome
+      if (tab.sessionId && tab.sessionId !== sessionId) {
+        try { termBuffers.delete(tab.sessionId) } catch (_) {}
+      }
       tab.hostId = hostId
       tab.title = h.name || h.host
       tab.host = h.host
@@ -2076,7 +2317,8 @@
       state.tabs.push(tab)
       state.activeTabId = tab.id
     }
-    if (!termBuffers.has(sessionId)) termBuffers.set(sessionId, '')
+    // 新会话：硬清视口与缓冲，避免复用标签时闪出上一次会话残留
+    clearTermSessionVisual(sessionId, { resetViewport: true })
     renderTabs()
     showContent('term')
     fitAddon?.fit()
@@ -5810,8 +6052,26 @@ function replaceAll(text, query, replacement, opts = {}) {
         toast('自定义加速：请在主机编辑「高级」中配置')
         openHostModal(state.activeHostId || state.mgrSelectedId || null)
         break
-      case 'about':
-        toast('PixShell · 原生 ssh2 · 本地连接管理 · 外部 CLI :8766')
+      case 'about': {
+        const ver = state.appVersion || '0.1.0'
+        const st = state.updateStatus
+        const extra =
+          st === 'update-available' && state.updateInfo?.latestVersion
+            ? ` · 有新版本 ${state.updateInfo.latestVersion}`
+            : st === 'latest'
+              ? ' · 已是最新'
+              : ''
+        toast(`PixShell ${ver}${extra} · 原生 ssh2 · 本地连接管理 · 外部 CLI :8766`)
+        break
+      }
+      case 'open-repo':
+        await openPixShellRepo()
+        break
+      case 'open-releases':
+        await openPixShellReleases()
+        break
+      case 'help-docs':
+        await openPixShellRepo()
         break
       case 'external-cli':
         openSettings()
@@ -5849,7 +6109,7 @@ function replaceAll(text, query, replacement, opts = {}) {
         await importLocalBackupBundle()
         break
       case 'update':
-        toast('软件更新：请从发布渠道获取最新版本')
+        await runSoftwareUpdate({ fromMenu: true })
         break
       default:
         break
@@ -5925,8 +6185,8 @@ function replaceAll(text, query, replacement, opts = {}) {
           kind: 'settings',
           id: 'settings',
           title: '设置',
-          width: 520,
-          height: 640,
+          width: 480,
+          height: 520,
           init: {
             theme: getUiThemeMode(),
             settings: JSON.parse(JSON.stringify(state.settings || {})),
@@ -7917,11 +8177,12 @@ function replaceAll(text, query, replacement, opts = {}) {
     const body = $('floatSettingsBody')
     if (src && body) {
       const clone = src.cloneNode(true)
-      // 去掉标题栏重复
+      // 去掉标题栏重复（浮窗 titlebar 已有 保存/关闭）
       const mt = clone.querySelector('.modal-title')
       if (mt) mt.remove()
-      const acts = clone.querySelector('.modal-actions')
-      // keep actions inside scroll for Apply
+      // 去掉底部重复按钮；顶栏 floatSetSave / floatBtnClose 即唯一操作
+      clone.querySelectorAll('.modal-actions').forEach((el) => el.remove())
+      clone.querySelectorAll('.settings-title-actions').forEach((el) => el.remove())
       body.appendChild(clone)
       // re-id collision: settings controls stay with same ids — only one window active
     } else if (body) {
@@ -8596,6 +8857,15 @@ function replaceAll(text, query, replacement, opts = {}) {
     applyBodyChromeClasses(state.settings?.theme || 'dark')
     // 状态栏版本（预留；后续可从 main 注入）
     if (!$('appVersion')?.dataset.locked) setAppVersionLabel('0.1.0')
+    paintBrandUpdateDot()
+    const brand = $('sidebarBrand')
+    if (brand && !brand.dataset.boundUpdate) {
+      brand.dataset.boundUpdate = '1'
+      brand.addEventListener('click', (e) => {
+        e.preventDefault()
+        openPixShellReleases().catch(() => {})
+      })
+    }
 
     // window controls & pixel theme toggle
     on('btnWinClose', 'click', () => api.closeWindow?.())

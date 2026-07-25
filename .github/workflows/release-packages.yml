@@ -1,0 +1,197 @@
+name: Release Packages
+
+# Build each target in a dedicated job (never one combined multi-target command).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+      create_release:
+        description: 'Create release if missing'
+        required: true
+        type: boolean
+        default: true
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+  ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+  ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+
+jobs:
+  prepare-release:
+    name: Prepare GitHub Release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Resolve tag
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [ -z "$TAG" ]; then TAG="v0.1.0"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using release tag: $TAG"
+
+      - name: Ensure release exists
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG already exists"
+            exit 0
+          fi
+          NOTES_FILE=$(mktemp)
+          {
+            echo "# PixShell $TAG"
+            echo
+            echo "Cross-platform SSH / SFTP desktop client."
+            echo
+            echo "## Downloads"
+            echo "- macOS Apple Silicon: PixShell-*-mac-arm64.dmg"
+            echo "- macOS Intel: PixShell-*-mac-x64.dmg"
+            echo "- Windows x64 installer: PixShell-*-win-x64-setup.exe"
+            echo "- Windows x64 portable zip: PixShell-*-win-x64.zip"
+            echo "- Linux x64 AppImage: PixShell-*-linux-x64.AppImage"
+            echo "- Linux x64 zip: PixShell-*-linux-x64.zip"
+            echo
+            echo "## Notes"
+            echo "- First launch auto-generates local config (no user config is shipped in packages)."
+            echo "- macOS config: ~/Library/Application Support/PixShell/pixshell/"
+            echo "- Windows config: %APPDATA%/PixShell/pixshell/"
+            echo "- Linux config: ~/.local/share/PixShell/pixshell/"
+          } > "$NOTES_FILE"
+          gh release create "$TAG"             --repo "${{ github.repository }}"             --title "PixShell $TAG"             --notes-file "$NOTES_FILE"
+
+  build-mac-arm64:
+    name: Build macOS arm64 DMG
+    needs: prepare-release
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci || npm install
+      - name: Build mac arm64 DMG only
+        run: npx electron-builder --mac dmg --arm64 --publish never
+      - name: Upload mac arm64 asset
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(find dist -maxdepth 2 -type f -name '*mac-arm64*.dmg' | sort)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No mac-arm64 dmg found"; ls -lah dist || true; exit 1
+          fi
+          gh release upload "$TAG" "${FILES[@]}" --repo "${{ github.repository }}" --clobber
+          ls -lah "${FILES[@]}"
+
+  build-mac-x64:
+    name: Build macOS x64 DMG
+    needs: prepare-release
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci || npm install
+      - name: Build mac x64 DMG only
+        run: npx electron-builder --mac dmg --x64 --publish never
+      - name: Upload mac x64 asset
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(find dist -maxdepth 2 -type f -name '*mac-x64*.dmg' | sort)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            # fallback common electron-builder names
+            mapfile -t FILES < <(find dist -maxdepth 2 -type f -name '*.dmg' | sort)
+          fi
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No mac-x64 dmg found"; ls -lah dist || true; exit 1
+          fi
+          gh release upload "$TAG" "${FILES[@]}" --repo "${{ github.repository }}" --clobber
+          ls -lah "${FILES[@]}"
+
+  build-win-x64:
+    name: Build Windows x64 EXE + ZIP
+    needs: prepare-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        shell: bash
+        run: npm ci || npm install
+      - name: Build Windows x64 NSIS + ZIP only
+        shell: bash
+        run: npx electron-builder --win nsis zip --x64 --publish never
+      - name: Upload Windows assets
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(find dist -maxdepth 2 -type f \( -name '*.exe' -o -name '*win*.zip' -o -name '*x64*.zip' \) ! -name '*.blockmap' | sort)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No Windows assets found"; ls -lah dist || true; exit 1
+          fi
+          gh release upload "$TAG" "${FILES[@]}" --repo "${{ github.repository }}" --clobber
+          ls -lah "${FILES[@]}"
+
+  build-linux-x64:
+    name: Build Linux x64 AppImage + ZIP
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci || npm install
+      - name: Build Linux x64 AppImage + ZIP only
+        run: npx electron-builder --linux AppImage zip --x64 --publish never
+      - name: Upload Linux assets
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(find dist -maxdepth 2 -type f \( -name '*.AppImage' -o -name '*linux*.zip' -o -name '*x64*.zip' \) | sort)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No Linux assets found"; ls -lah dist || true; exit 1
+          fi
+          gh release upload "$TAG" "${FILES[@]}" --repo "${{ github.repository }}" --clobber
+          ls -lah "${FILES[@]}"

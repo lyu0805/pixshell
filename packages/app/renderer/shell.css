@@ -5420,3 +5420,214 @@ body.float-window #floatEditorShell > div:nth-child(2) {
 /* 旧 label 若残留则隐藏 */
 .sidebar-head .conn-state-label { display: none !important; }
 .conn-act-btn { display: inline-flex !important; } /* 恢复，若别处还用 */
+
+
+/* native-111：状态栏品牌红绿灯 + 可点击发行页 */
+.statusbar .sb-brand,
+.statusbar #sidebarBrand {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 6px !important;
+  margin: 0 !important;
+  padding: 0 0 0 14px !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: inherit !important;
+  font: inherit !important;
+  line-height: 1.15 !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+  border-radius: 6px;
+}
+.statusbar .sb-brand:hover,
+.statusbar #sidebarBrand:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent) !important;
+}
+.statusbar .sb-brand:focus-visible,
+.statusbar #sidebarBrand:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 2px;
+}
+.statusbar .brand-update-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--muted);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--border) 60%, transparent);
+}
+.statusbar .brand-update-dot[data-state="checking"],
+.statusbar .brand-update-dot[data-state="unknown"],
+.statusbar .brand-update-dot[data-state="error"],
+.statusbar .brand-update-dot[data-state="none"] {
+  background: #8e8e93;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #8e8e93 28%, transparent);
+}
+.statusbar .brand-update-dot[data-state="latest"] {
+  background: #34c759;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #34c759 30%, transparent);
+}
+.statusbar .brand-update-dot[data-state="update-available"] {
+  background: #ff3b30;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #ff3b30 30%, transparent);
+}
+.statusbar .sidebar-brand-name {
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  color: var(--text) !important;
+  letter-spacing: 0.01em;
+}
+.statusbar .sidebar-brand-ver,
+.statusbar #appVersion {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  color: var(--muted) !important;
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* native-112: statusbar brand + CLI vertical alignment; traffic light after version */
+.statusbar {
+  display: flex !important;
+  align-items: center !important;
+  min-height: 28px;
+  height: auto;
+  padding: 2px 10px;
+  gap: 10px;
+  box-sizing: border-box;
+}
+.statusbar .sb-left {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  justify-content: center !important;
+  gap: 1px !important;
+  min-width: 0;
+  line-height: 1.15;
+}
+.statusbar .sb-brand,
+.statusbar #sidebarBrand {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 14px !important;
+  min-height: 14px !important;
+  line-height: 14px !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-secondary, rgba(235,235,245,0.78)) !important;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.statusbar .sidebar-brand-name {
+  font-size: 11px !important;
+  font-weight: 650 !important;
+  line-height: 14px !important;
+  color: inherit !important;
+}
+.statusbar .sidebar-brand-ver,
+.statusbar #appVersion {
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  line-height: 14px !important;
+  opacity: 0.88;
+  color: inherit !important;
+}
+.statusbar .brand-update-dot {
+  width: 8px !important;
+  height: 8px !important;
+  min-width: 8px !important;
+  border-radius: 50% !important;
+  display: inline-block !important;
+  margin: 0 0 0 2px !important;
+  flex: 0 0 auto !important;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.18);
+}
+.statusbar .brand-update-dot[data-state="checking"],
+.statusbar .brand-update-dot[data-state="unknown"],
+.statusbar .brand-update-dot[data-state="error"],
+.statusbar .brand-update-dot[data-state="none"] {
+  background: #8e8e93 !important;
+}
+.statusbar .brand-update-dot[data-state="latest"] {
+  background: #30d158 !important;
+  box-shadow: 0 0 0 1px rgba(48,209,88,0.35), 0 0 6px rgba(48,209,88,0.45);
+}
+.statusbar .brand-update-dot[data-state="update-available"] {
+  background: #ff3b30 !important;
+  box-shadow: 0 0 0 1px rgba(255,59,48,0.35), 0 0 6px rgba(255,59,48,0.5);
+}
+.statusbar .cli-status,
+.statusbar #statusLine {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  height: 14px !important;
+  min-height: 14px !important;
+  line-height: 14px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  font-size: 11px !important;
+}
+.statusbar .cli-status .cli-text,
+.statusbar .cli-text {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  line-height: 14px !important;
+}
+.statusbar .cli-dot {
+  width: 8px !important;
+  height: 8px !important;
+  min-width: 8px !important;
+  border-radius: 50% !important;
+  display: inline-block !important;
+  margin: 0 !important;
+  flex: 0 0 auto !important;
+}
+
+/* native-112: settings compact + single save/close row */
+.modal.settings-modal {
+  width: min(460px, 94vw) !important;
+  max-height: min(78vh, 560px) !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+.settings-body {
+  overflow: auto !important;
+  max-height: none !important;
+  flex: 1 1 auto !important;
+  gap: 10px !important;
+  padding-bottom: 4px !important;
+}
+.settings-section {
+  padding: 10px 12px !important;
+}
+.settings-title-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  -webkit-app-region: no-drag;
+}
+.modal.settings-modal .modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+body.float-window .float-settings-shell .settings-modal,
+body.float-window .float-settings-shell .modal {
+  max-height: none !important;
+  height: auto !important;
+  box-shadow: none !important;
+  border: 0 !important;
+}
+body.float-window .float-settings-shell .settings-body {
+  max-height: none !important;
+  overflow: visible !important;
+}
+body.float-window .float-settings-shell .modal-actions {
+  display: none !important; /* top titlebar already has save/close */
+}

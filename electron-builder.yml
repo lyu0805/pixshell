@@ -23,19 +23,39 @@ files:
   - '!**/*.pem'
   - '!**/*.ppk'
   - '!**/*.key'
+  - '!**/代码说明概要.md'
+  - '!logs/**'
+  - '!_private/**'
+  - '!scripts/local-tools/**'
 extraMetadata:
   main: packages/app/main/main.js
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
 mac:
   category: public.app-category.developer-tools
   icon: build/icon.icns
+  hardenedRuntime: false
+  gatekeeperAssess: false
   target:
-    - dmg
-    - zip
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+dmg:
+  title: PixShell ${version}
+  writeUpdateInfo: false
 win:
   icon: build/icon.ico
   target:
-    - nsis
-    - portable
+    - target: nsis
+      arch:
+        - x64
+    - target: zip
+      arch:
+        - x64
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
@@ -43,7 +63,14 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: PixShell
+  artifactName: ${productName}-${version}-win-${arch}-setup.${ext}
 linux:
   icon: build/icon.png
+  category: Network
   target:
-    - AppImage
+    - target: AppImage
+      arch:
+        - x64
+    - target: zip
+      arch:
+        - x64

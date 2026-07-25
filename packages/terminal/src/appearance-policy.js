@@ -47,6 +47,21 @@ function resolveTermTheme(schemeTheme, settings, opts = {}) {
   }
   if (!theme.foreground) theme.foreground = base.foreground
   if (!theme.background) theme.background = base.background
+
+  // Force high-contrast error / warning ANSI so severity always pops
+  // regardless of the selected scheme's vintage palette.
+  const mode = String((settings && settings.theme) || 'dark') === 'light' ? 'light' : 'dark'
+  if (mode === 'light') {
+    theme.red = '#b00014'
+    theme.brightRed = '#d4001f'
+    theme.yellow = '#9a4200'
+    theme.brightYellow = '#b84f00'
+  } else {
+    theme.red = '#ff2d20'
+    theme.brightRed = '#ff453a'
+    theme.yellow = '#ffcc00'
+    theme.brightYellow = '#ffd60a'
+  }
   return theme
 }
 

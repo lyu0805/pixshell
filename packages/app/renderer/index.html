@@ -5,8 +5,8 @@
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:;" />
   <title>PixShell</title>
-  <link rel="stylesheet" href="./shell.css?v=native-110" />
-  <link rel="stylesheet" href="./shell-extra.css?v=native-110" />
+  <link rel="stylesheet" href="./shell.css?v=native-112" />
+  <link rel="stylesheet" href="./shell-extra.css?v=native-112" />
   <link rel="stylesheet" href="./vendor/xterm/xterm.css" />
 </head>
 <body class="theme-dark is-mac">
@@ -147,6 +147,9 @@
         <span>帮助</span><span class="mm-arrow">›</span>
         <div class="mm-sub" hidden>
           <button type="button" data-act="about">关于 PixShell</button>
+          <button type="button" data-act="open-repo">项目仓库</button>
+          <button type="button" data-act="open-releases">下载发行版</button>
+          <button type="button" data-act="help-docs">使用说明</button>
         </div>
       </div>
     </div>
@@ -346,10 +349,11 @@
 
     <div class="statusbar">
       <div class="sb-left">
-        <div class="sb-brand" id="sidebarBrand" title="PixShell 版本">
+        <button type="button" class="sb-brand" id="sidebarBrand" title="打开 GitHub 发行版页面" aria-label="PixShell 版本与更新状态">
           <span class="sidebar-brand-name">PixShell</span>
           <span class="sidebar-brand-ver" id="appVersion">0.1.0</span>
-        </div>
+          <span class="brand-update-dot" id="brandUpdateDot" data-state="checking" aria-hidden="true"></span>
+        </button>
         <span class="cli-status" id="statusLine" title="外部 CLI / AI-Agent 本地桥">
           <span class="cli-dot" id="cliDot" aria-hidden="true"></span>
           <span class="cli-text" id="cliText">CLI 未开启</span>
@@ -556,7 +560,10 @@
   <div class="modal-mask float-modal-mask" id="settingsModal" hidden>
     <div class="modal settings-modal">
       <div class="modal-title">设置
-        <button type="button" class="icon-btn" id="btnSetClose" title="关闭">×</button>
+        <div class="settings-title-actions">
+          <button type="button" class="cmd-btn primary" id="btnSetSave">保存</button>
+          <button type="button" class="cmd-btn" id="btnSetClose" title="关闭">关闭</button>
+        </div>
       </div>
       <div class="modal-body settings-body">
         <div class="settings-section">
@@ -646,10 +653,6 @@
             <button type="button" class="cmd-btn" id="btnCliRotateToken" title="生成新 Token，旧 Token 立即失效">轮换 Token</button>
           </div>
         </div>
-      </div>
-      <div class="modal-actions">
-        <button type="button" class="cmd-btn" id="btnSetCancel">取消</button>
-        <button type="button" class="cmd-btn primary" id="btnSetSave">保存</button>
       </div>
     </div>
   </div>
@@ -765,6 +768,6 @@ $ _</pre>
       </div>
     </div>
   </div>
-  <script src="./app.js?v=native-110"></script>
+  <script src="./app.js?v=native-112"></script>
 </body>
 </html>

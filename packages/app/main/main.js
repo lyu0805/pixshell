@@ -11,6 +11,7 @@ const { SshEngine } = require('./ssh-engine')
 const log = require('./logger')
 const { createAgentBridge } = require('./agent-bridge')
 const cloudOAuth = require('./cloud-oauth')
+const appUpdate = require('./app-update')
 
 let mainWindow = null
 /** @type {Map<string, import('electron').BrowserWindow>} */
@@ -396,6 +397,154 @@ function registerIpc() {
       return { ok: true, version: ver }
     } catch (e) {
       return { ok: false, version: '0.1.0', error: String(e && e.message || e) }
+    }
+  })
+
+  function readAppVersionSafe() {
+    try {
+      const pkgPath = path.join(__dirname, '..', '..', '..', 'package.json')
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
+      if (pkg && pkg.version) return String(pkg.version)
+    } catch (_) {}
+    try {
+      return app.getVersion()
+    } catch (_) {
+      return '0.1.0'
+    }
+  }
+
+  ipcMain.handle('app:check-update', async () => {
+    try {
+      const current = readAppVersionSafe()
+      const r = await appUpdate.checkForUpdate(current, {
+        platform: process.platform,
+        arch: process.arch,
+      })
+      return {
+        ...r,
+        repoUrl: appUpdate.REPO_URL,
+        releasesUrl: appUpdate.RELEASES_URL,
+      }
+    } catch (e) {
+      return {
+        ok: false,
+        status: 'error',
+        updateAvailable: false,
+        currentVersion: readAppVersionSafe(),
+        latestVersion: '',
+        releaseUrl: appUpdate.RELEASES_URL,
+        htmlUrl: appUpdate.RELEASES_URL,
+        repoUrl: appUpdate.REPO_URL,
+        releasesUrl: appUpdate.RELEASES_URL,
+        asset: null,
+        error: String(e && e.message || e),
+        message: '检查更新失败: ' + String(e && e.message || e),
+      }
+    }
+  })
+
+  ipcMain.handle('app:download-update', async (_e, payload = {}) => {
+    try {
+      const current = readAppVersionSafe()
+      let info = payload && payload.info
+      if (!info || !info.asset || !info.asset.url) {
+        info = await appUpdate.checkForUpdate(current, {
+          platform: process.platform,
+          arch: process.arch,
+        })
+      }
+      if (!info || !info.ok) {
+        return {
+          ok: false,
+          error: (info && info.error) || 'check failed',
+          message: (info && info.message) || '检查更新失败',
+          info,
+        }
+      }
+      if (!info.updateAvailable) {
+        return {
+          ok: true,
+          skipped: true,
+          reason: 'latest',
+          message: info.message || '已是最新版本',
+          info,
+          repoUrl: appUpdate.REPO_URL,
+          releasesUrl: appUpdate.RELEASES_URL,
+        }
+      }
+      if (!info.asset || !info.asset.url) {
+        // No packaged asset yet — open releases page for the user
+        try {
+          await shell.openExternal(info.htmlUrl || info.releaseUrl || appUpdate.RELEASES_URL)
+        } catch (_) {}
+        return {
+          ok: true,
+          skipped: true,
+          reason: 'no-asset',
+          opened: info.htmlUrl || info.releaseUrl || appUpdate.RELEASES_URL,
+          message: '已有新版本，但暂无当前平台安装包，已打开发行页',
+          info,
+          repoUrl: appUpdate.REPO_URL,
+          releasesUrl: appUpdate.RELEASES_URL,
+        }
+      }
+      let destDir
+      try {
+        destDir = path.join(app.getPath('downloads'), 'PixShell-Updates')
+      } catch (_) {
+        destDir = path.join(os.homedir(), 'Downloads', 'PixShell-Updates')
+      }
+      const dl = await appUpdate.downloadUpdateAsset(info.asset, destDir)
+      if (!dl.ok) {
+        return {
+          ok: false,
+          error: dl.error || 'download failed',
+          message: '下载更新失败: ' + (dl.error || 'unknown'),
+          info,
+        }
+      }
+      try {
+        await shell.showItemInFolder(dl.path)
+      } catch (_) {
+        try { await shell.openPath(path.dirname(dl.path)) } catch (__) {}
+      }
+      return {
+        ok: true,
+        downloaded: true,
+        path: dl.path,
+        bytes: dl.bytes,
+        name: dl.name,
+        message: `已下载 ${dl.name}，请运行安装包完成更新`,
+        info,
+        repoUrl: appUpdate.REPO_URL,
+        releasesUrl: appUpdate.RELEASES_URL,
+      }
+    } catch (e) {
+      return {
+        ok: false,
+        error: String(e && e.message || e),
+        message: '下载更新失败: ' + String(e && e.message || e),
+        repoUrl: appUpdate.REPO_URL,
+        releasesUrl: appUpdate.RELEASES_URL,
+      }
+    }
+  })
+
+  ipcMain.handle('app:open-releases', async () => {
+    try {
+      await shell.openExternal(appUpdate.RELEASES_URL)
+      return { ok: true, url: appUpdate.RELEASES_URL }
+    } catch (e) {
+      return { ok: false, error: String(e && e.message || e), url: appUpdate.RELEASES_URL }
+    }
+  })
+
+  ipcMain.handle('app:open-repo', async () => {
+    try {
+      await shell.openExternal(appUpdate.REPO_URL)
+      return { ok: true, url: appUpdate.REPO_URL }
+    } catch (e) {
+      return { ok: false, error: String(e && e.message || e), url: appUpdate.REPO_URL }
     }
   })
 

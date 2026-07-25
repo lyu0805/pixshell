@@ -888,7 +888,7 @@ check('native-110 dark auto forceScheme + palette boost + ui contrast', () => {
   const html = fs.readFileSync(path.join(root, 'packages/app/renderer/index.html'), 'utf8')
   const js = fs.readFileSync(path.join(root, 'packages/app/renderer/app.js'), 'utf8')
   const css = fs.readFileSync(path.join(root, 'packages/app/renderer/shell.css'), 'utf8')
-  assert.ok(html.includes('native-110'), 'stamp native-110')
+  assert.ok(html.includes('native-110') || html.includes('native-111') || html.includes('native-112'), 'stamp native-110+')
   assert.ok(js.includes('autoForceDark'), 'dark auto forceScheme when unlocked')
   assert.ok(js.includes('darkUnlocked'), 'saveSettings forceScheme on dark unlocked')
   assert.ok(js.includes('boost = (hex, minLum') || js.includes('const boost ='), 'ANSI palette boost helper')
@@ -897,6 +897,84 @@ check('native-110 dark auto forceScheme + palette boost + ui contrast', () => {
   assert.ok(css.includes('--term: #191c27') || css.includes('--term: #0f1419'), 'dark term token present')
   assert.ok(css.includes('--muted: rgba(235, 235, 245, 0.78)'), 'dark UI muted brighter')
   assert.ok(css.includes('--text: #0b0b0d'), 'light UI high-contrast text')
+})
+
+
+check('native-111 brand traffic light + software update', () => {
+  const html = fs.readFileSync(path.join(root, 'packages/app/renderer/index.html'), 'utf8')
+  const js = fs.readFileSync(path.join(root, 'packages/app/renderer/app.js'), 'utf8')
+  const css = fs.readFileSync(path.join(root, 'packages/app/renderer/shell.css'), 'utf8')
+  const main = fs.readFileSync(path.join(root, 'packages/app/main/main.js'), 'utf8')
+  const preload = fs.readFileSync(path.join(root, 'packages/app/main/preload.js'), 'utf8')
+  const upd = req('packages/app/main/app-update.js')
+  assert.ok(html.includes('native-111') || html.includes('native-112'), 'stamp native-111+')
+  assert.ok(html.includes('brandUpdateDot') && html.includes('sidebarBrand'), 'brand traffic light in statusbar')
+  assert.ok(html.includes('data-act="open-repo"') && html.includes('data-act="open-releases"'), 'help links to repo/releases')
+  assert.ok(css.includes('brand-update-dot') && css.includes('update-available'), 'traffic light css')
+  assert.ok(js.includes('paintBrandUpdateDot') && js.includes('runSoftwareUpdate') && js.includes('checkAppUpdate'), 'renderer update helpers')
+  assert.ok(js.includes('openPixShellReleases') && js.includes('openPixShellRepo'), 'open repo/releases helpers')
+  assert.ok(main.includes("app:check-update") && main.includes("app:download-update"), 'main update ipc')
+  assert.ok(preload.includes('checkForUpdate') && preload.includes('downloadUpdate'), 'preload update api')
+  assert.strictEqual(upd.compareVersions('0.2.0', '0.1.0'), 1, '0.2 > 0.1')
+  assert.strictEqual(upd.compareVersions('0.1.0', '0.1.0'), 0, 'equal')
+  assert.strictEqual(upd.compareVersions('0.1.0', '0.1.1'), -1, '0.1 < 0.1.1')
+  assert.strictEqual(upd.normalizeVersion('v1.2.3'), '1.2.3', 'strip v prefix')
+  const fakeRel = {
+    tag_name: 'v0.2.0',
+    name: '0.2.0',
+    html_url: 'https://github.com/lyu0805/pixshell/releases/tag/v0.2.0',
+    assets: [
+      { name: 'PixShell-0.2.0-mac-arm64.dmg', browser_download_url: 'https://example.com/a.dmg', size: 10 },
+      { name: 'PixShell-0.2.0-win-x64.exe', browser_download_url: 'https://example.com/a.exe', size: 11 },
+      { name: 'latest-mac.yml', browser_download_url: 'https://example.com/a.yml', size: 1 },
+    ],
+  }
+  const sum = upd.summarizeRelease(fakeRel, '0.1.0', 'darwin', 'arm64')
+  assert.ok(sum.updateAvailable, 'update available')
+  assert.ok(sum.asset && /dmg$/i.test(sum.asset.name), 'mac asset picked')
+  const win = upd.summarizeRelease(fakeRel, '0.1.0', 'win32', 'x64')
+  assert.ok(win.asset && /exe$/i.test(win.asset.name), 'win asset picked')
+  const same = upd.summarizeRelease(fakeRel, '0.2.0', 'darwin', 'arm64')
+  assert.ok(!same.updateAvailable, 'already latest')
+})
+
+
+check('native-112 status order + settings compact + term residual clear + schemes curated', () => {
+  const html = fs.readFileSync(path.join(root, 'packages/app/renderer/index.html'), 'utf8')
+  const js = fs.readFileSync(path.join(root, 'packages/app/renderer/app.js'), 'utf8')
+  const css = fs.readFileSync(path.join(root, 'packages/app/renderer/shell.css'), 'utf8')
+  const { listSchemes, getScheme, hasScheme } = req('packages/terminal/src/schemes.js')
+  const ap = req('packages/terminal/src/appearance-policy.js')
+
+  assert.ok(html.includes('native-112'), 'stamp native-112')
+  // brand: name + version + traffic light (dot after version)
+  const brandIdx = html.indexOf('id="sidebarBrand"')
+  const nameIdx = html.indexOf('sidebar-brand-name', brandIdx)
+  const verIdx = html.indexOf('appVersion', brandIdx)
+  const dotIdx = html.indexOf('brandUpdateDot', brandIdx)
+  assert.ok(brandIdx > 0 && nameIdx > brandIdx && verIdx > nameIdx && dotIdx > verIdx, 'brand order name→version→dot')
+  // settings: single save + close, no cancel twin
+  assert.ok(html.includes('settings-title-actions') && html.includes('btnSetSave') && html.includes('btnSetClose'), 'settings title actions')
+  assert.ok(!html.includes('btnSetCancel'), 'no duplicate settings cancel')
+  assert.ok(css.includes('native-112') || css.includes('settings-title-actions'), 'settings/status css present')
+
+  // residual buffer cleanup helpers
+  assert.ok(js.includes('hardResetTerminalViewport') && js.includes('clearTermSessionVisual'), 'term residual helpers')
+  assert.ok(js.includes("clearTermSessionVisual(sessionId, { resetViewport: true })"), 'connect clears viewport')
+  assert.ok(js.includes('Bare severity words first') || js.includes('38;5;196'), 'error/warn highlight stronger')
+  assert.ok(js.includes('#ff2d20') || js.includes('#ff3b30'), 'dark force red')
+
+  // schemes curated
+  const list = listSchemes()
+  assert.ok(list.length >= 20 && list.length <= 40, 'curated schemes 20-40, got ' + list.length)
+  assert.ok(hasScheme('pix-dark') && hasScheme('dracula') && hasScheme('ciapre'), 'core schemes present')
+  assert.ok(!hasScheme('batman') && !hasScheme('spiderman') && !hasScheme('crayonponyfish'), 'novelty schemes removed from first-class list')
+  assert.strictEqual(getScheme('batman').name, getScheme('dracula').name, 'batman aliases to dracula')
+
+  // appearance policy forces reds/yellows
+  const th = ap.resolveTermTheme({ red: '#553333', yellow: '#555500', brightRed: '#663333', brightYellow: '#666600', background: '#111', foreground: '#eee' }, { theme: 'dark' })
+  assert.ok(th.red.toLowerCase() === '#ff2d20' || th.red.toLowerCase() === '#ff3b30', 'policy dark red forced')
+  assert.ok(th.yellow.toLowerCase() === '#ffcc00' || th.yellow.toLowerCase() === '#ffd60a', 'policy dark yellow forced')
 })
 
 console.log(failed ? `\n${failed} failed` : '\nall passed')
