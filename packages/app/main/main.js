@@ -14,6 +14,7 @@ const cloudOAuth = require('./cloud-oauth')
 const appUpdate = require('./app-update')
 
 let mainWindow = null
+/** native-113-float-theme */
 /** @type {Map<string, import('electron').BrowserWindow>} */
 const floatWindows = new Map()
 /** @type {Map<string, any>} 浮窗首屏数据（大文本不进 URL） */
@@ -228,8 +229,16 @@ function createWindow() {
     minHeight: Math.round((520 * 4) / 3), // 保持可缩放时仍偏高
     backgroundColor: '#181825',
     title: 'PixShell',
-    titleBarStyle: 'hidden',
-    trafficLightPosition: { x: 12, y: 8 },
+    // mac: hidden titlebar + traffic lights; Windows/Linux: system frame buttons (no fake mac lights)
+    ...(process.platform === 'darwin'
+      ? {
+          titleBarStyle: 'hidden',
+          trafficLightPosition: { x: 12, y: 8 },
+        }
+      : {
+          frame: true,
+          autoHideMenuBar: true,
+        }),
     icon: iconPath,
     paintWhenInitiallyHidden: true,
     webPreferences: {
@@ -614,7 +623,7 @@ ipcMain.handle('window:open-float', async (_e, payload = {}) => {
         existing.setSize(width, height)
         existing.setPosition(Math.round(x), Math.round(y))
         try {
-          const bg = payload.backgroundColor || (payload.theme === 'light' ? '#d6d6de' : '#1e1e2e')
+          const bg = payload.backgroundColor || (payload.theme === 'light' ? '#ececf1' : '#1e1e2e')
           existing.setBackgroundColor(String(bg))
         } catch (_) {}
         existing.show()
@@ -642,9 +651,17 @@ ipcMain.handle('window:open-float', async (_e, payload = {}) => {
         minHeight: 220,
         show: false,
         title,
-        backgroundColor: String(payload.backgroundColor || (payload.theme === 'light' ? '#d6d6de' : '#1e1e2e')),
-        titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-        trafficLightPosition: process.platform === 'darwin' ? { x: 12, y: 12 } : undefined,
+        backgroundColor: String(payload.backgroundColor || (payload.theme === 'light' ? '#ececf1' : '#1e1e2e')),
+        ...(process.platform === 'darwin'
+          ? {
+              titleBarStyle: 'hiddenInset',
+              trafficLightPosition: { x: 12, y: 12 },
+            }
+          : {
+              frame: true,
+              autoHideMenuBar: true,
+              // Windows system caption; content matches app theme colors
+            }),
         parent: undefined,
         modal: false,
         resizable: true,
@@ -746,7 +763,7 @@ ipcMain.handle('window:open-float', async (_e, payload = {}) => {
       if (win && !win.isDestroyed()) {
         try {
           if (payload && payload.backgroundColor) {
-            win.setBackgroundColor(String(payload.backgroundColor))
+            win.setBackgroundColor(String(payload.backgroundColor || (payload.theme === 'light' ? '#ececf1' : '#1e1e2e')))
           }
         } catch (_) {}
         if (typeof win._pixFloatShow === 'function') win._pixFloatShow()

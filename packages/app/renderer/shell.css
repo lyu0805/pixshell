@@ -1713,10 +1713,11 @@ body.resizing-layout .xterm-helper-textarea {
 }
 .bottom-panel { display: none; height: 100%; min-height: 0; overflow: hidden; }
 .bottom-panel.active {
-  display: grid;
-  grid-template-rows: auto 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 /* 命令面板只有一块 board，不要套 auto/1fr 双行（否则高度塌成内容高） */
 #panelCmds.bottom-panel.active {
@@ -1733,6 +1734,7 @@ body.resizing-layout .xterm-helper-textarea {
   padding: 2px 6px;
   min-height: 24px;
   height: 24px;
+  flex: 0 0 auto;
   box-sizing: border-box;
   background: var(--bg2);
   border-bottom: var(--hairline);
@@ -1771,8 +1773,10 @@ body.resizing-layout .xterm-helper-textarea {
 .sftp-dual {
   display: grid;
   grid-template-columns: minmax(72px, 22%) 1fr;
+  flex: 1 1 auto;
   min-height: 0;
-  height: 100%;
+  height: auto;
+  align-self: stretch;
   background: var(--bg);
 }
 .sftp-tree {
@@ -1782,6 +1786,8 @@ body.resizing-layout .xterm-helper-textarea {
   color: var(--text);
   font-size: 11px;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
 }
 .tree-item {
   padding: 4px 8px;
@@ -1799,6 +1805,7 @@ body.resizing-layout .xterm-helper-textarea {
 .sftp-table-wrap {
   overflow: auto;
   min-height: 0;
+  height: 100%;
   background: var(--bg);
 }
 .sftp-table {
@@ -4172,12 +4179,14 @@ body.theme-light .xterm-host { background: var(--term, #b8b8c2) !important; }
   overflow: auto !important;
   display: block !important;
 }
+/* 文件面板：路径栏 + 双栏内容（树/表）必须纵向 flex，才能撑满底栏 */
 #panelFiles.bottom-panel.active {
-  display: grid !important;
-  grid-template-rows: auto 1fr !important;
+  display: flex !important;
+  flex-direction: column !important;
   height: 100% !important;
   min-height: 0 !important;
-  visibility: visible !important;
+  overflow: hidden !important;
+  align-items: stretch !important;
 }
 
 
@@ -5630,4 +5639,141 @@ body.float-window .float-settings-shell .settings-body {
 }
 body.float-window .float-settings-shell .modal-actions {
   display: none !important; /* top titlebar already has save/close */
+}
+
+
+/* native-113：文件面板撑满底栏可用高度（修 mac 中间大片空白） */
+.bottom-dock .bottom-body {
+  display: block;
+  min-height: 0 !important;
+  height: 100% !important;
+  overflow: hidden !important;
+}
+.bottom-dock .bottom-panel {
+  box-sizing: border-box;
+}
+.bottom-dock .bottom-panel.active {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  align-items: stretch !important;
+  justify-content: flex-start !important;
+}
+.bottom-dock #panelFiles .sftp-pathbar {
+  flex: 0 0 auto !important;
+  width: 100% !important;
+}
+.bottom-dock #panelFiles .sftp-dual {
+  display: grid !important;
+  grid-template-columns: minmax(72px, 22%) 1fr !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+  width: 100% !important;
+  align-self: stretch !important;
+  align-items: stretch !important;
+  justify-content: stretch !important;
+}
+.bottom-dock #panelFiles .sftp-tree,
+.bottom-dock #panelFiles .sftp-table-wrap {
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: none !important;
+  overflow: auto !important;
+  align-self: stretch !important;
+}
+.bottom-dock #panelFiles .sftp-table {
+  width: 100%;
+}
+.bottom-dock #panelCmds.active {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+
+/* native-113-float-border：独立弹窗与主 UI 浅色/深色一致，避免 Windows 深色边框 */
+body.float-window,
+body.float-window.theme-light {
+  background: var(--bg) !important;
+}
+body.float-window.theme-light {
+  color-scheme: light;
+  background: #ececf1 !important;
+}
+body.float-window.theme-dark {
+  color-scheme: dark;
+  background: #1e1e2e !important;
+}
+body.float-window .modal,
+body.float-window .hb-popup,
+body.float-window .ask-confirm-modal,
+body.float-window .host-editor,
+body.float-window .conn-mgr {
+  background: var(--bg2) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow) !important;
+}
+body.float-window.theme-light .modal,
+body.float-window.theme-light .hb-popup,
+body.float-window.theme-light .ask-confirm-modal,
+body.float-window.theme-light .host-editor,
+body.float-window.theme-light .conn-mgr {
+  background: #f4f4f8 !important;
+  border: 1px solid rgba(0, 0, 0, 0.14) !important;
+  color: #1c1c1e !important;
+}
+body.float-window.theme-light .modal-title,
+body.float-window.theme-light .hb-popup-titlebar {
+  background: #e8e8ef !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1) !important;
+  color: #1c1c1e !important;
+}
+
+
+/* native-113-win-chrome：Windows 去掉仿 mac 红绿灯，左侧放连接/分组，右侧留给系统关闭最大最小化 */
+body.win .mac-traffic-lights,
+body:not(.is-mac) .mac-traffic-lights {
+  display: none !important;
+}
+body.win .menubar {
+  padding-right: 138px; /* 给系统标题栏按钮留空，避免遮挡 */
+}
+body.win .menubar-left {
+  padding-left: 8px !important;
+  gap: 6px;
+}
+body.win .menubar-right {
+  margin-right: 0;
+}
+body.win .tabs {
+  margin-left: 0;
+}
+/* 独立弹窗在 Windows 上使用系统边框，内容区与主题色一致 */
+body.win.float-window,
+body.win.float-window.theme-light {
+  background: #ececf1 !important;
+}
+body.win.float-window.theme-dark {
+  background: #1e1e2e !important;
+}
+
+#panelFiles.bottom-panel.active > .sftp-pathbar {
+  flex: 0 0 auto !important;
+}
+#panelFiles.bottom-panel.active > .sftp-dual {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+  display: grid !important;
+  grid-template-columns: minmax(72px, 22%) 1fr !important;
+}
+#panelFiles.bottom-panel.active .sftp-tree,
+#panelFiles.bottom-panel.active .sftp-table-wrap {
+  min-height: 0 !important;
+  height: 100% !important;
+  overflow: auto !important;
 }

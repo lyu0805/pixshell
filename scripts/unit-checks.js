@@ -888,7 +888,7 @@ check('native-110 dark auto forceScheme + palette boost + ui contrast', () => {
   const html = fs.readFileSync(path.join(root, 'packages/app/renderer/index.html'), 'utf8')
   const js = fs.readFileSync(path.join(root, 'packages/app/renderer/app.js'), 'utf8')
   const css = fs.readFileSync(path.join(root, 'packages/app/renderer/shell.css'), 'utf8')
-  assert.ok(html.includes('native-110') || html.includes('native-111') || html.includes('native-112'), 'stamp native-110+')
+  assert.ok(html.includes('native-110') || html.includes('native-111') || html.includes('native-112') || html.includes('native-113'), 'stamp native-110+')
   assert.ok(js.includes('autoForceDark'), 'dark auto forceScheme when unlocked')
   assert.ok(js.includes('darkUnlocked'), 'saveSettings forceScheme on dark unlocked')
   assert.ok(js.includes('boost = (hex, minLum') || js.includes('const boost ='), 'ANSI palette boost helper')
@@ -907,7 +907,7 @@ check('native-111 brand traffic light + software update', () => {
   const main = fs.readFileSync(path.join(root, 'packages/app/main/main.js'), 'utf8')
   const preload = fs.readFileSync(path.join(root, 'packages/app/main/preload.js'), 'utf8')
   const upd = req('packages/app/main/app-update.js')
-  assert.ok(html.includes('native-111') || html.includes('native-112'), 'stamp native-111+')
+  assert.ok(html.includes('native-111') || html.includes('native-112') || html.includes('native-113'), 'stamp native-111+')
   assert.ok(html.includes('brandUpdateDot') && html.includes('sidebarBrand'), 'brand traffic light in statusbar')
   assert.ok(html.includes('data-act="open-repo"') && html.includes('data-act="open-releases"'), 'help links to repo/releases')
   assert.ok(css.includes('brand-update-dot') && css.includes('update-available'), 'traffic light css')
@@ -946,7 +946,7 @@ check('native-112 status order + settings compact + term residual clear + scheme
   const { listSchemes, getScheme, hasScheme } = req('packages/terminal/src/schemes.js')
   const ap = req('packages/terminal/src/appearance-policy.js')
 
-  assert.ok(html.includes('native-112'), 'stamp native-112')
+  assert.ok(html.includes('native-112') || html.includes('native-113'), 'stamp native-112+')
   // brand: name + version + traffic light (dot after version)
   const brandIdx = html.indexOf('id="sidebarBrand"')
   const nameIdx = html.indexOf('sidebar-brand-name', brandIdx)
@@ -956,7 +956,7 @@ check('native-112 status order + settings compact + term residual clear + scheme
   // settings: single save + close, no cancel twin
   assert.ok(html.includes('settings-title-actions') && html.includes('btnSetSave') && html.includes('btnSetClose'), 'settings title actions')
   assert.ok(!html.includes('btnSetCancel'), 'no duplicate settings cancel')
-  assert.ok(css.includes('native-112') || css.includes('settings-title-actions'), 'settings/status css present')
+  assert.ok(css.includes('native-112') || css.includes('native-113') || css.includes('settings-title-actions'), 'settings/status css present')
 
   // residual buffer cleanup helpers
   assert.ok(js.includes('hardResetTerminalViewport') && js.includes('clearTermSessionVisual'), 'term residual helpers')
@@ -975,6 +975,24 @@ check('native-112 status order + settings compact + term residual clear + scheme
   const th = ap.resolveTermTheme({ red: '#553333', yellow: '#555500', brightRed: '#663333', brightYellow: '#666600', background: '#111', foreground: '#eee' }, { theme: 'dark' })
   assert.ok(th.red.toLowerCase() === '#ff2d20' || th.red.toLowerCase() === '#ff3b30', 'policy dark red forced')
   assert.ok(th.yellow.toLowerCase() === '#ffcc00' || th.yellow.toLowerCase() === '#ffd60a', 'policy dark yellow forced')
+})
+
+
+check('native-113 sftp fill + win chrome + float light bg', () => {
+  const html = fs.readFileSync(path.join(root, 'packages/app/renderer/index.html'), 'utf8')
+  const css = fs.readFileSync(path.join(root, 'packages/app/renderer/shell.css'), 'utf8')
+  const app = fs.readFileSync(path.join(root, 'packages/app/renderer/app.js'), 'utf8')
+  const main = fs.readFileSync(path.join(root, 'packages/app/main/main.js'), 'utf8')
+  assert.ok(html.includes('native-113'), 'stamp native-113')
+  assert.ok(css.includes('native-113'), 'css native-113')
+  // file panel must flex-fill, not block
+  assert.ok(/#panelFiles\.bottom-panel\.active\s*\{[\s\S]*?display:\s*flex/.test(css), 'panelFiles active flex')
+  assert.ok(css.includes('sftp-dual') && css.includes('flex: 1 1 auto'), 'sftp-dual flex fill')
+  assert.ok(css.includes('native-113-win-chrome') || css.includes('body.win .mac-traffic-lights'), 'win chrome hides fake traffic lights')
+  assert.ok(app.includes('hardResetTerminalViewport') && app.includes('clearTermSessionVisual'), 'term residual helpers still present')
+  assert.ok(app.includes("openIndependentFloat") && app.includes('windowBg'), 'float open palette')
+  assert.ok(main.includes('#ececf1'), 'float/main light bg #ececf1')
+  assert.ok(main.includes("process.platform === 'darwin'") || main.includes('process.platform === "darwin"'), 'platform-specific window frame')
 })
 
 console.log(failed ? `\n${failed} failed` : '\nall passed')

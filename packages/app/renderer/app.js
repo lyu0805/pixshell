@@ -1,3 +1,5 @@
+/* native-113 */
+(function(){try{const p=String((typeof process!=='undefined'&&process.platform)||navigator.platform||'');document.body&&document.body.classList&&(document.body.classList.toggle('win',/Win/i.test(p)||/Windows/i.test(navigator.userAgent||'')),document.body.classList.toggle('is-mac',/Mac|Darwin/i.test(p)),document.body.classList.toggle('darwin',/Mac|Darwin/i.test(p)));}catch(_){}})();
 /**
  * PixShell frontend — native fsApi SSH, real layout & interactions.
  * No mock. No "bridge OK".
@@ -732,7 +734,7 @@
       (mode === 'dark' && lum >= 120) ||
       (mode === 'light' && lum >= 0 && lum <= 70) ||
       // 历史默认浅灰，不是用户「暗色背景」意图
-      (mode === 'dark' && ['#c1c5cd', '#e5e5ea', '#b8b8c2', '#d6d6de'].includes(raw.toLowerCase()))
+      (mode === 'dark' && ['#c1c5cd', '#e5e5ea', '#b8b8c2', '#ececf1'].includes(raw.toLowerCase()))
     if (!bad) return false
     try {
       delete s.termBgOverride
@@ -3953,7 +3955,7 @@
     // 主窗背景色同步，避免 titlebar 露深色/白边
     try {
       if (hasApi && typeof api.setWindowBackground === 'function') {
-        api.setWindowBackground(m === 'light' ? '#d6d6de' : '#181825')
+        api.setWindowBackground(m === 'light' ? '#ececf1' : '#181825')
       }
     } catch (_) {}
     const btn = $('btnThemeToggle')
@@ -3998,7 +4000,7 @@
     }
     try {
       const ov = String(state.settings.termBgOverride || '').toLowerCase()
-      const stickyLight = ['#c1c5cd', '#e5e5ea', '#b8b8c2', '#d6d6de', '#1e1e2e', '#2e3440']
+      const stickyLight = ['#c1c5cd', '#e5e5ea', '#b8b8c2', '#ececf1', '#1e1e2e', '#2e3440']
       if (stickyLight.includes(ov) || (ov && ov === String(state.settings.termBg || '').toLowerCase() && colorLuminance(ov) >= 120)) {
         delete state.settings.termBgOverride
         delete state.settings.termBg
@@ -7491,8 +7493,8 @@ function replaceAll(text, query, replacement, opts = {}) {
     if (light) {
       return {
         mode: 'light',
-        bg: '#d6d6de',
-        bg2: '#d6d6de',
+        bg: '#ececf1',
+        bg2: '#ececf1',
         bg3: '#c8c8d2',
         fg: '#1d1d1f',
         muted: 'rgba(60,60,67,0.7)',
@@ -7501,8 +7503,8 @@ function replaceAll(text, query, replacement, opts = {}) {
         control: 'rgba(60,60,70,0.14)',
         inputBg: '#cfcfd8',
         headBg: '#c8c8d2',
-        rowBg: '#d6d6de',
-        windowBg: '#d6d6de',
+        rowBg: '#ececf1',
+        windowBg: '#ececf1',
       }
     }
     return {
@@ -7580,7 +7582,7 @@ function replaceAll(text, query, replacement, opts = {}) {
       x,
       y,
       theme: themeMode,
-      backgroundColor: pal.windowBg,
+      backgroundColor: pal.windowBg || (themeMode === 'light' ? '#ececf1' : '#1e1e2e'),
       init: initPayload,
     }
     try {
@@ -8268,7 +8270,7 @@ function replaceAll(text, query, replacement, opts = {}) {
     try {
       if (hasApi && typeof api.setWindowBackground === 'function') {
         await api.setWindowBackground(
-          pal.windowBg || (isLight ? '#d6d6de' : '#1e1e1e'),
+          pal.windowBg || (isLight ? '#ececf1' : '#1e1e1e'),
         )
       }
     } catch (_) {}
