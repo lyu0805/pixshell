@@ -736,10 +736,12 @@ check('terminal appearance-policy resolveTermTheme/font', () => {
   const t3 = pol.resolveTermTheme(schemeB, { termBgUserSet: true, termBgOverride: '#ff00ff' }, { forceSchemeBackground: true })
   assert.strictEqual(t3.background, '#0000aa', 'forceSchemeBackground wins')
   assert.notStrictEqual(t1.background, t3.background, 'two schemes differ')
-  const small = pol.resolveTermFontPx(12, 400, 300)
-  const large = pol.resolveTermFontPx(12, 1400, 900)
-  assert.ok(large > small, 'font grows with panel: ' + small + ' -> ' + large)
-  assert.ok(large <= 28 && small >= 9)
+  // 字号即所见：设置多少就是多少，不随面板缩放、不封顶到 20
+  assert.strictEqual(pol.resolveTermFontPx(12, 400, 300), 12, 'font literal on small panel')
+  assert.strictEqual(pol.resolveTermFontPx(12, 1400, 900), 12, 'font unchanged by panel size')
+  assert.strictEqual(pol.resolveTermFontPx(24, 400, 300), 24, 'large font honored, not capped at 20')
+  assert.strictEqual(pol.resolveTermFontPx(4, 400, 300), 8, 'clamp low to 8')
+  assert.strictEqual(pol.resolveTermFontPx(99, 400, 300), 36, 'clamp high to 36')
   const s1 = pol.settingsAfterSchemeChange({ colorScheme: 'dracula', termBgOverride: '#1e1e2e', termBgUserSet: true }, 'nord')
   assert.strictEqual(s1.termBgUserSet, false)
   assert.ok(!s1.termBgOverride)
@@ -837,9 +839,9 @@ check('native-107 light term css and exec ok semantics', () => {
   const mainJs = fs.readFileSync(path.join(root, 'packages/app/main/main.js'), 'utf8')
   assert.ok(/native-10[7-9]|native-1[1-9]/.test(html), 'cache stamp native-107+')
   const lightBlock = css.slice(css.indexOf('body.theme-light'), css.indexOf('body.theme-light') + 1200)
-  assert.ok(/--term:\s*#(e5e5ea|b8b8c2)/.test(lightBlock), 'theme-light --term is mid/light gray')
+  assert.ok(/--term:\s*#(e5e5ea|b8b8c2|d4d6dc)/.test(lightBlock), 'theme-light --term is mid/light gray')
   assert.ok(!/--term:\s*#0f1419/.test(lightBlock), 'theme-light --term is not dark')
-  assert.ok(css.includes('var(--term, #b8b8c2)') || css.includes('var(--term, #e5e5ea)'), 'light xterm fallback mid/light gray')
+  assert.ok(css.includes('var(--term, #d4d6dc)') || css.includes('var(--term, #e5e5ea)'), 'light xterm fallback mid/light gray')
   assert.ok(js.includes("console.warn('[apply terminal appearance]'"), 'setThemeMode logs appearance errors')
   assert.ok(js.includes("setProperty('--term'"), 'paintTermBackgroundDom sets --term')
   assert.ok(ssh.includes('ok: exitCode === 0'), 'exec ok === exitCode===0')
@@ -858,10 +860,10 @@ check('native-108 dark appearance race and light contrast', () => {
     ? init.slice(init.indexOf('bindTermHostResize()'))
     : init
   assert.ok(!afterBind.slice(0, 500).includes('applyTerminalAppearance()'), 'initTerm no early apply race')
-  assert.ok(js.includes("'#b8b8c2'") || js.includes('"#b8b8c2"'), 'light mid-gray term bg')
+  assert.ok(js.includes("'#d4d6dc'") || js.includes('"#d4d6dc"'), 'light mid-gray term bg')
   assert.ok(js.includes("'#0b0b0d'") || js.includes('"#0b0b0d"'), 'light high-contrast fg')
   assert.ok(js.includes('[openSettings appearance]'), 'openSettings re-applies appearance')
-  assert.ok(css.includes('--term: #b8b8c2'), 'css light --term mid gray')
+  assert.ok(css.includes('--term: #d4d6dc'), 'css light --term mid gray')
 })
 
 
@@ -874,9 +876,10 @@ check('native-109 dark sticky override scrub and contrast', () => {
   assert.ok(js.includes('function scrubIncompatibleTermBgOverride'), 'scrubIncompatibleTermBgOverride helper')
   assert.ok(js.includes("forceSchemeBackground: bootForce") || js.includes('forceSchemeBackground: bootForce'), 'loadAll forceScheme on dark boot')
   assert.ok(js.includes("'#c1c5cd'") || js.includes('"#c1c5cd"') || js.includes("'#c1c5cd'"), 'migrates sticky #c1c5cd')
-  // dark contrast lift for dim scheme fg (109: <200, 110: <210)
-  assert.ok(js.includes('fgLum < 200') || js.includes('fgLum < 210'), 'dark dim fg lift threshold')
-  assert.ok(css.includes('--term: #b8b8c2'), 'light mid-gray term css kept')
+  // dark contrast lift for dim scheme fg still present (threshold relaxed to keep
+  // per-scheme identity; legibility now backed by minimumContrastRatio>=7)
+  assert.ok(/fgLum < \d{2,3}/.test(js), 'dark dim fg lift threshold')
+  assert.ok(css.includes('--term: #d4d6dc'), 'light mid-gray term css kept')
   // setThemeMode scrubs before apply
   const setTheme = js.slice(js.indexOf('function setThemeMode'), js.indexOf('function setThemeMode') + 1200)
   assert.ok(setTheme.includes('scrubIncompatibleTermBgOverride'), 'setThemeMode scrubs override')
@@ -888,7 +891,7 @@ check('native-110 dark auto forceScheme + palette boost + ui contrast', () => {
   const html = fs.readFileSync(path.join(root, 'packages/app/renderer/index.html'), 'utf8')
   const js = fs.readFileSync(path.join(root, 'packages/app/renderer/app.js'), 'utf8')
   const css = fs.readFileSync(path.join(root, 'packages/app/renderer/shell.css'), 'utf8')
-  assert.ok(html.includes('native-110') || html.includes('native-111') || html.includes('native-112') || html.includes('native-113'), 'stamp native-110+')
+  assert.ok(/native-1[1-9][0-9]/.test(html), 'stamp native-110+')
   assert.ok(js.includes('autoForceDark'), 'dark auto forceScheme when unlocked')
   assert.ok(js.includes('darkUnlocked'), 'saveSettings forceScheme on dark unlocked')
   assert.ok(js.includes('boost = (hex, minLum') || js.includes('const boost ='), 'ANSI palette boost helper')
@@ -907,7 +910,7 @@ check('native-111 brand traffic light + software update', () => {
   const main = fs.readFileSync(path.join(root, 'packages/app/main/main.js'), 'utf8')
   const preload = fs.readFileSync(path.join(root, 'packages/app/main/preload.js'), 'utf8')
   const upd = req('packages/app/main/app-update.js')
-  assert.ok(html.includes('native-111') || html.includes('native-112') || html.includes('native-113'), 'stamp native-111+')
+  assert.ok(/native-1[1-9][0-9]/.test(html), 'stamp native-111+')
   assert.ok(html.includes('brandUpdateDot') && html.includes('sidebarBrand'), 'brand traffic light in statusbar')
   assert.ok(html.includes('data-act="open-repo"') && html.includes('data-act="open-releases"'), 'help links to repo/releases')
   assert.ok(css.includes('brand-update-dot') && css.includes('update-available'), 'traffic light css')
@@ -946,7 +949,7 @@ check('native-112 status order + settings compact + term residual clear + scheme
   const { listSchemes, getScheme, hasScheme } = req('packages/terminal/src/schemes.js')
   const ap = req('packages/terminal/src/appearance-policy.js')
 
-  assert.ok(html.includes('native-112') || html.includes('native-113'), 'stamp native-112+')
+  assert.ok(/native-1[1-9][0-9]/.test(html), 'stamp native-112+')
   // brand: name + version + traffic light (dot after version)
   const brandIdx = html.indexOf('id="sidebarBrand"')
   const nameIdx = html.indexOf('sidebar-brand-name', brandIdx)
@@ -961,7 +964,12 @@ check('native-112 status order + settings compact + term residual clear + scheme
   // residual buffer cleanup helpers
   assert.ok(js.includes('hardResetTerminalViewport') && js.includes('clearTermSessionVisual'), 'term residual helpers')
   assert.ok(js.includes("clearTermSessionVisual(sessionId, { resetViewport: true })"), 'connect clears viewport')
-  assert.ok(js.includes('Bare severity words first') || js.includes('38;5;196'), 'error/warn highlight stronger')
+  // Semantic highlight now uses custom truecolor, one palette per light/dark
+  // mode (HL_LIGHT / HL_DARK), decoupled from the scheme palette. Severity
+  // roles (err/warn/ok) are bold+truecolor via _tcb().
+  assert.ok(js.includes('HL_LIGHT') && js.includes('HL_DARK'), 'dual light/dark highlight palettes')
+  assert.ok(js.includes('_tcb(') && js.includes('38;2;'), 'severity highlight bold + truecolor')
+  assert.ok(js.includes("theme === 'light' ? HL_LIGHT : HL_DARK"), 'highlight palette follows ui mode')
   assert.ok(js.includes('#ff2d20') || js.includes('#ff3b30'), 'dark force red')
 
   // schemes curated
@@ -983,7 +991,7 @@ check('native-113 sftp fill + win chrome + float light bg', () => {
   const css = fs.readFileSync(path.join(root, 'packages/app/renderer/shell.css'), 'utf8')
   const app = fs.readFileSync(path.join(root, 'packages/app/renderer/app.js'), 'utf8')
   const main = fs.readFileSync(path.join(root, 'packages/app/main/main.js'), 'utf8')
-  assert.ok(html.includes('native-113'), 'stamp native-113')
+  assert.ok(/native-1[1-9][0-9]/.test(html), 'stamp native-113+')
   assert.ok(css.includes('native-113'), 'css native-113')
   // file panel must flex-fill, not block
   assert.ok(/#panelFiles\.bottom-panel\.active\s*\{[\s\S]*?display:\s*flex/.test(css), 'panelFiles active flex')

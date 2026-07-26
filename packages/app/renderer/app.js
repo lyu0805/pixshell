@@ -480,7 +480,7 @@
         if (ok) bg = raw
       }
     } else if (mode === 'light') {
-      bg = '#b8b8c2'
+      bg = '#d4d6dc'
     }
     return {
       background: bg,
@@ -557,15 +557,11 @@
    * 逻辑与 packages/terminal/src/appearance-policy.js resolveTermFontPx 一致。
    */
   function resolveTermFontPxLocal(baseFont, hostW, hostH) {
+    // 字号即所见：直接用设置里的字号（仅 8–36 夹取防越界），不再按面板尺寸缩放。
+    // 之前的面板缩放 + 封顶 20 会让「设置-终端字号」形同虚设：改了看不出变化、
+    // 设成 >20 被砍回 20。用户明确要求该设置生效，故一律用字面值。
     const base = Math.max(8, Math.min(36, Number(baseFont) || 13))
-    const w = Math.max(1, Number(hostW) || 640)
-    const h = Math.max(1, Number(hostH) || 400)
-    const sw = w / 720
-    const sh = h / 480
-    let scale = Math.sqrt(Math.max(0.01, sw * sh))
-    if (scale < 0.88) scale = 0.88
-    if (scale > 1.42) scale = 1.42
-    return { px: Math.max(9, Math.min(28, Math.round(base * scale))), scale }
+    return { px: base, scale: 1 }
   }
 
   function applyTermFontScale() {
@@ -734,7 +730,7 @@
       (mode === 'dark' && lum >= 120) ||
       (mode === 'light' && lum >= 0 && lum <= 70) ||
       // 历史默认浅灰，不是用户「暗色背景」意图
-      (mode === 'dark' && ['#c1c5cd', '#e5e5ea', '#b8b8c2', '#ececf1'].includes(raw.toLowerCase()))
+      (mode === 'dark' && ['#c1c5cd', '#e5e5ea', '#b8b8c2', '#d4d6dc', '#ececf1'].includes(raw.toLowerCase()))
     if (!bad) return false
     try {
       delete s.termBgOverride
@@ -823,12 +819,14 @@
     const fb = buildLocalFallbackTheme({ termBg: theme.background })
     theme = { ...fb, ...theme, background: theme.background || fb.background }
 
-    // 适配浅色模式：中灰底 + 高对比深字（用户要求比 #e5e5ea 再偏中灰、字更清楚）
+    // 适配浅色模式：浅灰底 + 高对比深字。较早的中灰 #b8b8c2 太暗，把暗色高亮色压得
+    // 与近黑正文难以区分（用户反馈「浅色看不出高亮」）；抬亮一档到 #d4d6dc，仍是明显
+    // 灰底不刺眼，同时给高亮色留出彩度与亮度空间。
     if (state?.settings?.theme === 'light') {
-      theme.background = '#b8b8c2'
+      theme.background = '#d4d6dc'
       theme.foreground = '#0b0b0d'
       theme.cursor = '#0055d4'
-      theme.cursorAccent = '#b8b8c2'
+      theme.cursorAccent = '#d4d6dc'
       theme.selectionBackground = 'rgba(0, 85, 212, 0.28)'
       theme.black = '#0b0b0d'
       theme.red = '#b00014'
@@ -857,12 +855,14 @@
       const fgLum = lum(theme.foreground)
       // 暗色模式：抬前景 + 抬低对比 ANSI（ciapre 等 vintage 方案字/色本身偏暗）
       if (uiTheme === 'dark' || bgLum < 90) {
-        if (fgLum < 210) theme.foreground = '#f2f2f7'
-        if (theme.cursor && lum(theme.cursor) < 180) theme.cursor = '#f2f2f7'
-        if (theme.white && lum(theme.white) < 190) theme.white = '#e4e4ea'
-        if (theme.brightWhite && lum(theme.brightWhite) < 220) theme.brightWhite = '#f7f7fa'
-        if (theme.brightBlack && lum(theme.brightBlack) < 150) theme.brightBlack = '#b0b0b8'
-        if (theme.black && lum(theme.black) < 100) theme.black = '#9a9aa2'
+        // 只在前景真的暗到读不清时才顶成近白，否则保留方案自身前景（避免所有方案都变一个样）。
+        // 图例可读性由下方 minimumContrastRatio(>=7) 兜底，无需强行统一颜色。
+        if (fgLum < 130) theme.foreground = '#f2f2f7'
+        if (theme.cursor && lum(theme.cursor) < 120) theme.cursor = '#f2f2f7'
+        if (theme.white && lum(theme.white) < 150) theme.white = '#e4e4ea'
+        if (theme.brightWhite && lum(theme.brightWhite) < 200) theme.brightWhite = '#f7f7fa'
+        if (theme.brightBlack && lum(theme.brightBlack) < 110) theme.brightBlack = '#a0a0a8'
+        if (theme.black && lum(theme.black) < 70) theme.black = '#8a8a92'
         // 常规 8 色过暗时混一点浅色，避免 ls/git 等着色几乎看不见
         const boost = (hex, minLum, mix = 0.42) => {
           const L = lum(hex)
@@ -881,11 +881,12 @@
         theme.brightRed = '#ff453a'
         theme.yellow = '#ffcc00'
         theme.brightYellow = '#ffd426'
+        // 只轻提亮过暗的着色（保留方案色相个性）；亮度由 minimumContrastRatio 兜底。
         for (const k of ['green', 'blue', 'magenta', 'cyan']) {
-          if (theme[k]) theme[k] = boost(theme[k], 120, 0.48)
+          if (theme[k]) theme[k] = boost(theme[k], 95, 0.2)
         }
         for (const k of ['brightGreen', 'brightBlue', 'brightMagenta', 'brightCyan']) {
-          if (theme[k]) theme[k] = boost(theme[k], 160, 0.32)
+          if (theme[k]) theme[k] = boost(theme[k], 120, 0.14)
         }
       }
       if (Math.abs(bgLum - lum(theme.foreground)) < 55) {
@@ -1034,14 +1035,61 @@
         out += part
         continue
       }
-      // Bare severity words first so ERROR/WARN always read as red/amber.
-      let plain = part
-      plain = plain.replace(/\b(ERROR|FATAL|CRITICAL|FAILED|FAILURE)\b/g, '\x1b[1;31m$1\x1b[0m')
-      plain = plain.replace(/\b(WARN(?:ING)?|DEPRECATED)\b/g, '\x1b[1;33m$1\x1b[0m')
-      if (plain !== part) out += plain
-      else out += decoratePlainChunk(part)
+      // 全量装饰：严重级别词由 decoratePlainChunk 内的规则 17 统一上色，
+      // 不再做前置替换（前置替换会短路整段装饰，导致同行的路径/IP 丢失高亮）。
+      out += decoratePlainChunk(part)
     }
     return out
+  }
+
+  // 语义高亮色板：明暗各一套「定制 truecolor」，与配色方案解耦。
+  // 之前「主题联动」(用方案 16 色 + minimumContrastRatio) 在浅色模式失败——多数方案是
+  // 暗色向的淡彩，浅底上被 MCR 补成灰暗色，与近黑正文难分。改成手调 24 位真彩：
+  //  · 浅色(底 #d4d6dc / 近黑字)：中偏深高彩度色，亮度+色相双向拉开与黑字的距离；
+  //  · 深色(暗底 / 浅字)：高饱和亮色。
+  // 关键角色(err/warn/ok)加粗以进一步凸显。tc()=前景真彩，tcb()=加粗+真彩。
+  const _tc = (h) => {
+    const n = parseInt(h.slice(1), 16)
+    return '\x1b[38;2;' + ((n >> 16) & 255) + ';' + ((n >> 8) & 255) + ';' + (n & 255) + 'm'
+  }
+  const _tcb = (h) => '\x1b[1m' + _tc(h)
+  const HL_LIGHT = {
+    url: '\x1b[4m' + _tc('#0a6d8c'), // 青 + 下划线：链接
+    path: _tc('#1553d6'),           // 蓝：文件/目录路径
+    ip: _tc('#0a72a0'),             // 青：IP
+    domain: _tc('#0a72a0'),         // 青：域名
+    userhost: _tc('#4b3fd0'),       // 靛：user@host
+    port: _tc('#1a7d2e'),           // 绿：端口
+    mac: _tc('#9127bf'),            // 紫：MAC
+    date: _tc('#5f6470'),           // 板岩灰：时间戳（次要）
+    size: _tc('#b85c00'),           // 橙：大小/速率
+    num: _tc('#5f6470'),            // 板岩灰：数字
+    hex: _tc('#9127bf'),            // 紫：hash/十六进制
+    perm: _tc('#1a7d2e'),           // 绿：权限位
+    err: _tcb('#e00020'),           // 加粗红：错误
+    warn: _tcb('#a85a00'),          // 加粗琥珀：警告
+    ok: _tcb('#127a34'),            // 加粗绿：成功
+    kw: _tc('#b21ab0'),             // 品红：运维关键词
+    delim: _tc('#6a6f7a'),          // 灰：括号
+  }
+  const HL_DARK = {
+    url: '\x1b[4m' + _tc('#5cd6e8'), // 亮青 + 下划线：链接
+    path: _tc('#6aa8ff'),           // 亮蓝：文件/目录路径
+    ip: _tc('#4fd0e0'),             // 亮青：IP
+    domain: _tc('#4fd0e0'),         // 亮青：域名
+    userhost: _tc('#a99bff'),       // 亮靛：user@host
+    port: _tc('#5fe08a'),           // 亮绿：端口
+    mac: _tc('#ff86d4'),            // 亮品红：MAC
+    date: _tc('#9aa0ac'),           // 灰：时间戳（次要）
+    size: _tc('#ffb340'),           // 琥珀：大小/速率
+    num: _tc('#9aa0ac'),            // 灰：数字
+    hex: _tc('#ff86d4'),            // 亮品红：hash/十六进制
+    perm: _tc('#5fe08a'),           // 亮绿：权限位
+    err: _tcb('#ff5a4d'),           // 加粗亮红：错误
+    warn: _tcb('#ffc233'),          // 加粗琥珀：警告
+    ok: _tcb('#57e08a'),            // 加粗亮绿：成功
+    kw: _tc('#d79bff'),             // 亮紫：运维关键词
+    delim: _tc('#8a90a0'),          // 灰：括号
   }
 
   function decoratePlainChunk(chunk) {
@@ -1201,26 +1249,8 @@
     // 21) 括号字符轻量着色（delimiter 可见性）
     s = replaceSafe(s, /[()[\]{}]/g, 'delim')
 
-    // 柔和前景、无底色；少用 bold，整体比默认终端略亮即可
-    const color = {
-      url: '\x1b[4;38;5;31m',      // 下划线 + 暗青蓝
-      path: '\x1b[38;5;67m',       // 灰蓝路径
-      ip: '\x1b[38;5;37m',         // 暗青 IP
-      domain: '\x1b[38;5;30m',     // 暗青绿域名
-      userhost: '\x1b[38;5;73m',   // 灰青 user@host
-      port: '\x1b[38;5;65m',       // 暗绿端口
-      mac: '\x1b[38;5;133m',       // 暗紫 MAC
-      date: '\x1b[38;5;103m',      // 灰紫时间
-      size: '\x1b[38;5;136m',      // 暗金大小
-      num: '\x1b[38;5;144m',       // 浅褐数字
-      hex: '\x1b[38;5;96m',        // 暗紫 hash
-      perm: '\x1b[38;5;66m',       // 灰青权限
-      err: '\x1b[1;38;5;196m',     // 高亮红（错误必须一眼可见）
-      warn: '\x1b[1;38;5;214m',    // 高亮琥珀警告
-      ok: '\x1b[38;5;71m',         // 暗绿成功
-      kw: '\x1b[38;5;67m',         // 灰蓝关键词
-      delim: '\x1b[38;5;240m',     // 更暗括号
-    }
+    // 语义高亮：按当前明暗模式选定制真彩色板（见上方 HL_LIGHT / HL_DARK）。
+    const color = state?.settings?.theme === 'light' ? HL_LIGHT : HL_DARK
     const reset = '\x1b[0m'
     let guard = 0
     const expandRe = new RegExp(SO + '(\\d+)' + EO, 'g')
@@ -1868,7 +1898,7 @@
       const letter = String(title).trim().charAt(0).toUpperCase() || 'S'
       // 纯 flex 横排一行，禁止嵌套 table 相关类，避免竖排叠字
       return `<article class="hb-row${sel}" data-id="${esc(h.id)}" tabindex="0" role="button" title="双击连接">
-        <div class="qc-avatar hb-row-avatar" aria-hidden="true">${esc(letter)}</div>
+        <div class="qc-avatar hb-row-avatar" aria-hidden="true">${hostAvatarImg(h)}</div>
         <div class="hb-row-main">
           <div class="hb-row-title">${esc(title)}</div>
           <div class="hb-row-sub">${esc(user)}@${esc(host)}:${esc(port)}</div>
@@ -2432,6 +2462,10 @@
       startMonitor()
     } catch (_) {}
     toast('已连接 ' + h.host)
+    // 记入快速连接历史（此前 recentHosts 只读不写，历史永远为空）
+    try { recordRecentHost(hostId) } catch (_) {}
+    // 读取服务器系统，自动把头像换成对应发行版 logo（异步，不阻塞连接流程）
+    detectHostOs(hostId, tab.sessionId).catch((e) => console.warn('[detectHostOs]', e))
     // 连上后自动关掉启动时/快速连接留下的「新标签页」
     try {
       dismissIdleQuickTabs({ keepId: tab.id })
@@ -3461,6 +3495,78 @@
       '<tr><td colspan="5" class="empty">列表挂载失败 — 请完全退出后重启 PixShell</td></tr>'
   }
 
+  // ── 服务器头像：默认软件 logo；连上并读到系统后换成对应发行版 logo ──
+  const OS_ICON_MAP = {
+    ubuntu: 'ubuntu', kubuntu: 'ubuntu', xubuntu: 'ubuntu', pop: 'ubuntu', elementary: 'ubuntu',
+    debian: 'debian', raspbian: 'debian', devuan: 'debian',
+    centos: 'centos', rhel: 'redhat', redhat: 'redhat', fedora: 'fedora',
+    rocky: 'rocky', almalinux: 'almalinux', alma: 'almalinux',
+    alpine: 'alpine', arch: 'arch', manjaro: 'arch', endeavouros: 'arch',
+    opensuse: 'opensuse', 'opensuse-leap': 'opensuse', 'opensuse-tumbleweed': 'opensuse', suse: 'opensuse', sles: 'opensuse',
+    amzn: 'amazon', amazon: 'amazon', ol: 'oracle', oracle: 'oracle',
+    kali: 'kali', linuxmint: 'mint', mint: 'mint',
+  }
+  function osIconFile(osId) {
+    const k = String(osId || '').toLowerCase().trim()
+    if (!k) return ''
+    if (OS_ICON_MAP[k]) return OS_ICON_MAP[k]
+    if (k.includes('ubuntu')) return 'ubuntu'
+    if (k.includes('debian')) return 'debian'
+    if (k.includes('cent')) return 'centos'
+    if (k.includes('rhel') || k.includes('red hat') || k.includes('redhat')) return 'redhat'
+    if (k.includes('fedora')) return 'fedora'
+    if (k.includes('rocky')) return 'rocky'
+    if (k.includes('alma')) return 'almalinux'
+    if (k.includes('alpine')) return 'alpine'
+    if (k.includes('arch')) return 'arch'
+    if (k.includes('suse')) return 'opensuse'
+    if (k.includes('amazon') || k === 'amzn') return 'amazon'
+    if (k.includes('kali')) return 'kali'
+    return 'linux' // 已知 linux 但发行版不明 → 通用企鹅
+  }
+  function hostAvatarSrc(h) {
+    const f = osIconFile(h && h.osId)
+    return f ? './icons/os/' + f + '.svg' : './icons/logo.svg'
+  }
+  /** 头像内 <img>：填满头像块；未连接/未知系统 → 软件 logo */
+  function hostAvatarImg(h) {
+    return '<img class="host-os-icon" src="' + esc(hostAvatarSrc(h)) + '" alt="" draggable="false" />'
+  }
+
+  /** 连接成功后把主机记入快速连接历史（去重、置顶、上限 30） */
+  function recordRecentHost(hostId) {
+    if (!hostId) return
+    const s = state.settings || (state.settings = {})
+    const prev = Array.isArray(s.recentHosts) ? s.recentHosts.filter((x) => x !== hostId) : []
+    prev.unshift(hostId)
+    s.recentHosts = prev.slice(0, 30)
+    if (hasApi && api.saveSettings) api.saveSettings(s).catch((e) => console.warn('[recentHosts save]', e))
+    try { renderQuickConnect() } catch (_) {}
+  }
+
+  /** 连上后读取服务器系统，自动把头像换成对应发行版 logo（持久化到主机） */
+  async function detectHostOs(hostId, sessionId) {
+    if (!hasApi || !api.sysinfo || !sessionId || !hostId) return
+    let r
+    try { r = await api.sysinfo(sessionId) } catch (_) { return }
+    const d = (r && r.ok && r.data) || null
+    if (!d) return
+    const osId = String(d.osId || '').toLowerCase().trim()
+    if (!osId) return
+    const h = state.hosts.find((x) => x.id === hostId)
+    if (!h) return
+    const pretty = d.osPretty && d.osPretty !== '-' ? d.osPretty : ''
+    if (h.osId === osId && h.osPretty === pretty) return // 无变化
+    h.osId = osId
+    if (pretty) h.osPretty = pretty
+    try { await persistHosts() } catch (_) {}
+    try { renderQuickConnect() } catch (_) {}
+    try { renderConnMgr() } catch (_) {}
+    try { renderHostBrowser && renderHostBrowser() } catch (_) {}
+    // 通知已打开的浮窗连接管理器刷新头像
+    try { api.floatToFloat && api.floatToFloat({ type: 'hosts-updated', hosts: state.hosts }) } catch (_) {}
+  }
+
   function renderQuickConnect() {
     // 快速连接 = 仅历史记录，完整服务器列表在「主机列表」页
     const root = $('qcList')
@@ -3495,7 +3601,7 @@
         const letter = String(title).trim().charAt(0).toUpperCase() || 'S'
         return `<article class="qc-card${sel}" data-id="${esc(h.id)}" tabindex="0" role="button" title="双击或点「连接」">
           <div class="qc-card-top">
-            <div class="qc-avatar" aria-hidden="true">${esc(letter)}</div>
+            <div class="qc-avatar" aria-hidden="true">${hostAvatarImg(h)}</div>
             <div class="qc-card-titlewrap">
               <div class="qc-card-title">${esc(title)}</div>
               <div class="qc-card-sub mono">${esc(user)}@${esc(host)}</div>
@@ -3598,6 +3704,7 @@
 
   function openCmdOptionsPanel() {
     showModal('cmdOptModal', true)
+    makeModalFloatDraggable('cmdOptModal', { title: '命令板选项', halfW: 260 })
     paintCmdOptList()
   }
 
@@ -3669,6 +3776,7 @@
     if ($('cmdEditGroup')) $('cmdEditGroup').value = q.group || '默认分类'
     if ($('cmdEditBody')) $('cmdEditBody').value = (q.command || '').replace(/\n$/, '')
     showModal('cmdEditModal', true)
+    makeModalFloatDraggable('cmdEditModal', { title: '编辑快捷命令', halfW: 240 })
   }
 
   async function saveCmdEditModal() {
@@ -4000,7 +4108,7 @@
     }
     try {
       const ov = String(state.settings.termBgOverride || '').toLowerCase()
-      const stickyLight = ['#c1c5cd', '#e5e5ea', '#b8b8c2', '#ececf1', '#1e1e2e', '#2e3440']
+      const stickyLight = ['#c1c5cd', '#e5e5ea', '#b8b8c2', '#d4d6dc', '#ececf1', '#1e1e2e', '#2e3440']
       if (stickyLight.includes(ov) || (ov && ov === String(state.settings.termBg || '').toLowerCase() && colorLuminance(ov) >= 120)) {
         delete state.settings.termBgOverride
         delete state.settings.termBg
@@ -4222,6 +4330,17 @@
   }
 
   function openHostModal(hostId) {
+    if (!document.body.classList.contains('float-window') && hasApi && typeof api.openFloatWindow === 'function') {
+      openIndependentFloat({
+        kind: 'host-editor',
+        id: 'host-editor',
+        title: hostId ? '编辑连接' : '新建连接',
+        width: 520,
+        height: 400,
+        init: { hostId }
+      }).catch(console.error)
+      return
+    }
     state.editHostId = hostId
     const h = hostId ? state.hosts.find((x) => x.id === hostId) : null
     if ($('modalTitle')) $('modalTitle').textContent = h ? '编辑连接' : '新建连接'
@@ -4258,23 +4377,13 @@
     })
     showModal('hostModal', true)
     const hostWin = $('hostModal')?.querySelector('.modal')
-    if (hostWin) {
-      hostWin.classList.add('draggable')
-      enableModalDrag(hostWin, { kind: 'host-editor', title: h ? '编辑连接' : '新建连接', floatId: 'host-editor' })
-      if (!hostWin.dataset.sizedOnce) {
-        hostWin.dataset.sizedOnce = '1'
-        const w = Math.min(720, Math.max(520, Math.floor(window.innerWidth * 0.55)))
-        const hgt = Math.min(520, Math.max(360, Math.floor(window.innerHeight * 0.62)))
-        hostWin.style.width = w + 'px'
-        hostWin.style.height = hgt + 'px'
-        hostWin.style.left = Math.max(24, Math.floor((window.innerWidth - w) / 2)) + 'px'
-        hostWin.style.top = Math.max(48, Math.floor(window.innerHeight * 0.1)) + 'px'
-        hostWin.style.position = 'fixed'
-        hostWin.style.margin = '0'
-        hostWin.style.transform = 'none'
-      }
-      // host 也走 float-modal-mask，可拖到主窗外
-      $('hostModal')?.classList.add('float-modal-mask')
+    // 如果在浮窗内，我们重置一下可能被改过的尺寸，使其填满
+    if (document.body.classList.contains('float-window') && hostWin) {
+      hostWin.style.width = '100%'
+      hostWin.style.height = '100%'
+      hostWin.style.left = '0'
+      hostWin.style.top = '0'
+      hostWin.style.position = 'relative'
     }
     $('fHost')?.focus()
   }
@@ -4321,7 +4430,13 @@
     else state.hosts.push(host)
     await persistHosts()
     state.activeHostId = host.id
-    showModal('hostModal', false)
+    if (document.body.classList.contains('float-window')) {
+      // 独立编辑窗保存后，通知主窗重载主机列表并同步连接管理器浮窗
+      try { await api.floatToMain?.({ type: 'hosts-updated' }) } catch (_) {}
+      if (typeof window._floatSaveHook === 'function') window._floatSaveHook()
+    } else {
+      showModal('hostModal', false)
+    }
     renderConnMgr()
     renderHostBrowser()
     renderQuickConnect()
@@ -5656,6 +5771,9 @@ function replaceAll(text, query, replacement, opts = {}) {
         const bh = (state.settings && state.settings.layout && state.settings.layout.bottomHeight) || 200
         center.style.gridTemplateRows = '1fr var(--cmd-h) 4px ' + bh + 'px'
         document.documentElement.style.setProperty('--bottom-h', bh + 'px')
+        // 清掉 dock 可能残留的内联高，让它随网格行铺满（否则展开后底部露白）
+        const dock = $('bottomDock')
+        if (dock) { dock.style.height = ''; dock.style.maxHeight = ''; dock.style.minHeight = '' }
       } else if (!center.classList.contains('chrome-compact')) {
         center.style.gridTemplateRows = '1fr var(--cmd-h) 0 0'
       }
@@ -6465,11 +6583,32 @@ function replaceAll(text, query, replacement, opts = {}) {
   let backupUi = { selected: 'local', draft: null }
 
   function openBackupConfig(selectId) {
+    if (!document.body.classList.contains('float-window') && hasApi && typeof api.openFloatWindow === 'function') {
+      openIndependentFloat({
+        kind: 'backup',
+        id: 'backup',
+        title: '备份与恢复',
+        width: 640,
+        height: 480,
+        init: { selectId }
+      }).catch(console.error)
+      return
+    }
+    
     backupUi.selected = selectId || backupUi.selected || 'local'
     backupUi.draft = JSON.parse(JSON.stringify(getBackupSettings()))
     renderBackupGrid()
     renderBackupDetail()
     showModal('backupModal', true)
+    
+    const modal = $('backupModal')?.querySelector('.modal')
+    if (document.body.classList.contains('float-window') && modal) {
+      modal.style.width = '100%'
+      modal.style.height = '100%'
+      modal.style.left = '0'
+      modal.style.top = '0'
+      modal.style.position = 'relative'
+    }
   }
 
   function renderBackupGrid() {
@@ -6880,11 +7019,14 @@ function replaceAll(text, query, replacement, opts = {}) {
           wc.style.gridTemplateRows = '1fr var(--cmd-h) 4px ' + v + 'px'
         }
       }
+      // dock 高度由 grid 行（--bottom-h）单一控制；这里清掉历史内联高，
+      // 否则内联 height 与 grid 行一旦不同步（如连接时 setBottomCollapsed 只改 grid
+      // 不改内联），dock 就填不满网格行、底部露一大截白（发送条上浮到中间）。
       const dock = $('bottomDock')
-      if (dock && wc && !wc.classList.contains('chrome-compact') && !wc.classList.contains('bottom-collapsed')) {
-        dock.style.height = v + 'px'
-        dock.style.maxHeight = v + 'px'
-        dock.style.minHeight = '120px'
+      if (dock) {
+        dock.style.height = ''
+        dock.style.maxHeight = ''
+        dock.style.minHeight = ''
         dock.style.display = ''
       }
       return v
@@ -7203,7 +7345,7 @@ function replaceAll(text, query, replacement, opts = {}) {
       const bg =
         resolveTermBgOverride(state.settings, mode) ||
         state._activeTermTheme?.background ||
-        (mode === 'light' ? '#b8b8c2' : '#0f1419')
+        (mode === 'light' ? '#d4d6dc' : '#0f1419')
       paintTermBackgroundDom(bg)
     } catch (_) {}
     if (hasApi) {
@@ -7225,7 +7367,7 @@ function replaceAll(text, query, replacement, opts = {}) {
     const cur =
       resolveTermBgOverride(state.settings, mode) ||
       state._activeTermTheme?.background ||
-      (mode === 'light' ? '#b8b8c2' : '#0f1419')
+      (mode === 'light' ? '#d4d6dc' : '#0f1419')
     state._termBgPick = cur
     if ($('termBgCustom')) $('termBgCustom').value = cur
     if ($('termBgColorPick') && /^#([0-9a-fA-F]{6})$/.test(String(cur))) {
@@ -7234,6 +7376,7 @@ function replaceAll(text, query, replacement, opts = {}) {
     paintTermBgGrid(cur)
     previewTermBg(cur)
     showModal('termBgModal', true)
+    makeModalFloatDraggable('termBgModal', { title: '终端背景', halfW: 260 })
   }
 
   function bindTermBgPickerUi() {
@@ -7491,36 +7634,38 @@ function replaceAll(text, query, replacement, opts = {}) {
   function getChromePalette(mode) {
     const light = (mode || getUiThemeMode()) === 'light'
     if (light) {
+      // 与主窗 body.theme-light 令牌一致（中性灰）
       return {
         mode: 'light',
-        bg: '#ececf1',
-        bg2: '#ececf1',
+        bg: '#d6d6de',
+        bg2: '#d6d6de',
         bg3: '#c8c8d2',
-        fg: '#1d1d1f',
-        muted: 'rgba(60,60,67,0.7)',
+        fg: '#0b0b0d',
+        muted: 'rgba(40, 40, 45, 0.78)',
         accent: '#007aff',
         border: 'rgba(0,0,0,0.14)',
         control: 'rgba(60,60,70,0.14)',
         inputBg: '#cfcfd8',
         headBg: '#c8c8d2',
-        rowBg: '#ececf1',
-        windowBg: '#ececf1',
+        rowBg: '#d6d6de',
+        windowBg: '#d6d6de',
       }
     }
+    // 与主窗 :root/theme-dark 令牌一致（中性灰），杜绝浮窗偏紫、和主界面不统一
     return {
       mode: 'dark',
-      bg: '#1e1e2e',
-      bg2: '#313244',
-      bg3: '#45475a',
-      fg: '#cdd6f4',
-      muted: '#a6adc8',
-      accent: '#89b4fa',
-      border: '#45475a',
-      control: '#45475a',
-      inputBg: '#181825',
-      headBg: '#45475a',
-      rowBg: '#1e1e2e',
-      windowBg: '#1e1e2e',
+      bg: '#1c1c1e',
+      bg2: '#2c2c2e',
+      bg3: '#3a3a3c',
+      fg: '#f7f7fa',
+      muted: 'rgba(235, 235, 245, 0.78)',
+      accent: '#0a84ff',
+      border: 'rgba(255, 255, 255, 0.16)',
+      control: 'rgba(120, 120, 128, 0.32)',
+      inputBg: '#161618',
+      headBg: '#2c2c2e',
+      rowBg: '#1c1c1e',
+      windowBg: '#1c1c1e',
     }
   }
 
@@ -7789,8 +7934,11 @@ function replaceAll(text, query, replacement, opts = {}) {
 
       const list = document.createElement('div')
       list.id = 'floatHostBrowser'
+      // 居中列布局：分组卡片不再铺满整窗宽度（宽屏下按钮会被推到极右、中间空一大截），
+      // 收进一个居中的最大宽度列，读起来才像列表而不是「占满整个 UI」。
       list.style.cssText =
-        'display:block;flex:1 1 auto;min-height:100px;overflow:auto;padding:6px 8px;' +
+        'display:flex;flex-direction:column;align-items:center;flex:1 1 auto;min-height:0;' +
+        'overflow-y:auto;overflow-x:hidden;padding:8px 12px;' +
         'background:' + BG + ';color:' + FG + ';-webkit-overflow-scrolling:touch;'
 
       shell.appendChild(bar)
@@ -7873,12 +8021,62 @@ function replaceAll(text, query, replacement, opts = {}) {
             const items = groups.get(g) || []
             const sec = document.createElement('div')
             sec.style.cssText =
-              'margin:0 0 10px;border:1px solid ' + BORDER + ';border-radius:8px;overflow:hidden;background:' + BG2 + ';'
+              'width:100%;max-width:760px;margin:0 0 10px;border:1px solid ' + BORDER + ';border-radius:8px;overflow:hidden;background:' + BG2 + ';'
             const head = document.createElement('div')
             head.style.cssText =
-              'padding:8px 10px;font:650 12px system-ui;color:' + FG + ';background:' + HEAD_BG + ';'
-            head.textContent = g + '  (' + items.length + ')'
+              'padding:6px 8px 6px 10px;font:650 12px system-ui;color:' + FG + ';background:' + HEAD_BG + ';cursor:pointer;display:flex;align-items:center;gap:6px;user-select:none;'
+            // 折叠状态跨重绘保留（搜索/主机更新会重建列表，之前每次都被重置成展开）
+            if (!(state._connMgrCollapsed instanceof Set)) state._connMgrCollapsed = new Set()
+            const collapsed = state._connMgrCollapsed.has(g)
+            const arrow = document.createElement('span')
+            arrow.textContent = '▶'
+            arrow.style.cssText =
+              'display:inline-block;flex:0 0 auto;transition:transform var(--dur-2,170ms) var(--ease-out,ease);transform:rotate(' +
+              (collapsed ? 0 : 90) + 'deg);'
+            const gLabel = document.createElement('span')
+            gLabel.style.cssText = 'flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
+            gLabel.textContent = g + ' (' + items.length + ')'
+            head.appendChild(arrow)
+            head.appendChild(gLabel)
+            // 「默认」是未分组桶，不给重命名/删除（改它=改所有无分组主机，易误伤）
+            if (g !== '默认') {
+              const mkGBtn = (label, danger) => {
+                const b = document.createElement('button')
+                b.type = 'button'
+                b.textContent = label
+                b.style.cssText =
+                  'height:20px;padding:0 7px;border:0;border-radius:5px;cursor:pointer;flex:0 0 auto;' +
+                  'font:11px system-ui;' +
+                  (danger ? 'background:rgba(255,69,58,0.16);color:#ff6a5f;' : 'background:' + CONTROL + ';color:' + FG + ';')
+                return b
+              }
+              const bGRename = mkGBtn('重命名', false)
+              const bGDel = mkGBtn('删除', true)
+              bGRename.addEventListener('click', async (e) => {
+                e.stopPropagation()
+                try { await api.floatToMain({ type: 'rename-group', group: g }) } catch (_) {}
+              })
+              bGDel.addEventListener('click', async (e) => {
+                e.stopPropagation()
+                try { await api.floatToMain({ type: 'delete-group', group: g }) } catch (_) {}
+              })
+              head.appendChild(bGRename)
+              head.appendChild(bGDel)
+            }
             sec.appendChild(head)
+
+            const bodyDiv = document.createElement('div')
+            bodyDiv.style.cssText = 'display:' + (collapsed ? 'none' : 'block') + ';'
+            sec.appendChild(bodyDiv)
+
+            head.addEventListener('click', (e) => {
+              if (e.target.closest('button')) return
+              const isHidden = bodyDiv.style.display === 'none'
+              bodyDiv.style.display = isHidden ? 'block' : 'none'
+              arrow.style.transform = isHidden ? 'rotate(90deg)' : 'rotate(0deg)'
+              if (isHidden) state._connMgrCollapsed.delete(g)
+              else state._connMgrCollapsed.add(g)
+            })
             for (const h of items) {
               const row = document.createElement('div')
               row.dataset.id = h.id
@@ -7887,9 +8085,14 @@ function replaceAll(text, query, replacement, opts = {}) {
                 'border-top:1px solid ' + BORDER + ';background:' + BG + ';cursor:pointer;'
               const letter = document.createElement('div')
               letter.style.cssText =
-                'width:22px;height:22px;border-radius:6px;background:' + ACC + ';color:#fff;' +
-                'display:flex;align-items:center;justify-content:center;font:700 12px system-ui;flex:0 0 auto;'
-              letter.textContent = String(h.name || h.host || 'S').trim().charAt(0).toUpperCase() || 'S'
+                'width:22px;height:22px;border-radius:6px;overflow:hidden;background:' + BG2 + ';' +
+                'display:flex;align-items:center;justify-content:center;flex:0 0 auto;'
+              const av = document.createElement('img')
+              av.src = hostAvatarSrc(h)
+              av.alt = ''
+              av.draggable = false
+              av.style.cssText = 'width:100%;height:100%;object-fit:contain;'
+              letter.appendChild(av)
               const main = document.createElement('div')
               main.style.cssText = 'flex:1;min-width:0;'
               const t1 = document.createElement('div')
@@ -7954,7 +8157,7 @@ function replaceAll(text, query, replacement, opts = {}) {
               row.appendChild(letter)
               row.appendChild(main)
               row.appendChild(acts)
-              sec.appendChild(row)
+              bodyDiv.appendChild(row)
             }
             list.appendChild(sec)
           }
@@ -8012,72 +8215,41 @@ function replaceAll(text, query, replacement, opts = {}) {
       } catch (_) {}
 
       paintInline()
-      // 再强制一帧后量高度，防止 0 高
+      // 用标准 flex 滚动：list 为 flex:1 + min-height:0 + overflow:auto，
+      // 内容超高时自身出滚动条。之前把 minHeight 顶到近满窗，会让 list 被外层裁掉、
+      // 反而不出滚动条（分组多了滚不动）。这里只兜底防 0 高。
       requestAnimationFrame(() => {
-        list.style.minHeight = Math.max(200, (window.innerHeight || 400) - 90) + 'px'
-        rlog('info', 'float', 'layout-raf', {
-          innerH: window.innerHeight,
-          listH: list.offsetHeight,
-          listMin: list.style.minHeight,
-        })
+        list.style.minHeight = '0'
+        if (list.offsetHeight < 40) list.style.minHeight = '120px'
+        rlog('info', 'float', 'layout-raf', { innerH: window.innerHeight, listH: list.offsetHeight })
       })
 
     } else if (kind === 'host-editor' || kind === 'host') {
-      // 编辑表单仍在主窗 DOM；独立窗负责唤起并聚焦主窗表单
       let init = null
       try {
         const r = await api.getFloatInit?.(meta.id)
         if (r && r.ok) init = r.init
       } catch (_) {}
       const hostId = init && init.hostId
-      root.style.cssText =
-        'display:flex!important;flex-direction:column;position:fixed;inset:0;width:100%;height:100%;' +
-        'background:var(--bg,#1e1e2e);color:var(--text,#cdd6f4);z-index:10;'
-      root.innerHTML = `
-        <div class="hb-popup-shell" style="display:flex;flex-direction:column;height:100%;min-height:100%;background:var(--bg,#1e1e2e);color:var(--text,#cdd6f4)">
-          <div class="hb-popup-titlebar" style="flex:0 0 36px;display:flex;align-items:center;padding:0 10px 0 72px;background:var(--bg2,#313244);-webkit-app-region:drag">
-            <span>${esc(hostId ? '编辑连接' : '新建连接')}</span>
-            <div class="hb-pop-actions" style="margin-left:auto;-webkit-app-region:no-drag;display:flex;gap:4px">
-              <button type="button" class="mini-btn" id="floatBtnOpenMain">在主窗口打开</button>
-              <button type="button" class="mini-btn" id="floatBtnClose">关闭</button>
-            </div>
-          </div>
-          <div style="padding:20px;color:var(--text);font-size:13px;line-height:1.55;flex:1;overflow:auto">
-            连接编辑表单已在<strong>主窗口</strong>打开（独立窗避免挡终端时可关掉本窗）。
-            <div style="margin-top:12px;color:var(--muted)">主机 ID：${esc(hostId || '（新建）')}</div>
-          </div>
-        </div>`
-      try {
-        await api.floatToMain({ type: hostId ? 'edit-host' : 'new-host', hostId: hostId || null })
-      } catch (_) {}
-      $('floatBtnOpenMain')?.addEventListener('click', async () => {
-        try {
-          await api.floatToMain({ type: hostId ? 'edit-host' : 'new-host', hostId: hostId || null })
-        } catch (_) {}
-      })
-      $('floatBtnClose')?.addEventListener('click', () => api.closeFloatWindow?.(meta.id))
+      if (mountModalInFloat(root, 'hostModal', 'btnHostClose')) {
+        openHostModal(hostId || null)
+        // 保存成功后关闭本浮窗；saveHost 内部已负责 floatToMain 通知主窗刷新列表
+        window._floatSaveHook = () => api.closeFloatWindow?.(meta.id)
+      }
     } else if (kind === 'editor') {
       await bootFloatEditor(root, meta)
     } else if (kind === 'settings') {
       await bootFloatSettings(root, meta)
     } else if (kind === 'backup') {
-      root.style.cssText =
-        'display:flex!important;flex-direction:column;position:fixed;inset:0;width:100%;height:100%;' +
-        'background:var(--bg,#1e1e2e);color:var(--text,#cdd6f4);z-index:10;'
-      root.innerHTML =
-        '<div class="hb-popup-shell" style="display:flex;flex-direction:column;height:100%;background:var(--bg);color:var(--text)">' +
-        '<div class="hb-popup-titlebar" style="flex:0 0 36px;display:flex;align-items:center;padding:0 12px 0 72px;background:var(--bg2);-webkit-app-region:drag">' +
-        '<span>备份与恢复</span>' +
-        '<div class="hb-pop-actions" style="margin-left:auto;-webkit-app-region:no-drag">' +
-        '<button type="button" class="mini-btn" id="floatBtnClose">关闭</button></div></div>' +
-        '<div style="padding:16px;flex:1;overflow:auto;font-size:13px;line-height:1.5">请在主窗口菜单打开完整备份面板（本窗仅快捷入口）。' +
-        '<div style="margin-top:12px"><button type="button" class="cmd-btn primary" id="floatBtnOpenMain">在主窗口打开</button></div></div></div>'
-      $('floatBtnOpenMain')?.addEventListener('click', async () => {
-        try {
-          await api.floatToMain({ type: 'open-backup' })
-        } catch (_) {}
-      })
-      $('floatBtnClose')?.addEventListener('click', () => api.closeFloatWindow?.(meta.id))
+      let init = null
+      try {
+        const r = await api.getFloatInit?.(meta.id)
+        if (r && r.ok) init = r.init
+      } catch (_) {}
+      
+      if (mountModalInFloat(root, 'backupModal', 'btnBackupClose')) {
+        openBackupConfig(init?.selectId || null)
+      }
     } else {
       root.innerHTML = `
         <div class="hb-popup-shell">
@@ -8179,12 +8351,24 @@ function replaceAll(text, query, replacement, opts = {}) {
     const body = $('floatSettingsBody')
     if (src && body) {
       const clone = src.cloneNode(true)
+      // 去掉克隆体的模态框卡片外观，并铺满可用高度：min-height:100% 让内容不足时
+      // 也撑到窗口底部（不再是顶部一小块+下方一大截暗色空白）。
+      Object.assign(clone.style, {
+        width: '100%', maxWidth: 'none', minWidth: '0', height: 'auto', minHeight: '100%',
+        margin: '0', border: 'none', borderRadius: '0', boxShadow: 'none',
+        background: 'transparent', animation: 'none',
+        display: 'flex', flexDirection: 'column',
+      })
+      clone.classList.remove('draggable')
       // 去掉标题栏重复（浮窗 titlebar 已有 保存/关闭）
       const mt = clone.querySelector('.modal-title')
       if (mt) mt.remove()
       // 去掉底部重复按钮；顶栏 floatSetSave / floatBtnClose 即唯一操作
       clone.querySelectorAll('.modal-actions').forEach((el) => el.remove())
       clone.querySelectorAll('.settings-title-actions').forEach((el) => el.remove())
+      // 让内部表单区吃满剩余高度，内容随窗口拉到底
+      const sbody = clone.querySelector('.settings-body')
+      if (sbody) Object.assign(sbody.style, { flex: '1 1 auto', minHeight: '0', maxHeight: 'none', overflow: 'visible' })
       body.appendChild(clone)
       // re-id collision: settings controls stay with same ids — only one window active
     } else if (body) {
@@ -8573,8 +8757,77 @@ function replaceAll(text, query, replacement, opts = {}) {
             rlog('error', 'float', 'delete-host', { err: e && e.message })
           }
         })()
+      } else if (msg.type === 'rename-group' && msg.group) {
+        ;(async () => {
+          try {
+            const g = String(msg.group)
+            const inGroup = (h) => ((h.group || '默认') + '').trim() || '默认'
+            const nn = await askPrompt('新的分组名称', g === '默认' ? '' : g, { title: '重命名分组' })
+            if (nn == null) return
+            const next = String(nn).trim()
+            if (!next || next === g) return
+            // '默认' 作为未分组桶：目标名为「默认」时等于取消分组（group 置空）
+            const target = next === '默认' ? '' : next
+            let n = 0
+            for (const h of state.hosts) {
+              if (inGroup(h) === g) { h.group = target; n++ }
+            }
+            if (!n) return
+            await persistHosts()
+            renderConnMgr()
+            renderHostBrowser()
+            renderQuickConnect()
+            try {
+              await api.floatToFloat?.({ id: 'conn-mgr', type: 'hosts-updated', hosts: state.hosts })
+            } catch (_) {}
+            toast('已重命名分组：' + g + ' → ' + next)
+          } catch (e) {
+            rlog('error', 'float', 'rename-group', { err: e && e.message })
+          }
+        })()
+      } else if (msg.type === 'delete-group' && msg.group) {
+        ;(async () => {
+          try {
+            const g = String(msg.group)
+            const inGroup = (h) => ((h.group || '默认') + '').trim() || '默认'
+            const victims = state.hosts.filter((h) => inGroup(h) === g)
+            if (!victims.length) return
+            const ok = await askConfirm(
+              '确定删除分组「' + g + '」及其中 ' + victims.length + ' 个连接？此操作不可恢复。',
+              { title: '删除分组', danger: true, okText: '删除分组' },
+            )
+            if (!ok) return
+            const ids = new Set(victims.map((h) => h.id))
+            state.hosts = state.hosts.filter((h) => !ids.has(h.id))
+            for (const id of ids) passwordVault.delete(id)
+            await persistHosts()
+            renderConnMgr()
+            renderHostBrowser()
+            renderQuickConnect()
+            try {
+              await api.floatToFloat?.({ id: 'conn-mgr', type: 'hosts-updated', hosts: state.hosts })
+            } catch (_) {}
+            toast('已删除分组「' + g + '」及 ' + victims.length + ' 个连接')
+          } catch (e) {
+            rlog('error', 'float', 'delete-group', { err: e && e.message })
+          }
+        })()
       } else if (msg.type === 'editor-saved') {
         try { refreshSftp() } catch (_) {}
+      } else if (msg.type === 'hosts-updated') {
+        ;(async () => {
+          if (hasApi && api.loadHosts) {
+            const h = await api.loadHosts()
+            // loadHosts() resolves to the hosts array (not {ok,data})
+            if (Array.isArray(h)) state.hosts = h
+          }
+          renderConnMgr()
+          renderHostBrowser()
+          renderQuickConnect()
+          try {
+            await api.floatToFloat?.({ id: 'conn-mgr', type: 'hosts-updated', hosts: state.hosts })
+          } catch (_) {}
+        })()
       }
     })
     try {
@@ -8614,6 +8867,69 @@ function replaceAll(text, query, replacement, opts = {}) {
     el.hidden = !show
     if (show) el.removeAttribute('hidden')
     else el.setAttribute('hidden', '')
+  }
+
+  /**
+   * 把主窗 DOM 里的既有模态框（#hostModal / #backupModal 等）重挂进独立浮窗根节点：
+   * 铺满窗口、去圆角、隐藏自带关闭按钮、标题栏作为系统拖动区。返回内部 .modal 元素。
+   * host-editor / backup 两处独立窗共用，避免各写一份重复的重挂逻辑。
+   */
+  function mountModalInFloat(root, modalId, closeBtnId) {
+    const host = $(modalId)
+    if (!host) return null
+    root.appendChild(host)
+    host.hidden = false
+    // 遮罩层铺满窗口，但去掉毛玻璃/居中/暗底——否则模态框只占 92vw 居中，
+    // 四周留一圈模糊暗框（用户看到的「多出一大块毛玻璃」）。
+    Object.assign(host.style, {
+      position: 'absolute', inset: '0', width: '100%', height: '100%',
+      display: 'block', margin: '0', padding: '0',
+      background: 'transparent', backdropFilter: 'none', WebkitBackdropFilter: 'none',
+      animation: 'none',
+    })
+    const modal = host.querySelector('.modal')
+    if (modal) {
+      // 模态框铺满整窗、去圆角/阴影/最大宽高限制，成为窗口本体而非浮层卡片。
+      Object.assign(modal.style, {
+        position: 'absolute', inset: '0', width: '100%', height: '100%',
+        maxWidth: 'none', maxHeight: 'none', minWidth: '0', minHeight: '0',
+        left: '0', top: '0', transform: 'none', margin: '0',
+        borderRadius: '0', border: 'none', boxShadow: 'none', animation: 'none',
+      })
+      modal.classList.remove('draggable')
+      modal.classList.add('float-mounted')
+      const closeBtn = closeBtnId ? modal.querySelector('#' + closeBtnId) : null
+      if (closeBtn) closeBtn.style.display = 'none'
+      const titleBar = modal.querySelector('.modal-title')
+      if (titleBar) {
+        titleBar.style.webkitAppRegion = 'drag'
+        titleBar.style.cursor = 'default'
+      }
+    }
+    return modal
+  }
+
+  /**
+   * 让页内二级弹窗（终端背景 / 命令板选项 / 编辑快捷命令等）可自由拖动，
+   * 且遮罩收缩为 0×0 不再挡住终端。标题栏为拖动手柄。
+   */
+  function makeModalFloatDraggable(id, opts = {}) {
+    const mask = $(id)
+    if (!mask) return
+    mask.classList.add('float-modal-mask')
+    const win = mask.querySelector('.modal')
+    if (!win) return
+    // 首次弹出给一个居中偏上的落点，之后保留用户拖动后的位置
+    if (!win.dataset.floatPlaced) {
+      win.dataset.floatPlaced = '1'
+      win.style.position = 'fixed'
+      win.style.margin = '0'
+      win.style.left = 'max(12px, calc(50vw - ' + (Number(opts.halfW) || 240) + 'px))'
+      win.style.top = (opts.top || '64px')
+    }
+    if (typeof enableModalDrag === 'function') {
+      enableModalDrag(win, { kind: opts.kind || id, title: opts.title || '' })
+    }
   }
 
   function applyCmdEditorCollapsed(collapsed) {

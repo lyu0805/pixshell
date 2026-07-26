@@ -46,6 +46,13 @@ body.theme-dark {
   --focus-ring: 0 0 0 3px rgba(10, 132, 255, 0.45);
   --vibrancy: blur(28px) saturate(160%);
   --hairline: 0.5px solid var(--border);
+  /* motion — 统一缓动/时长，替代生硬的 linear-ish `ease`，让过渡顺滑不钝 */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);   /* 快进缓出，hover/淡入 */
+  --ease-spring: cubic-bezier(0.34, 1.5, 0.5, 1); /* 轻微回弹，弹窗出现 */
+  --ease-io: cubic-bezier(0.6, 0, 0.2, 1);       /* 展开/收起等尺寸变化 */
+  --dur-1: 110ms;   /* 微交互：颜色/描边 */
+  --dur-2: 170ms;   /* 常规：淡入/位移 */
+  --dur-3: 240ms;   /* 较大：侧栏宽度/弹窗 */
 }
 
 body.theme-light {
@@ -77,7 +84,7 @@ body.theme-light {
   --control-hover: rgba(60, 60, 70, 0.22);
   --control-active: rgba(60, 60, 70, 0.3);
   --fill: rgba(60, 60, 70, 0.12);
-  --term: #b8b8c2;
+  --term: #d4d6dc;
   --status: #d6d6de;
   --focus-ring: 0 0 0 3px rgba(0, 122, 255, 0.35);
 }
@@ -266,7 +273,9 @@ body.is-session .brand-btn .app-brand::after {
   justify-content: center;
   gap: 4px;
   -webkit-app-region: no-drag;
-  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out), border-color var(--dur-1) var(--ease-out),
+    opacity var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
 }
 .pixel-btn:hover,
 .tb-btn:hover,
@@ -286,6 +295,7 @@ body.is-session .brand-btn .app-brand::after {
 .mini-btn:active,
 .tools-chip:active {
   background: var(--control-active);
+  transform: scale(0.96);
 }
 .tb-btn.quiet {
   height: 26px;
@@ -383,6 +393,8 @@ body.is-session .brand-btn .app-brand::after {
   min-width: 0;
   position: relative;
   background: var(--bg);
+  /* 侧栏收起/展开时列宽平滑滑动，不再瞬间跳变（新版 Chromium 支持） */
+  transition: grid-template-columns var(--dur-3) var(--ease-io);
 }
 
 /* Sidebar / monitor */
@@ -489,7 +501,7 @@ body.is-session .brand-btn .app-brand::after {
   display: block;
   height: 100%;
   width: 0;
-  transition: width 0.35s ease, background-color 0.25s ease;
+  transition: width var(--dur-3) var(--ease-io), background-color var(--dur-2) var(--ease-out);
   border-radius: inherit;
 }
 .lm-bar > .lm-pct {
@@ -625,7 +637,7 @@ body.is-session .brand-btn .app-brand::after {
   inset: 0 1px;
   background: var(--border);
   opacity: 0;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--dur-1) var(--ease-out);
 }
 .sidebar-resizer:hover::after { opacity: 1; background: var(--accent); }
 
@@ -698,7 +710,7 @@ body.is-session .brand-btn .app-brand::after {
 }
 .main-row.side-collapsed .side-restore { display: block; }
 .main-row.side-collapsed .side-restore[hidden] { display: block !important; }
-.sidebar { transition: opacity 0.15s ease; }
+.sidebar { transition: opacity var(--dur-2) var(--ease-out); }
 
 /* Workspace */
 .workspace {
@@ -1336,7 +1348,7 @@ body.resizing-layout .xterm-helper-textarea {
   box-shadow: none;
   color: var(--text);
   cursor: pointer;
-  transition: border-color 0.1s ease, background 0.1s ease;
+  transition: border-color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out);
   min-height: 0;
 }
 .qc-card:hover {
@@ -1371,6 +1383,21 @@ body.resizing-layout .xterm-helper-textarea {
   background: linear-gradient(145deg, var(--accent-hover), var(--accent));
   box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14);
   flex-shrink: 0;
+}
+/* 服务器头像用发行版/软件 logo 填充：换中性底，让 logo 一致可读 */
+.qc-avatar:has(.host-os-icon),
+.hb-row .hb-row-avatar:has(.host-os-icon) {
+  background: var(--bg3);
+  box-shadow: inset 0 0 0 1px var(--border);
+  overflow: hidden;
+  padding: 0;
+}
+.host-os-icon {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
 }
 .qc-card-titlewrap { min-width: 0; }
 .qc-card-title {
@@ -2388,21 +2415,22 @@ body.theme-light .modal-mask { background: rgba(0, 0, 0, 0.22); }
 .modal.host-editor {
   width: min(820px, 96vw);
   height: min(82vh, 680px);
-  min-width: 560px;
+  min-width: 480px;
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
 .modal-mask.float-modal-mask > .modal.host-editor,
 .float-modal-mask > .modal.host-editor {
-  width: min(820px, 96vw);
-  min-width: 560px;
+  width: 100%;
+  height: 100%;
+  min-width: 320px;
   max-width: none;
 }
 .hed-body {
   display: grid;
   /* 左侧导航收窄，右侧表单吃空间 */
-  grid-template-columns: 108px minmax(0, 1fr);
+  grid-template-columns: 88px minmax(0, 1fr);
   flex: 1;
   min-height: 0;
   background: var(--bg2);
@@ -2411,10 +2439,11 @@ body.theme-light .modal-mask { background: rgba(0, 0, 0, 0.22); }
   border-right: var(--hairline);
   background: var(--bg3);
   padding: 6px 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   min-width: 0;
-  width: 108px;
-  max-width: 108px;
+  width: 88px;
+  max-width: 88px;
 }
 .hed-nav button {
   display: block;
@@ -2439,8 +2468,9 @@ body.theme-light .modal-mask { background: rgba(0, 0, 0, 0.22); }
   box-shadow: inset 3px 0 0 var(--accent);
 }
 .hed-main {
-  overflow: auto;
-  padding: 12px 14px 12px 16px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 10px 10px 12px;
   min-height: 0;
   min-width: 0;
   background: var(--bg2);
@@ -2475,11 +2505,12 @@ body.theme-light .modal-mask { background: rgba(0, 0, 0, 0.22); }
 }
 .hed-box {
   border: 1px solid var(--border);
-  margin: 0 0 12px;
-  padding: 12px 14px 14px;
+  margin: 0 0 10px;
+  padding: 10px 12px 12px;
   background: var(--bg);
   color: var(--text);
   border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 .hed-box legend {
   padding: 0 6px;
@@ -2740,25 +2771,82 @@ button,
 .hed-nav button,
 .sysinfo-btn,
 .link-btn {
-  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease,
-    box-shadow 0.12s ease, opacity 0.12s ease;
+  transition: background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out), box-shadow var(--dur-2) var(--ease-out),
+    opacity var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
 }
 .modal-mask {
-  animation: macFadeIn 0.16s ease;
+  animation: macFadeIn var(--dur-2) var(--ease-out);
 }
 .modal {
-  animation: macPop 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: macPop var(--dur-3) var(--ease-spring);
+  will-change: transform, opacity;
 }
 @keyframes macFadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 @keyframes macPop {
-  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  from { opacity: 0; transform: translateY(10px) scale(0.965); }
+  60% { opacity: 1; }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
+/* 独立浮窗内挂载的模态框：铺满窗口，可滚动主体吃满剩余高度，
+   内容随窗口拉到底，杜绝「顶部一小块 + 下方一大截暗色空白」。 */
+.modal.float-mounted {
+  display: flex;
+  flex-direction: column;
+}
+/* 铺满整个浮窗：作用域加 body.float-window 提高优先级，压过后面出现的
+   .modal.host-editor { width:min(680px,94vw)!important } 等固定尺寸规则
+   （同为两类+!important 时后者会因源码靠后而胜出）。否则浮窗里的表单只占
+   左上角，右侧/底部露出一大截暗色空白（用户所说的「大毛玻璃框」）。 */
+#floatRoot .modal.float-mounted {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+.modal.float-mounted > .modal-body,
+.modal.float-mounted > .backup-body,
+.modal.float-mounted > .settings-body,
+.modal.float-mounted > .hed-body {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: auto;
+}
+/* macOS 独立浮窗：原生红绿灯固定在窗口左上角 (x=12, y=12)，三颗灯约占 70px。
+   浮窗内挂载的模态标题栏是整窗顶栏，标题文字紧贴左边会被红绿灯压住（用户所见
+   「连接设置」与灯重叠）。给标题左侧留出安全区，仅 mac + 浮窗生效，页内居中
+   模态不受影响。 */
+body.is-mac #floatRoot .modal.float-mounted > .modal-title,
+body.is-mac #floatRoot .modal.float-mounted > .hed-title {
+  padding-left: 82px !important;
+}
 .modal.draggable .modal-title { cursor: move; user-select: none; }
-.modal.dragging { opacity: 0.98; }
+/* 拖动时不加过渡，left/top 跟手 1:1，避免橡皮筋滞后 */
+.modal.dragging { opacity: 0.98; animation: none; transition: none; }
+
+/* 尊重系统「减弱动态效果」：去掉回弹与位移，仅保留极短淡入 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 
 /* Scrollbars */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -3275,7 +3363,8 @@ body.theme-light .modal-mask.ask-confirm-mask {
   flex-direction: column;
   gap: 8px;
   cursor: pointer;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+  transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-2) var(--ease-out),
+    background var(--dur-1) var(--ease-out), transform var(--dur-2) var(--ease-out);
 }
 .backup-card:hover {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--border-strong));
@@ -3412,8 +3501,10 @@ body.theme-light .modal-mask.ask-confirm-mask {
 .settings-section {
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 12px 14px;
+  padding: 14px 16px;
   background: var(--bg3);
+  /* 轻微立体感：向下柔和投影 + 顶部一线高光，摆脱扁平廉价的灰盒子观感 */
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 .settings-sec-title {
   font-size: 12px;
@@ -4017,7 +4108,7 @@ body.theme-light .ctx-menu {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
-body.theme-light .xterm-host { background: var(--term, #b8b8c2) !important; }
+body.theme-light .xterm-host { background: var(--term, #d4d6dc) !important; }
 
 
 /* native-82：终端背景预设 + 私钥拖入 */
@@ -4028,7 +4119,7 @@ body.theme-light .xterm-host { background: var(--term, #b8b8c2) !important; }
   padding: 2px;
   border-radius: 8px;
   border: 1px dashed transparent;
-  transition: border-color 0.12s, background 0.12s;
+  transition: border-color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out);
 }
 .key-drop-row.drag-over {
   border-color: var(--accent) !important;
@@ -4499,8 +4590,8 @@ body.theme-light .xterm-host,
 body.theme-light .xterm,
 body.theme-light .xterm .xterm-viewport,
 body.theme-light .xterm .xterm-screen {
-  background: var(--term, #b8b8c2) !important;
-  background-color: var(--term, #b8b8c2) !important;
+  background: var(--term, #d4d6dc) !important;
+  background-color: var(--term, #d4d6dc) !important;
 }
 /* 编辑器浅色也走同灰阶 */
 body.theme-light .ed-body { background: #d6d6de !important; }
@@ -5759,6 +5850,12 @@ body.win.float-window.theme-light {
 }
 body.win.float-window.theme-dark {
   background: #1e1e2e !important;
+}
+
+#panelFiles.bottom-panel.active {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
 }
 
 #panelFiles.bottom-panel.active > .sftp-pathbar {

@@ -73,18 +73,12 @@ function resolveTermTheme(schemeTheme, settings, opts = {}) {
  * @param {number} hostH
  */
 function resolveTermFontPx(baseFont, hostW, hostH) {
-  const base = Math.max(8, Math.min(36, Number(baseFont) || 13))
-  const w = Math.max(1, Number(hostW) || 640)
-  const h = Math.max(1, Number(hostH) || 400)
-  // Reference panel ~720×480; scale by geometric mean of ratios
-  const sw = w / 720
-  const sh = h / 480
-  let scale = Math.sqrt(Math.max(0.01, sw * sh))
-  // Product: allow growth on fullscreen, damp extremes
-  if (scale < 0.88) scale = 0.88
-  if (scale > 1.42) scale = 1.42
-  const px = Math.round(base * scale)
-  return Math.max(9, Math.min(28, px))
+  // Font size is literal: honor the user's chosen size verbatim (clamped 8–36 to
+  // guard against garbage input). Panel-based auto-scaling was removed because it
+  // made the "terminal font size" setting ineffective — small changes were masked
+  // by the ±10% panel scale and anything above ~20 was capped. hostW/hostH are
+  // accepted for signature stability but no longer influence the result.
+  return Math.max(8, Math.min(36, Number(baseFont) || 13))
 }
 
 /**
