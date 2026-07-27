@@ -61,7 +61,7 @@ public partial class MainWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        Log.Banner("0.1.0");
+        Log.Banner("0.1.1");
         ThemeManager.Initialize();   // 读回上次选的主题（之前 Windows 端主题完全没持久化）
         HighlightColors.Load();
         SourceInitialized += MainWindow_SourceInitialized;
@@ -1175,7 +1175,7 @@ public partial class MainWindow : Window
 
         menu.Items.Add(new Separator());
         var help = new MenuItem { Header = "帮助" };
-        help.Items.Add(Item("关于 PixShell", () => MessageBox.Show(this, "PixShell 0.1.0\nWindows 原生 SSH / SFTP 客户端\nWPF + WebView2/xterm.js + SSH.NET", "关于")));
+        help.Items.Add(Item("关于 PixShell", () => MessageBox.Show(this, "PixShell 0.1.1\nWindows 原生 SSH / SFTP 客户端\nWPF + WebView2/xterm.js + SSH.NET", "关于")));
         help.Items.Add(Item("接入 AI 工具…", OpenAIIntegration));
         help.Items.Add(new Separator());
         help.Items.Add(Item("项目仓库", () => { try { Process.Start(new ProcessStartInfo("https://github.com/") { UseShellExecute = true }); } catch { } }));
@@ -1213,9 +1213,9 @@ public partial class MainWindow : Window
     private void CheckUpdate()
     {
         SetStatus("检查更新…");
-        SetStatus("已是最新版本 0.1.0");
-        MessageBox.Show(this, "当前已是最新版本 0.1.0。", "软件更新",
-                        MessageBoxButton.OK, MessageBoxImage.Information);
+        SetStatus("已是最新版本 0.1.1");
+        
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/lyu0805/pixshell/releases") { UseShellExecute = true });
     }
 
     private async Task TermCopy()

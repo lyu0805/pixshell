@@ -97,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
 
     // MARK: - 生命周期
     func applicationDidFinishLaunching(_ note: Notification) {
-        Log.banner("0.1.0")
+        Log.banner("0.1.1")
         Log.info("主题=\(Theme.dark ? "深色" : "浅色")（来源：env/持久化/默认）", "ui")
         NSApp.appearance = NSAppearance(named: darkTheme ? .darkAqua : .aqua)
         AppIcon.install()    // 没有 .app bundle 就没有图标资源，所有系统弹窗会退化成"蓝色文件夹"占位图
