@@ -251,7 +251,7 @@ extension AppDelegate {
     // MARK: 软件更新（仅检查 + 打开发行页，不自动安装）
     @objc func checkUpdate() {
         setStatus("检查更新…")
-        AppUpdate.check(current: "0.1.0") { [weak self] st in
+        AppUpdate.check(current: "0.1.1") { [weak self] st in
             guard let self = self else { return }
             self.setStatus(st.text)
             switch st {
