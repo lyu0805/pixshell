@@ -110,7 +110,7 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$selfContainedValue = 'false'
+$selfContainedValue = 'true'
 if ($SelfContained) {
     $selfContainedValue = 'true'
 }
