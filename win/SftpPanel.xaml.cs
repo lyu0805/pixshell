@@ -1,0 +1,710 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using Microsoft.Win32;
+using PixShell.Logging;
+using PixShell.Sftp;
+using Renci.SshNet;
+using Renci.SshNet.Sftp;
+
+namespace PixShell;
+
+/// <summary>
+/// 远端文件浏览器：左侧远端目录树（懒加载）+ 右侧明细列表（文件名/大小/类型/修改时间）。
+/// 工具按钮（返回上级/刷新/下载/上传/新建目录/删除/显示隐藏本地）由 MainWindow 的
+/// bottom-dock 单行按钮驱动，调用本类的公开方法；本类本身不再画自己的工具条。
+/// 远端连接复用「当前活动会话」的主机+凭据（<see cref="TerminalSession.CreateSftpClient"/>）。
+/// </summary>
+public partial class SftpPanel : UserControl
+{
+    private sealed class FsRow
+    {
+        public string Name = "";
+        public bool IsDir;
+        public bool IsLink;
+        public long Size;
+        public DateTime Mtime;
+        public string Icon => IsDir ? "📁" : (IsLink ? "🔗" : "📄");
+        public string SizeText => IsDir ? "" : HumanSize(Size);
+        public string TypeText => IsDir ? "目录" : (IsLink ? "链接" : "文件");
+        public string TimeText => Mtime.Year <= 1971 ? "" : Mtime.ToString("yyyy/MM/dd HH:mm");
+    }
+
+    private sealed class SftpNode
+    {
+        public string Path; public string Name; public bool Loaded;
+        public SftpNode(string path, string name) { Path = path; Name = name; }
+    }
+
+    public event Action<string>? OnPathChange;
+    /// <summary>双击远端文件（非目录）→ 下载到临时文件成功 → (远端路径, 文本内容) 交给编辑器。</summary>
+    public event Action<string, string>? OnOpenFile;
+    /// <summary>右键「插入命令框」→ 把选中项路径交给命令框。</summary>
+    public event Action<string>? OnInsertToCommand;
+
+    /// <summary>远端执行命令（智能打包传输需要）：宿主注入当前活动会话的 <see cref="TerminalSession.ExecAsync"/>。
+    /// 对齐 mac SFTPPanel.execRunner。</summary>
+    public Func<string, Task<string>>? ExecRunner { get; set; }
+    /// <summary>用户在 SFTP 里主动进目录（双击/树点击/上级）→ 命令框据此反向 cd 终端。
+    /// 注意：命令框驱动的 <see cref="Navigate"/> 不会触发这个事件，否则会来回死循环。</summary>
+    public event Action<string>? OnUserNavigate;
+
+    /// <summary>当前远端目录（命令框 cd 同步用，对齐 mac currentRemotePath）。</summary>
+    public string CurrentRemotePath => _remoteDir;
+
+    /// <summary>外部（命令框 cd）驱动切目录：不触发 OnUserNavigate。</summary>
+    public void Navigate(string path)
+    {
+        if (_sftp is not { IsConnected: true }) return;
+        LoadRemoteDetail(string.IsNullOrEmpty(path) ? "/" : path);
+    }
+
+    /// <summary>用户在面板里主动进入某目录：刷新 + 反向通知命令框同步 cd。</summary>
+    private void EnterDirectory(string path)
+    {
+        LoadRemoteDetail(path);
+        OnUserNavigate?.Invoke(_remoteDir);
+    }
+
+    private TerminalSession? _session;
+    private SftpClient? _sftp;
+    private string _remoteDir = "/";
+    private List<FsRow> _remoteEntries = new();
+
+    private string _localDir;
+    private List<FsRow> _localEntries = new();
+    private bool _localHidden = true;
+    /// <summary>左栏两种模式：本地文件浏览 / 与本机 CLI agent 对话。默认文件。</summary>
+    private bool _chatMode;
+    /// <summary>进对话前左栏是不是收着的 —— 退出对话要**原样还回去**：
+    /// 本来只有远端就回到只有远端，本来是远端+本地就回到远端+本地。</summary>
+    private bool? _localHiddenBeforeChat;
+    private UI.AgentChatView? _chat;
+
+    /// <summary>是否正处于对话模式（宿主据此决定按钮态）。</summary>
+    public bool IsChatMode => _chatMode;
+
+    public SftpPanel()
+    {
+        InitializeComponent();
+        _localDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        LoadLocal(_localDir);
+    }
+
+    // =====================================================================
+    // 会话 / 连接
+    // =====================================================================
+    public void SetSession(TerminalSession? session)
+    {
+        if (ReferenceEquals(_session, session)) return;
+        _session = session;
+        DisconnectSftp();
+        _remoteEntries.Clear(); RemoteList.ItemsSource = null;
+        RemoteTree.Items.Clear();
+        OnPathChange?.Invoke("远端未连接");
+    }
+
+    /// <summary>供 MainWindow 在切到「文件」tab 时调用：若尚未为当前会话建立 SFTP 连接则自动建立。</summary>
+    public void ConnectIfNeeded()
+    {
+        if (_sftp is { IsConnected: true }) return;
+        if (_session is not { Connected: true }) { OnPathChange?.Invoke("远端未连接"); return; }
+        try
+        {
+            OnPathChange?.Invoke("连接中…");
+            _sftp = _session.CreateSftpClient();
+            _remoteDir = _sftp.WorkingDirectory;
+            BuildTreeRoot();
+            LoadRemoteDetail(_remoteDir);
+            StatusLabel.Text = "SFTP 已连接";
+        }
+        catch (Exception ex)
+        {
+            StatusLabel.Text = "SFTP 连接失败: " + ex.Message;
+            OnPathChange?.Invoke("远端未连接");
+        }
+    }
+
+    private void DisconnectSftp()
+    {
+        try { if (_sftp is { IsConnected: true }) _sftp.Disconnect(); } catch { }
+        try { _sftp?.Dispose(); } catch { }
+        _sftp = null;
+        Dispatcher.InvokeAsync(() => {
+            RemoteTree.Items.Clear();
+            RemoteFileList.Items.Clear();
+        });
+    }
+
+    // =====================================================================
+    // 远端目录树（懒加载）
+    // =====================================================================
+    private void BuildTreeRoot()
+    {
+        RemoteTree.Items.Clear();
+        var root = MakeTreeItem(new SftpNode("/", "/"));
+        RemoteTree.Items.Add(root);
+        root.IsExpanded = true;
+    }
+
+    private TreeViewItem MakeTreeItem(SftpNode node)
+    {
+        var header = new StackPanel { Orientation = Orientation.Horizontal };
+        header.Children.Add(new TextBlock { Text = "📁", Foreground = new SolidColorBrush(Color.FromRgb(0xE8, 0xBD, 0x4A)), Margin = new Thickness(0, 0, 5, 0) });
+        header.Children.Add(new TextBlock { Text = node.Name, Foreground = (Brush)Application.Current.Resources["BrushText"] });
+        var item = new TreeViewItem { Header = header, Tag = node };
+        item.Items.Add(new TextBlock { Text = "加载中…" }); // 占位子项，使展开箭头出现
+        item.Expanded += TreeItem_Expanded;
+        return item;
+    }
+
+    private void TreeItem_Expanded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TreeViewItem item || item.Tag is not SftpNode node) return;
+        if (node.Loaded) return;
+        node.Loaded = true;
+        if (_sftp is not { IsConnected: true }) { item.Items.Clear(); return; }
+        var path = node.Path;
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            List<ISftpFile>? dirs = null;
+            try { dirs = _sftp.ListDirectory(path).Where(f => f.IsDirectory && f.Name != "." && f.Name != "..").OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList(); }
+            catch { }
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                item.Items.Clear();
+                foreach (var d in dirs ?? new List<ISftpFile>())
+                    item.Items.Add(MakeTreeItem(new SftpNode(JoinRemote(path, d.Name), d.Name)));
+            }));
+        });
+    }
+
+    private void RemoteTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+    {
+        if (RemoteTree.SelectedItem is TreeViewItem { Tag: SftpNode node })
+            EnterDirectory(node.Path);
+    }
+
+    // =====================================================================
+    // 远端明细列表
+    // =====================================================================
+    private void LoadRemoteDetail(string dir)
+    {
+        if (_sftp is not { IsConnected: true }) return;
+        OnPathChange?.Invoke(dir);
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            List<FsRow>? rows = null;
+            string? err = null;
+            try
+            {
+                var listing = _sftp.ListDirectory(dir).Where(f => f.Name != "." && f.Name != "..").ToList();
+                rows = listing
+                    .OrderByDescending(f => f.IsDirectory)
+                    .ThenBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
+                    .Select(f => new FsRow { Name = f.Name, IsDir = f.IsDirectory, IsLink = f.IsSymbolicLink, Size = f.Length, Mtime = f.LastWriteTime })
+                    .ToList();
+            }
+            catch (Exception ex) { err = ex.Message; }
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (err != null) { StatusLabel.Text = "列目录失败: " + err; return; }
+                _remoteDir = dir;
+                _remoteEntries = rows ?? new List<FsRow>();
+                RemoteList.ItemsSource = _remoteEntries;
+            }));
+        });
+    }
+
+    private void RemoteList_DoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (RemoteList.SelectedItem is not FsRow r) return;
+        if (r.IsDir) EnterDirectory(JoinRemote(_remoteDir, r.Name));
+        else OpenRemoteFileForEdit(r);
+    }
+
+    // =====================================================================
+    // 内置编辑器：双击文件 / 右键"打开" → 下载到临时文件 → 交给 EditorWindow
+    // =====================================================================
+    private void OpenRemoteFileForEdit(FsRow r)
+    {
+        if (_sftp is not { IsConnected: true }) return;
+        if (r.Size > 4 * 1024 * 1024) { StatusLabel.Text = "文件过大（>4MB），请先下载"; return; }
+        var remote = JoinRemote(_remoteDir, r.Name);
+        var tmp = Path.Combine(Path.GetTempPath(), "pixshell_edit_" + r.Name);
+        StatusLabel.Text = $"打开 {r.Name} …";
+        try
+        {
+            using (var fs = File.Create(tmp)) _sftp.DownloadFile(remote, fs);
+            string text;
+            try { text = File.ReadAllText(tmp, Encoding.UTF8); }
+            catch { text = File.ReadAllText(tmp, Encoding.Latin1); }
+            StatusLabel.Text = "";
+            Log.Info($"打开远端文件 {remote}（{text.Length} 字符）", "editor");
+            OnOpenFile?.Invoke(remote, text);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"打开远端文件失败 {remote}: {ex.Message}", "editor");
+            StatusLabel.Text = "打开失败: " + ex.Message;
+        }
+    }
+
+    /// <summary>编辑器保存 → 写回远端（MainWindow 把 EditorWindow.OnSave 接到这里）。</summary>
+    public void SaveRemoteFile(string remotePath, string text, Action<string?> done)
+    {
+        if (_sftp is not { IsConnected: true }) { done("远端未连接"); return; }
+        try
+        {
+            var tmp = Path.Combine(Path.GetTempPath(), "pixshell_save_" + Path.GetFileName(remotePath));
+            File.WriteAllText(tmp, text, new UTF8Encoding(false));
+            using (var fs = File.OpenRead(tmp)) _sftp.UploadFile(fs, remotePath, true);
+            done(null);
+            if (remotePath.StartsWith(_remoteDir)) LoadRemoteDetail(_remoteDir);
+        }
+        catch (Exception ex) { done(ex.Message); }
+    }
+
+    // =====================================================================
+    // 坞行按钮驱动的公开操作
+    // =====================================================================
+    public void GoUp()
+    {
+        if (_remoteDir == "/") return;
+        EnterDirectory(RemoteParent(_remoteDir));
+    }
+
+    public void Refresh()
+    {
+        if (!_localHidden) LoadLocal(_localDir);
+        LoadRemoteDetail(_remoteDir);
+    }
+
+    public void Mkdir()
+    {
+        if (_sftp is not { IsConnected: true }) return;
+        var name = Prompt("新建远端目录名：");
+        if (string.IsNullOrWhiteSpace(name)) return;
+        try { _sftp.CreateDirectory(JoinRemote(_remoteDir, name)); LoadRemoteDetail(_remoteDir); }
+        catch (Exception ex) { StatusLabel.Text = "新建失败: " + ex.Message; }
+    }
+
+    /// <summary>右键/键盘 Delete 目标条目：优先当前多选（⌘/Shift 多选，对齐 mac 版 §5）。</summary>
+    private List<FsRow> TargetRemoteRows() => RemoteList.SelectedItems.Cast<FsRow>().ToList();
+
+    public void Delete()
+    {
+        if (_sftp is not { IsConnected: true }) return;
+        var rows = TargetRemoteRows();
+        if (rows.Count == 0) return;
+        var preview = string.Join("\n", rows.Take(6).Select(r => r.Name));
+        if (MessageBox.Show($"删除 {rows.Count} 项？\n{preview}", "PixShell", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
+        foreach (var r in rows)
+        {
+            try
+            {
+                var p = JoinRemote(_remoteDir, r.Name);
+                if (r.IsDir) _sftp.DeleteDirectory(p); else _sftp.DeleteFile(p);
+            }
+            catch (Exception ex) { StatusLabel.Text = "删除失败: " + ex.Message; }
+        }
+        LoadRemoteDetail(_remoteDir);
+    }
+
+    /// <summary>F2 / 右键"重命名…"：只对第一个选中项生效。</summary>
+    public void Rename()
+    {
+        if (_sftp is not { IsConnected: true }) return;
+        var rows = TargetRemoteRows();
+        if (rows.Count == 0) return;
+        var r = rows[0];
+        var name = Prompt($"重命名“{r.Name}”为：", r.Name);
+        if (string.IsNullOrWhiteSpace(name) || name == r.Name) return;
+        try { _sftp.RenameFile(JoinRemote(_remoteDir, r.Name), JoinRemote(_remoteDir, name)); LoadRemoteDetail(_remoteDir); }
+        catch (Exception ex) { StatusLabel.Text = "重命名失败: " + ex.Message; }
+    }
+
+    /// <summary>右键"复制路径"：多选则用空格拼接各自完整路径。</summary>
+    public void CopyPath()
+    {
+        var rows = TargetRemoteRows();
+        var text = rows.Count == 0 ? _remoteDir : string.Join(" ", rows.Select(r => JoinRemote(_remoteDir, r.Name)));
+        try { Clipboard.SetText(text); } catch { /* 剪贴板偶发占用，忽略 */ }
+        StatusLabel.Text = "已复制路径";
+    }
+
+    /// <summary>右键"插入命令框"：交给 MainWindow 订阅的 OnInsertToCommand 写入命令输入框。</summary>
+    public void InsertToCommand()
+    {
+        var rows = TargetRemoteRows();
+        var text = rows.Count == 0 ? _remoteDir : string.Join(" ", rows.Select(r => JoinRemote(_remoteDir, r.Name)));
+        OnInsertToCommand?.Invoke(text);
+    }
+
+    /// <summary>右键"打开 / 进入"：目录则导航进入，文件则走编辑器打开路径。</summary>
+    private void CtxOpenAction()
+    {
+        var rows = TargetRemoteRows();
+        if (rows.Count == 0) return;
+        var r = rows[0];
+        if (r.IsDir) EnterDirectory(JoinRemote(_remoteDir, r.Name));
+        else OpenRemoteFileForEdit(r);
+    }
+
+    /// <summary>上传：单个小文件直传；多选 / 目录 / ≥8MB 走本地打包 → 上传 → 远端解压（对齐 mac native-102）。</summary>
+    public void Upload()
+    {
+        if (_sftp is not { IsConnected: true }) { StatusLabel.Text = "请先连接远端"; return; }
+        // 本地栏已选（可多选/含目录）→ 用之；否则弹文件选择器（Windows 原生对话框不支持文件+目录混选，仅单/多文件）。
+        var paths = new List<string>();
+        if (!_localHidden)
+            paths = LocalList.SelectedItems.Cast<FsRow>().Select(r => Path.Combine(_localDir, r.Name)).ToList();
+        if (paths.Count == 0)
+        {
+            var dlg = new OpenFileDialog { Multiselect = true };
+            if (dlg.ShowDialog() != true) return;
+            paths = dlg.FileNames.ToList();
+        }
+        UploadItems(paths);
+    }
+
+    /// <summary>上传一组本地路径（拖拽/选择共用）。文件/目录均可。</summary>
+    public void UploadItems(List<string> paths)
+    {
+        if (_sftp is not { IsConnected: true } sftp || paths.Count == 0) return;
+        bool singleIsDir = paths.Count == 1 && Directory.Exists(paths[0]);
+        long singleSize = 0;
+        if (paths.Count == 1 && !singleIsDir)
+        {
+            try { singleSize = new FileInfo(paths[0]).Length; } catch { }
+        }
+        if (!SftpTransfer.ShouldPack(paths.Count, singleIsDir, singleSize))
+        {
+            var one = paths[0];
+            try
+            {
+                var remote = JoinRemote(_remoteDir, Path.GetFileName(one));
+                using var fs = File.OpenRead(one);
+                StatusLabel.Text = $"上传 {Path.GetFileName(one)} …";
+                Log.Info($"上传 {one} → {remote}", "sftp");
+                sftp.UploadFile(fs, remote, true);
+                StatusLabel.Text = "上传完成";
+                LoadRemoteDetail(_remoteDir);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"上传失败 {one}: {ex.Message}", "sftp");
+                StatusLabel.Text = "上传失败: " + ex.Message;
+            }
+            return;
+        }
+        if (ExecRunner == null) { StatusLabel.Text = "需要 SSH 会话才能打包上传"; return; }
+        _ = UploadItemsPackedAsync(paths);
+    }
+
+    private async Task UploadItemsPackedAsync(List<string> paths)
+    {
+        if (_sftp is not { IsConnected: true } sftp || ExecRunner == null) return;
+        var st = SftpTransfer.Stamp();
+        var localArchive = Path.Combine(Path.GetTempPath(), $"pixshell_up_{st}.tar.gz");
+        var remoteArchive = $"/tmp/pixshell_up_{st}.tar.gz";
+        StatusLabel.Text = $"本地打包 {paths.Count} 项 …";
+        Log.Info("智能打包上传 " + string.Join(", ", paths.Select(Path.GetFileName)), "sftp");
+        var err = SftpTransfer.PackLocal(localArchive, paths);
+        if (err != null) { Log.Error("本地打包失败: " + err, "sftp"); StatusLabel.Text = "打包失败: " + err; return; }
+        try
+        {
+            StatusLabel.Text = "上传压缩包 …";
+            using (var fs = File.OpenRead(localArchive)) sftp.UploadFile(fs, remoteArchive, true);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("压缩包上传失败: " + ex.Message, "sftp");
+            StatusLabel.Text = "上传失败: " + ex.Message;
+            TryDelete(localArchive);
+            return;
+        }
+        TryDelete(localArchive);
+        var dst = SftpTransfer.Quote(_remoteDir);
+        var arc = SftpTransfer.Quote(remoteArchive);
+        var outp = await ExecRunner($"tar -xzf {arc} -C {dst} 2>&1; rm -f {arc}");
+        StatusLabel.Text = string.IsNullOrWhiteSpace(outp) ? $"已上传并解压 {paths.Count} 项" : "远端解压: " + outp;
+        Log.Info("打包上传完成 → " + _remoteDir, "sftp");
+        LoadRemoteDetail(_remoteDir);
+    }
+
+    /// <summary>下载：单个小文件直传；多选 / 目录 / ≥8MB 走远端打包（对齐 mac native-102）。</summary>
+    public void Download()
+    {
+        if (_sftp is not { IsConnected: true }) { StatusLabel.Text = "请先连接远端"; return; }
+        var rows = TargetRemoteRows();
+        if (rows.Count == 0) { StatusLabel.Text = "请选择远端文件"; return; }
+        var destDir = _localHidden
+            ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "\\Downloads"
+            : _localDir;
+
+        if (!SftpTransfer.ShouldPack(rows.Count, rows[0].IsDir, rows[0].Size))
+        {
+            var r = rows[0];
+            Guid? task = null;
+            try
+            {
+                Directory.CreateDirectory(destDir);
+                var local = Path.Combine(destDir, r.Name);
+                using var fs = File.Create(local);
+                StatusLabel.Text = $"下载 {r.Name} …";
+                Log.Info($"下载 {JoinRemote(_remoteDir, r.Name)} → {local}", "sftp");
+                task = DownloadTasks.Start(r.Name, local);   // 工具浮窗的下载任务列表里可见
+                _sftp.DownloadFile(JoinRemote(_remoteDir, r.Name), fs);
+                DownloadTasks.Finish(task.Value, ok: true);
+                StatusLabel.Text = "下载完成: " + local;
+                if (!_localHidden) LoadLocal(_localDir);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"下载失败 {r.Name}: {ex.Message}", "sftp");
+                if (task.HasValue) DownloadTasks.Finish(task.Value, ok: false, detail: ex.Message);
+                StatusLabel.Text = "下载失败: " + ex.Message;
+            }
+            return;
+        }
+        if (ExecRunner == null) { StatusLabel.Text = "需要 SSH 会话才能打包下载"; return; }
+        _ = PackedDownloadAsync(rows, destDir);
+    }
+
+    /// <summary>远端打包 → 下载 → 本地解压 → 两端清理。</summary>
+    private async Task PackedDownloadAsync(List<FsRow> items, string destDir)
+    {
+        if (_sftp is not { IsConnected: true } sftp || ExecRunner == null) return;
+        var st = SftpTransfer.Stamp();
+        var remoteArchive = $"/tmp/pixshell_dl_{st}.tar.gz";
+        var localArchive = Path.Combine(Path.GetTempPath(), $"pixshell_dl_{st}.tar.gz");
+        var paths = items.Select(r => JoinRemote(_remoteDir, r.Name)).ToList();
+        StatusLabel.Text = $"远端打包 {items.Count} 项 …";
+        Log.Info("智能打包下载 " + string.Join(", ", paths), "sftp");
+        var out1 = await ExecRunner(SftpTransfer.PackCommand(remoteArchive, paths));
+        StatusLabel.Text = "下载压缩包 …";
+        try
+        {
+            Directory.CreateDirectory(destDir);
+            using (var fs = File.Create(localArchive)) sftp.DownloadFile(remoteArchive, fs);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"打包下载失败: {ex.Message} 远端输出={out1}", "sftp");
+            StatusLabel.Text = "下载失败: " + ex.Message;
+            _ = ExecRunner($"rm -f {SftpTransfer.Quote(remoteArchive)}");
+            return;
+        }
+        _ = ExecRunner($"rm -f {SftpTransfer.Quote(remoteArchive)}");
+        var err = SftpTransfer.ExtractLocal(localArchive, destDir);
+        if (err != null)
+        {
+            Log.Error("本地解压失败: " + err, "sftp");
+            StatusLabel.Text = "解压失败: " + err;
+        }
+        else
+        {
+            StatusLabel.Text = $"已下载并解压 {items.Count} 项 → {destDir}";
+            Log.Info("打包下载完成 → " + destDir, "sftp");
+            if (!_localHidden) LoadLocal(_localDir);
+        }
+        TryDelete(localArchive);
+    }
+
+    private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
+
+    public void ToggleLocal()
+    {
+        _localHidden = !_localHidden;
+        ApplyLocalHidden();
+        if (!_localHidden) LoadLocal(_localDir);
+    }
+
+    private void ApplyLocalHidden()
+    {
+        LocalCol.Width = new GridLength(_localHidden ? 0 : 220);
+        // 同一列里两种模式二选一：文件表 或 对话面板
+        LocalPanel.Visibility = (_localHidden || _chatMode) ? Visibility.Collapsed : Visibility.Visible;
+        AgentChatHost.Visibility = (!_localHidden && _chatMode) ? Visibility.Visible : Visibility.Collapsed;
+        LocalSplitter.Visibility = _localHidden ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>坞里的机器人按钮：点一下进对话，再点一下退出并**恢复原来的界面**。</summary>
+    public void ToggleChat()
+    {
+        if (_chatMode)
+        {
+            _chatMode = false;
+            if (_localHiddenBeforeChat is { } before) _localHidden = before;   // 原样还回去
+            _localHiddenBeforeChat = null;
+            ApplyLocalHidden();
+            if (!_localHidden) LoadLocal(_localDir);
+            return;
+        }
+        _localHiddenBeforeChat = _localHidden;   // 记住原样，退出时还原
+        _chatMode = true;
+        if (_localHidden) _localHidden = false;  // 对话要占地方，先展开
+        _chat ??= new UI.AgentChatView();
+        AgentChatHost.Content = _chat;
+        _chat.WorkingDirectory = _localDir;      // agent 的工作目录跟随左栏本地路径
+        ApplyLocalHidden();
+    }
+
+    // =====================================================================
+    // 本地（默认隐藏）
+    // =====================================================================
+    private void LoadLocal(string dir)
+    {
+        try
+        {
+            var di = new DirectoryInfo(dir);
+            var rows = new List<FsRow>();
+            foreach (var d in di.GetDirectories().OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
+                rows.Add(new FsRow { Name = d.Name, IsDir = true });
+            foreach (var f in di.GetFiles().OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
+                rows.Add(new FsRow { Name = f.Name, IsDir = false, Size = f.Length, Mtime = f.LastWriteTime });
+            _localDir = di.FullName;
+            LocalPathLabel.Text = _localDir;
+            _localEntries = rows;
+            LocalList.ItemsSource = rows;
+        }
+        catch (Exception ex) { StatusLabel.Text = "本地读取失败: " + ex.Message; }
+    }
+
+    private void LocalList_DoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (LocalList.SelectedItem is not FsRow r || !r.IsDir) return;
+        LoadLocal(Path.Combine(_localDir, r.Name));
+    }
+
+    // =====================================================================
+    // 辅助
+    // =====================================================================
+    private static string JoinRemote(string dir, string name) => dir.EndsWith("/") ? dir + name : dir + "/" + name;
+    private static string RemoteParent(string dir)
+    {
+        dir = dir.TrimEnd('/');
+        var i = dir.LastIndexOf('/');
+        return i <= 0 ? "/" : dir[..i];
+    }
+    private static string HumanSize(long n)
+    {
+        string[] u = { "B", "K", "M", "G", "T" };
+        double v = n; int k = 0;
+        while (v >= 1024 && k < u.Length - 1) { v /= 1024; k++; }
+        return k == 0 ? $"{n}{u[0]}" : $"{v:0.#}{u[k]}";
+    }
+    private static string? Prompt(string message)
+    {
+        var win = new Window
+        {
+
+            Background = (System.Windows.Media.Brush)System.Windows.Application.Current.Resources["BrushBg"],
+            Foreground = (System.Windows.Media.Brush)System.Windows.Application.Current.Resources["BrushText"],
+            Title = "PixShell", Width = 320, Height = 140,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false
+        };
+        var sp = new StackPanel { Margin = new Thickness(12) };
+        sp.Children.Add(new TextBlock { Text = message, Margin = new Thickness(0, 0, 0, 6) });
+        var tb = new TextBox();
+        sp.Children.Add(tb);
+        var ok = new Button { Content = "确定", Width = 70, Margin = new Thickness(0, 12, 0, 0), HorizontalAlignment = HorizontalAlignment.Right, IsDefault = true };
+        string? result = null;
+        ok.Click += (_, _) => { result = tb.Text; win.DialogResult = true; };
+        sp.Children.Add(ok);
+        win.Content = sp;
+        tb.Focus();
+        return win.ShowDialog() == true ? result : null;
+    }
+
+    /// <summary>带预填值的输入框（重命名用：光标默认选中扩展名前的部分，更贴近 Finder/资源管理器习惯）。</summary>
+    private static string? Prompt(string message, string preset)
+    {
+        var win = new Window
+        {
+
+            Background = (System.Windows.Media.Brush)System.Windows.Application.Current.Resources["BrushBg"],
+            Foreground = (System.Windows.Media.Brush)System.Windows.Application.Current.Resources["BrushText"],
+            Title = "PixShell", Width = 320, Height = 140,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false
+        };
+        var sp = new StackPanel { Margin = new Thickness(12) };
+        sp.Children.Add(new TextBlock { Text = message, Margin = new Thickness(0, 0, 0, 6) });
+        var tb = new TextBox { Text = preset };
+        sp.Children.Add(tb);
+        var ok = new Button { Content = "确定", Width = 70, Margin = new Thickness(0, 12, 0, 0), HorizontalAlignment = HorizontalAlignment.Right, IsDefault = true };
+        string? result = null;
+        ok.Click += (_, _) => { result = tb.Text; win.DialogResult = true; };
+        sp.Children.Add(ok);
+        win.Content = sp;
+        var dot = preset.LastIndexOf('.');
+        tb.Focus();
+        tb.Select(0, dot > 0 ? dot : preset.Length);
+        return win.ShowDialog() == true ? result : null;
+    }
+
+    // =====================================================================
+    // 右键菜单 / 拖拽上传 / F5·F2·Delete 快捷键（对齐 mac UI/SFTPPanel.swift §5）
+    // =====================================================================
+
+    /// <summary>右键一个未被选中的行时，先把选择改成"仅该行"（保留已有多选时右键选区内某项的情况）。</summary>
+    private void RemoteItem_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is ListViewItem { Content: FsRow } item && !item.IsSelected)
+        {
+            RemoteList.SelectedItems.Clear();
+            item.IsSelected = true;
+        }
+    }
+
+    private void RemoteList_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case Key.F5: Refresh(); e.Handled = true; break;
+            case Key.F2: Rename(); e.Handled = true; break;
+            case Key.Delete: Delete(); e.Handled = true; break;
+        }
+    }
+
+    private void CtxOpen_Click(object sender, RoutedEventArgs e) => CtxOpenAction();
+    private void CtxDownload_Click(object sender, RoutedEventArgs e) => Download();
+    private void CtxUpload_Click(object sender, RoutedEventArgs e) => Upload();
+    private void CtxMkdir_Click(object sender, RoutedEventArgs e) => Mkdir();
+    private void CtxRename_Click(object sender, RoutedEventArgs e) => Rename();
+    private void CtxDelete_Click(object sender, RoutedEventArgs e) => Delete();
+    private void CtxCopyPath_Click(object sender, RoutedEventArgs e) => CopyPath();
+    private void CtxInsertToCommand_Click(object sender, RoutedEventArgs e) => InsertToCommand();
+    private void CtxRefresh_Click(object sender, RoutedEventArgs e) => Refresh();
+
+    /// <summary>拖文件到面板上传（对齐 mac draggingEntered/performDragOperation，暂不支持拖目录）。</summary>
+    private void Panel_DragEnter(object sender, DragEventArgs e)
+    {
+        e.Effects = (_sftp is { IsConnected: true } && e.Data.GetDataPresent(DataFormats.FileDrop))
+            ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    /// <summary>拖文件/目录到面板上传：走智能打包同一条路径（对齐 mac performDragOperation → uploadItems）。</summary>
+    private void Panel_Drop(object sender, DragEventArgs e)
+    {
+        if (_sftp is not { IsConnected: true } || !e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+        var files = ((string[])e.Data.GetData(DataFormats.FileDrop)!).ToList();
+        if (files.Count == 0) return;
+        Log.Info("拖拽上传 " + string.Join(", ", files.Select(Path.GetFileName)), "sftp");
+        UploadItems(files);
+    }
+
+    /// <summary>面板释放：断开 SFTP。</summary>
+    public void Cleanup() => DisconnectSftp();
+}

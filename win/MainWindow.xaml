@@ -1,0 +1,223 @@
+<Window x:Class="PixShell.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:PixShell"
+        xmlns:ui="clr-namespace:PixShell.UI"
+        Title="PixShell — native (Windows)"
+        Width="800" Height="600" MinWidth="800" MinHeight="600"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None" ResizeMode="CanResize"
+        Background="Transparent">
+    <!-- Windows 窗口 chrome：去掉系统标题栏，自绘顶栏。
+         **注意：Windows 的窗口按钮在右侧、顺序是 最小化 — 最大化 □ 关闭 ✕，与 mac 左侧红绿灯相反，
+         不能照搬 mac 的布局。** 关闭键悬停为红底白叉（Windows 习惯）。 -->
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="42" ResizeBorderThickness="6" CornerRadius="0" GlassFrameThickness="-1"/>
+    </WindowChrome.WindowChrome>
+    <!-- 五区布局 1:1 对齐 mac 版重做后的新布局（见 代码概要.md §2 布局契约）：
+         顶栏(折叠侧栏/连接管理器/新建 | 会话tab | +快连 … 主题/工具/汉堡)
+         侧栏 = 监控仪表盘（非主机列表，可整块折叠为 26px 窄轨）
+         工作区 = 落地页(快速连接) 或 终端；命令栏在坞上方；底部坞单行[文件][命令]+文件操作图标，整体可折叠
+         状态栏 -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Image x:Name="TransitionImage" Grid.RowSpan="2" Panel.ZIndex="1000" IsHitTestVisible="False" Visibility="Collapsed"/>
+
+        <Grid x:Name="MainArea" Grid.Row="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>   <!-- 顶栏 -->
+                <RowDefinition Height="*"/>       <!-- 侧栏 | 工作区 -->
+            </Grid.RowDefinitions>
+
+            <!-- ===================== 顶栏 ===================== -->
+            <Border Grid.Row="0" Height="42" Background="{DynamicResource BrushBg}"
+                    BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1">
+                <DockPanel LastChildFill="True" Margin="8,0">
+                    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center"
+                                WindowChrome.IsHitTestVisibleInChrome="True">
+                        <Button x:Name="CollapseSidebarBtn" Content="&#xE76B;" Style="{StaticResource GlyphIconButton}"
+                                ToolTip="折叠/展开侧栏" Click="CollapseSidebar_Click"/>
+                        <Button x:Name="ConnMgrBtn" Content="&#xE7F4;" Style="{StaticResource GlyphIconButton}"
+                                ToolTip="连接管理器" Click="OpenConnMgr_Click"/>
+                        <Button x:Name="NewConnBtn" Content="&#xE710;" Style="{StaticResource GlyphIconButton}"
+                                ToolTip="新建连接" Click="NewHost_Click"/>
+                    </StackPanel>
+
+                    <!-- 窗口控制：最小化 / 最大化 / 关闭（Windows 顺序，最右） -->
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Stretch"
+                                WindowChrome.IsHitTestVisibleInChrome="True">
+                        <Button x:Name="MinBtn" Content="&#xE921;" Style="{StaticResource CaptionButton}"
+                                ToolTip="最小化" Click="WinMinimize_Click"/>
+                        <Button x:Name="MaxBtn" Content="&#xE922;" Style="{StaticResource CaptionButton}"
+                                ToolTip="最大化/还原" Click="WinMaximize_Click"/>
+                        <Button x:Name="CloseBtn" Content="&#xE8BB;" Style="{StaticResource CaptionCloseButton}"
+                                ToolTip="关闭" Click="WinClose_Click"/>
+                    </StackPanel>
+
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center"
+                                WindowChrome.IsHitTestVisibleInChrome="True">
+                        <Button x:Name="QuickConnectBtn" Content="&#xE710;" Margin="0,0,4,0"
+                                Style="{StaticResource GlyphIconButton}" ToolTip="快速连接（新标签）" Click="QuickConnect_Click"/>
+                        <Button x:Name="ThemeBtn" Content="&#xE708;" Style="{StaticResource GlyphIconButton}"
+                                ToolTip="主题" Click="ToggleTheme_Click"/>
+                        <Button x:Name="ToolsBtn" Content="&#xE8A9;" Style="{StaticResource GlyphIconButton}"
+                                ToolTip="工具" Click="OpenTools_Click"/>
+                        <Button x:Name="MenuBtn" Content="&#xE700;" Style="{StaticResource GlyphIconButton}"
+                                ToolTip="菜单" Click="OpenMenu_Click"/>
+                    </StackPanel>
+
+                    <!-- 中间：会话胶囊 tab 条 + ＋快速连接（填充剩余宽度） -->
+                    <DockPanel LastChildFill="False" Margin="6,0,0,0"
+                               WindowChrome.IsHitTestVisibleInChrome="True">
+                        <TabControl x:Name="Sessions" DockPanel.Dock="Left" Background="Transparent"
+                                    BorderThickness="0" VerticalAlignment="Center">
+                            <TabControl.Template>
+                                <ControlTemplate TargetType="{x:Type TabControl}">
+                                    <TabPanel IsItemsHost="True" Background="Transparent"/>
+                                </ControlTemplate>
+                            </TabControl.Template>
+                        </TabControl>
+                    </DockPanel>
+                </DockPanel>
+            </Border>
+
+            <!-- ===================== 侧栏 | 工作区 ===================== -->
+            <Grid Grid.Row="1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition x:Name="SidebarColumn" Width="240" MinWidth="26"/>
+                    <ColumnDefinition Width="5"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- 侧栏 = 监控仪表盘（非主机列表）；折叠时显示「⟩侧栏」窄轨 -->
+                <Grid Grid.Column="0" ClipToBounds="True">
+                    <ui:MonitorSidebar x:Name="Monitor"/>
+                    <Border x:Name="SidebarRail" Width="24" Height="96" Visibility="Collapsed"
+                            Background="{DynamicResource BrushBg2}" BorderBrush="{DynamicResource BrushBorder}"
+                            BorderThickness="1" CornerRadius="{DynamicResource RadiusSm}"
+                            HorizontalAlignment="Left" VerticalAlignment="Center"
+                            MouseLeftButtonUp="SidebarRail_Click" Cursor="Hand">
+                        <TextBlock Text="⟩&#10;侧&#10;栏" TextAlignment="Center" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BrushAccent}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                </Grid>
+
+                <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"
+                              Background="{DynamicResource BrushBorder}" DragCompleted="SideSplitter_DragCompleted"/>
+
+                <!-- ===== 工作区 ===== -->
+                <Grid Grid.Column="2">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" MinHeight="120"/>          <!-- work-center -->
+                        <RowDefinition Height="Auto"/>                       <!-- 命令栏（在坞之上）-->
+                        <RowDefinition x:Name="DockSplitterRow" Height="4"/>   <!-- 坞上分隔线，随坞折叠一起归零 -->
+                        <RowDefinition x:Name="DockRow" Height="230"/>       <!-- 底部坞（可整体折叠到 0）-->
+                    </Grid.RowDefinitions>
+
+                    <!-- work-center：无会话 → 快速连接落地页；有会话 → 终端 -->
+                    <Grid x:Name="WorkCenter" Grid.Row="0">
+                        <ContentControl Content="{Binding SelectedContent, ElementName=Sessions}"/>
+                        <ui:QuickConnectView x:Name="QuickConnectPanel"/>
+                        <!-- 连接动画：盖在终端之上，连上/失败后自动淡出 -->
+                        <ui:ConnectOverlay x:Name="ConnectAnim" Panel.ZIndex="20"/>
+                        <Ellipse x:Name="RippleEllipse" Fill="{DynamicResource BrushAccent}" HorizontalAlignment="Center" VerticalAlignment="Center" Width="10" Height="10" IsHitTestVisible="False" Visibility="Collapsed" Panel.ZIndex="30"/>
+                    </Grid>
+
+                    <!-- 命令栏：命令 输入 历史 发送 + 坞折叠开关 -->
+                    <Border Grid.Row="1" Background="{DynamicResource BrushBg}"
+                            BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,1,0,0" Padding="10,7">
+                        <DockPanel LastChildFill="True">
+                            <TextBlock DockPanel.Dock="Left" Text="命令" FontSize="12" FontWeight="Medium"
+                                       Foreground="{DynamicResource BrushMuted}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <Button x:Name="DockToggleBtn" DockPanel.Dock="Right" Content="▾" Style="{StaticResource IconButton}"
+                                    ToolTip="隐藏/显示文件命令坞" Click="ToggleDock_Click" Margin="8,0,0,0"/>
+                            <Button DockPanel.Dock="Right" Content="发送" Tag="Primary" Style="{StaticResource PillButton}"
+                                    Margin="8,0,0,0" Click="SendCommand_Click"/>
+                            <Button DockPanel.Dock="Right" Content="历史" Style="{StaticResource PillButton}" Click="ShowCommandHistory_Click"/>
+                            <TextBox x:Name="CmdInput" VerticalContentAlignment="Center" Height="28"
+                                     Margin="0,0,8,0" PreviewKeyDown="CmdInput_PreviewKeyDown"/>
+                        </DockPanel>
+                    </Border>
+
+                    <!-- 纯视觉分隔（非拖动条）：坞整体折叠时随 DockSplitterRow 高度一起归零。 -->
+                    <Border x:Name="DockSplitter" Grid.Row="2" Height="4" Background="{DynamicResource BrushBorder}"/>
+
+                    <!-- 底部坞：[文件][命令] 与文件操作图标同一行 + 面板体（可整体折叠到 0） -->
+                    <Border x:Name="DockBorder" Grid.Row="3" Background="{DynamicResource BrushBg}"
+                            BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,1,0,0" ClipToBounds="True">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <!-- tab 行：[文件][命令] + 文件操作图标（同一行，仅"文件"激活时显示图标组） -->
+                            <DockPanel Grid.Row="0" Margin="10,7,10,6" LastChildFill="True">
+                                <Button x:Name="FilesTabBtn" DockPanel.Dock="Left" Content="文件" Tag="Primary"
+                                        Style="{StaticResource PillButton}" Margin="0,0,6,0" Click="ShowFiles_Click"/>
+                                <Button x:Name="CmdsTabBtn" DockPanel.Dock="Left" Content="命令"
+                                        Style="{StaticResource PillButton}" Margin="0,0,10,0" Click="ShowCmds_Click"/>
+
+                                <!-- 文件操作图标组：与 [文件][命令] 同一行；仅文件 tab 激活时可见 -->
+                                <DockPanel x:Name="FileOpsPanel" LastChildFill="True">
+                                    <Button DockPanel.Dock="Left" Content="‹" Style="{StaticResource IconButton}"
+                                            ToolTip="上级目录" Click="SftpUp_Click"/>
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                        <Button x:Name="ChatBtn" Style="{StaticResource IconButton}"
+                                                ToolTip="与本机 agent 对话" Click="SftpToggleChat_Click"/>
+                                        <Button Content="&#xE72C;" Style="{StaticResource GlyphIconButton}" ToolTip="刷新" Click="SftpRefresh_Click"/>
+                                        <Button Content="&#xE896;" Style="{StaticResource GlyphIconButton}" ToolTip="下载到本地" Click="SftpDownload_Click"/>
+                                        <Button Content="&#xE898;" Style="{StaticResource GlyphIconButton}" ToolTip="上传到远端" Click="SftpUpload_Click"/>
+                                        <Button Content="&#xE8F4;" Style="{StaticResource GlyphIconButton}" ToolTip="新建目录" Click="SftpMkdir_Click"/>
+                                        <Button Content="&#xE74D;" Foreground="{DynamicResource BrushErr}"
+                                                Style="{StaticResource GlyphIconButton}" ToolTip="删除" Click="SftpDelete_Click"/>
+                                        <Button Content="⧉" Style="{StaticResource IconButton}" ToolTip="显示/隐藏本地" Click="SftpToggleLocal_Click"/>
+                                    </StackPanel>
+                                    <TextBlock x:Name="DockPathText" Text="/" FontFamily="{DynamicResource FontMono}" FontSize="11"
+                                               Foreground="{DynamicResource BrushMuted}" VerticalAlignment="Center"
+                                               Margin="10,0,10,0" TextTrimming="CharacterEllipsis"/>
+                                </DockPanel>
+                            </DockPanel>
+
+                            <!-- 面板体：文件(SFTP) / 命令 两者叠放，按 tab 切换可见性 -->
+                            <Grid Grid.Row="1">
+                                <local:SftpPanel x:Name="Sftp"/>
+                                <local:CommandPanel x:Name="Cmds" Visibility="Collapsed"/>
+                            </Grid>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Grid>
+        </Grid>
+
+        <!-- ===================== 状态栏 ===================== -->
+        <StatusBar Grid.Row="1" Background="{DynamicResource BrushStatusBg}">
+            <StatusBarItem>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="PixShell" FontWeight="Bold" Foreground="{DynamicResource BrushText}"/>
+                    <TextBlock Text="0.1.0" Margin="6,0,0,0" Opacity="0.85"/>
+                </StackPanel>
+            </StatusBarItem>
+            <!-- 本地 CLI/Agent 桥三态：未开启(红)/已开启(黄)/已对接(绿)，对齐 mac updateCliStatus。 -->
+            <StatusBarItem>
+                <StackPanel Orientation="Horizontal" Margin="14,0,0,0">
+                    <Ellipse x:Name="CliDot" Width="8" Height="8" VerticalAlignment="Center"
+                             Fill="{DynamicResource BrushErr}"/>
+                    <TextBlock x:Name="CliStatusText" Text="CLI 未开启" Margin="6,0,0,0"
+                               Foreground="{DynamicResource BrushMuted}"/>
+                </StackPanel>
+            </StatusBarItem>
+            <StatusBarItem HorizontalAlignment="Right">
+                <TextBlock x:Name="StatusText" Text="未连接"/>
+            </StatusBarItem>
+        </StatusBar>
+
+        <!-- ===================== 弹层：连接管理器 / 工具面板 ===================== -->
+
+        <ui:ToolsPanel x:Name="ToolsFlyout" Grid.Row="0" Grid.RowSpan="2" Visibility="Collapsed" Panel.ZIndex="50"/>
+    </Grid>
+</Window>

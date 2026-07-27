@@ -1,0 +1,85 @@
+<UserControl x:Class="PixShell.CommandPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- 命令板（底部坞「命令」tab）。**照 mac UI/CommandPanel.swift 左右分栏重做**：
+           [📁全部 📁系统 …(WrapPanel 自动换行)]                         [＋新建]
+           ┌───────────────────────────┬─┬───────────────────────┐
+           │ 命令列表(带边框/换行/滚动)  │ │ 命令编辑器  选项 ⟩收起 │
+           │  名称⚙ 名称⚙ …             │ │ ┌───────────────────┐ │
+           ├───────────────────────────┤ │ └───────────────────┘ │
+           │ 发送到 [下拉] [发送]        │ │ [下拉] [发送]         │
+           └───────────────────────────┴─┴───────────────────────┘
+         之前是"分类 pill 一行 + 命令 chips 横向滚动 + 编辑器压下面"，命令被裁掉半截，
+         用户评价"完全不可用"。要点：分类=文件夹样式且换行；命令列表在带边框盒子里换行铺开，
+         每条右边一个 ⚙；编辑器在右栏可收起成占满窄条的展开按钮；左右各有自己的 发送到+发送。 -->
+    <Grid Margin="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>   <!-- 顶部：分组文件夹 chips + 新建 -->
+            <RowDefinition Height="*"/>       <!-- 主体：左栏 | 竖分隔 | 右栏 -->
+        </Grid.RowDefinitions>
+
+        <!-- 顶部：分组文件夹（WrapPanel 换行）+ ＋新建 -->
+        <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="True">
+            <Button x:Name="AddBtn" DockPanel.Dock="Right" Content="＋ 新建" Style="{StaticResource PillButton}"
+                    Padding="10,1" VerticalAlignment="Top" Margin="8,0,0,0" Click="OnNewCommand"/>
+            <WrapPanel x:Name="GroupRow" Orientation="Horizontal"/>
+        </DockPanel>
+
+        <!-- 主体 -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>                     <!-- 竖分隔 -->
+                <ColumnDefinition x:Name="RightColDef" Width="213"/>  <!-- 右栏，可收起到 30 -->
+            </Grid.ColumnDefinitions>
+
+            <!-- 左栏：命令列表 + 发送条 -->
+            <Grid Grid.Column="0">
+                <Border Background="{DynamicResource BrushBg2}" BorderBrush="{DynamicResource BrushBorder}"
+                        BorderThickness="1" CornerRadius="{DynamicResource RadiusSm}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="6">
+                        <WrapPanel x:Name="ChipsRow" Orientation="Horizontal" Background="Transparent"/>
+                    </ScrollViewer>
+                </Border>
+            </Grid>
+
+            <!-- 竖分隔 -->
+            <Border Grid.Column="1" Width="1" Background="{DynamicResource BrushBorder}" Margin="8,0"/>
+
+            <!-- 右栏：命令编辑器（可收起）-->
+            <Grid Grid.Column="2" x:Name="RightCol">
+                <!-- 展开态：头 / 编辑器 / 发送条 -->
+                <Grid x:Name="EditorParts">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <DockPanel Grid.Row="0" LastChildFill="False">
+                        <TextBlock DockPanel.Dock="Left" Text="命令编辑器" FontSize="11" FontWeight="Medium"
+                                   Foreground="{DynamicResource BrushMuted}" VerticalAlignment="Center"/>
+                        <Button DockPanel.Dock="Right" x:Name="CollapseBtn" Content="⟩ 收起" Style="{StaticResource PillButton}"
+                                Padding="8,1" Click="OnToggleEditor"/>
+                        <Button DockPanel.Dock="Right" Content="选项" Style="{StaticResource PillButton}"
+                                Padding="8,1" Margin="0,0,6,0" Click="OnEditorOptions"/>
+                    </DockPanel>
+                    <Border Grid.Row="1" Margin="0,4,0,0" Background="{DynamicResource BrushBg2}"
+                            BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="{DynamicResource RadiusSm}">
+                        <TextBox x:Name="Editor" AcceptsReturn="True" AcceptsTab="True" TextWrapping="NoWrap"
+                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                 FontFamily="{DynamicResource FontMono}" BorderThickness="0" Background="Transparent"/>
+                    </Border>
+                    <DockPanel Grid.Row="2" Margin="0,6,0,0" LastChildFill="False">
+                        <Button DockPanel.Dock="Right" Content="发送" Tag="Primary" Style="{StaticResource PillButton}"
+                                Click="OnSendEditor"/>
+                        <ComboBox x:Name="EdTargetCombo" DockPanel.Dock="Right" Width="110" Margin="0,0,6,0"
+                                  VerticalAlignment="Center" DropDownOpened="TargetCombo_DropDownOpened"/>
+                    </DockPanel>
+                </Grid>
+                <!-- 收起态：占满窄栏的展开按钮（第一版收起后按钮被挤出可见区再也打不开，故必须留可点的东西） -->
+                <Button x:Name="ExpandStrip" Content="‹" Style="{StaticResource PillButton}" Visibility="Collapsed"
+                        VerticalContentAlignment="Center" Click="OnExpandEditor" ToolTip="展开命令编辑器"/>
+            </Grid>
+        </Grid>
+    </Grid>
+</UserControl>

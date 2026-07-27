@@ -1,0 +1,13 @@
+# macOS & Swift
+.DS_Store
+mac/.build/
+mac/.swiftpm/
+mac/dist/
+mac/*.log
+
+# Windows & C#
+win/bin/
+win/obj/
+win/.vs/
+win/*.log*
+win/node_modules/

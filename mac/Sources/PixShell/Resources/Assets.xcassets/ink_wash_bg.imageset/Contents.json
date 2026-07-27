@@ -1,0 +1,18 @@
+{
+  "images" : [
+    {
+      "filename" : "ink_wash_bg.jpg",
+      "idiom" : "mac",
+      "scale" : "1x"
+    },
+    {
+      "filename" : "ink_wash_bg.jpg",
+      "idiom" : "mac",
+      "scale" : "2x"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

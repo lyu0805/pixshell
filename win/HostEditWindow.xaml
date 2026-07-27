@@ -1,0 +1,87 @@
+<Window x:Class="PixShell.HostEditWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="主机"
+        Width="380" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False"
+        Background="{DynamicResource BrushBg}"
+        Foreground="{DynamicResource BrushText}">
+    <Grid Margin="14">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 连接类型：SSH（默认）/ RDP。RDP 主机连接时拉起系统远程桌面 mstsc，不建 SSH 会话。 -->
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="类型" VerticalAlignment="Center" Margin="0,4"/>
+        <ComboBox  Grid.Row="0" Grid.Column="1" Name="TypeBox" Margin="6,4" SelectionChanged="OnTypeChanged">
+            <ComboBoxItem Content="SSH"/>
+            <ComboBoxItem Content="RDP（远程桌面）"/>
+        </ComboBox>
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="名称" VerticalAlignment="Center" Margin="0,4"/>
+        <TextBox   Grid.Row="1" Grid.Column="1" Name="NameBox" Margin="6,4"/>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="主机" VerticalAlignment="Center" Margin="0,4"/>
+        <TextBox   Grid.Row="2" Grid.Column="1" Name="HostBox" Margin="6,4"/>
+
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="端口" VerticalAlignment="Center" Margin="0,4"/>
+        <TextBox   Grid.Row="3" Grid.Column="1" Name="PortBox" Text="22" Margin="6,4"/>
+
+        <TextBlock Grid.Row="4" Grid.Column="0" Text="用户名" VerticalAlignment="Center" Margin="0,4"/>
+        <TextBox   Grid.Row="4" Grid.Column="1" Name="UserBox" Margin="6,4"/>
+
+        <TextBlock Grid.Row="5" Grid.Column="0" Text="密码" VerticalAlignment="Center" Margin="0,4"/>
+        <PasswordBox Grid.Row="5" Grid.Column="1" Name="PassBox" Margin="6,4"/>
+
+        <TextBlock Grid.Row="6" Grid.Column="0" Text="分组" VerticalAlignment="Center" Margin="0,4"/>
+        <TextBox   Grid.Row="6" Grid.Column="1" Name="GroupBox" Text="默认" Margin="6,4"/>
+
+        <TextBlock Grid.Row="7" Grid.Column="0" Text="系统" VerticalAlignment="Center" Margin="0,4"/>
+        <ComboBox  Grid.Row="7" Grid.Column="1" Name="OsBox" Margin="6,4" IsEditable="True">
+            <ComboBoxItem Content=""/>
+            <ComboBoxItem Content="linux"/>
+            <ComboBoxItem Content="ubuntu"/>
+            <ComboBoxItem Content="debian"/>
+            <ComboBoxItem Content="openwrt"/>
+            <ComboBoxItem Content="windows"/>
+            <ComboBoxItem Content="macos"/>
+        </ComboBox>
+
+        <!-- 私钥认证：留空 = 密码登录；填了就优先尝试私钥，被拒/加载失败再回退密码（各只试一次）。 -->
+        <TextBlock Grid.Row="8" Grid.Column="0" Text="私钥" VerticalAlignment="Center" Margin="0,4"/>
+        <Grid Grid.Row="8" Grid.Column="1" Margin="6,4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBox Grid.Column="0" Name="KeyPathBox"
+                     ToolTip="留空则使用密码登录" Margin="0,0,6,0"/>
+            <Button  Grid.Column="1" Content="选择…" Width="60" Click="OnChooseKeyFile"/>
+        </Grid>
+
+        <!-- 出站代理：留空/"无" = 直连；下拉从 代理管理(Proxy/ProxyConfig.cs) 读取。 -->
+        <TextBlock Grid.Row="9" Grid.Column="0" Text="代理" VerticalAlignment="Center" Margin="0,4"/>
+        <ComboBox  Grid.Row="9" Grid.Column="1" Name="ProxyBox" Margin="6,4"/>
+
+        <StackPanel Grid.Row="10" Grid.Column="1" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="6,12,0,0">
+            <Button Content="保存" Width="72" Margin="0,0,8,0" IsDefault="True" Click="OnSave"/>
+            <Button Content="取消" Width="72" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

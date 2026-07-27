@@ -1,0 +1,311 @@
+import AppKit
+
+/// 服务器监控仪表盘侧栏 —— 严格照抄老仓库 shell.css 的 .sidebar/.lm-* 样式。
+/// 密集布局 + 分隔线;满宽药丸渐变条(% 叠条内);进程表(内存蓝/CPU红/隔行);磁盘表。
+final class MonitorSidebar: NSView {
+    private let connDot = Dot(Theme.muted, size: 8)
+    private let connText = NSTextField(labelWithString: "未连接")
+    private let ipValue = NSTextField(labelWithString: "-")
+    private let uptime = MonitorSidebar.val()
+    private let load = MonitorSidebar.val()
+    private let cpuBar = Bar(kind: .cpu)
+    private let memBar = Bar(kind: .mem)
+    private let swapBar = Bar(kind: .swap)
+    private let procBody = NSStackView()
+    private let diskBody = NSStackView()
+    private let netTitle = MonitorSidebar.val()
+    private let pingTitle = MonitorSidebar.val()
+    private let netSpark = Sparkline(color: Theme.c("#30d158"))
+    private let pingSpark = Sparkline(color: Theme.accent)
+    private let stack = NSStackView()
+
+    var onCopyIP: (() -> Void)?
+    var onSysInfo: (() -> Void)?
+    /// 点状态行的按钮：已连接 → 手动断开；未连接 → 重新连接。
+    var onToggleConnection: (() -> Void)?
+
+    private var connBtn: PillButton!
+    private var isConnected = false
+
+    override init(frame frameRect: NSRect) { super.init(frame: frameRect); build() }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private static func val() -> NSTextField { let l = NSTextField(labelWithString: "-"); l.font = Theme.ui(11); l.textColor = Theme.text; return l }
+
+    private func build() {
+        wantsLayer = true; layer?.backgroundColor = Theme.side.cgColor
+
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false   // 内容顶到最上
+        doc.addSubview(stack); scroll.documentView = doc
+        addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: topAnchor), scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            doc.topAnchor.constraint(equalTo: scroll.topAnchor), doc.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            doc.trailingAnchor.constraint(equalTo: scroll.trailingAnchor), doc.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+            stack.topAnchor.constraint(equalTo: doc.topAnchor), stack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: doc.trailingAnchor), stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
+        ])
+
+        // 头部：● 红绿灯 + 连接状态 + 断开/连接按钮（状态行本身是可操作的，不只是个标签）
+        connText.font = Theme.ui(12, .semibold); connText.textColor = Theme.text
+        connBtn = PillButton("连接", style: .secondary, hPad: 10, height: 22,
+                             font: Theme.ui(11, .medium), target: self, action: #selector(toggleConn))
+        addRow(pad(hstack([connDot, connText, spacer(), connBtn], gap: 6), 8, 10, 6, 10), border: true)
+        // IP 行
+        ipValue.font = Theme.ui(12, .bold); ipValue.textColor = Theme.text
+        let ipLab = small("IP")
+        let copy = linkBtn("复制", #selector(copyIP))
+        addRow(pad(hstack([ipLab, ipValue, spacer(), copy], gap: 6), 6, 10, 6, 10), border: true)
+        // 系统信息按钮
+        let sysBtn = PillButton("系统信息", style: .secondary, hPad: 12, height: 28, target: self, action: #selector(sysInfoTap))
+        sysBtn.attributedTitle = NSAttributedString(string: "系统信息", attributes: [.foregroundColor: Theme.accent, .font: Theme.ui(12, .semibold)])
+        sysBtn.rounded(Theme.radiusSm, bg: Theme.accentSoft)
+        addRow(pad(sysBtn, 8, 10, 8, 10), border: false)
+
+        // 实时监控
+        secTitle("实时监控", first: true)
+        let m = NSStackView(views: [line("运行", uptime), line("负载", load), cpuBar, memBar, swapBar])
+        m.orientation = .vertical; m.alignment = .leading; m.spacing = 5
+        addRow(pad(m, 6, 10, 8, 10), border: true)
+
+        // 进程 TOP
+        secTitle("进程 TOP")
+        procBody.orientation = .vertical; procBody.alignment = .leading; procBody.spacing = 0
+        addRow(pad(vstackFull([procHeader(), procBody]), 0, 0, 0, 0), border: true)
+
+        // 网络
+        secTitle("网络")
+        netTitle.font = Theme.ui(10); netTitle.textColor = Theme.muted
+        addRow(pad(vstack([netTitle, netSpark], gap: 2), 6, 8, 6, 8), border: true)
+        netSpark.widthAnchor.constraint(equalToConstant: 184).isActive = true
+        netSpark.heightAnchor.constraint(equalToConstant: 44).isActive = true
+
+        // 延迟
+        secTitle("延迟")
+        pingTitle.font = Theme.ui(10); pingTitle.textColor = Theme.muted; pingTitle.stringValue = "网关"
+        addRow(pad(vstack([pingTitle, pingSpark], gap: 2), 6, 8, 6, 8), border: true)
+        pingSpark.widthAnchor.constraint(equalToConstant: 184).isActive = true
+        pingSpark.heightAnchor.constraint(equalToConstant: 32).isActive = true
+
+        // 磁盘
+        secTitle("磁盘")
+        diskBody.orientation = .vertical; diskBody.alignment = .leading; diskBody.spacing = 0
+        addRow(pad(vstackFull([diskHeader(), diskBody]), 0, 0, 0, 0), border: false)
+    }
+
+    // MARK: 布局辅助
+    private func addRow(_ v: NSView, border: Bool) {
+        v.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(v)
+        v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        if border {
+            let line = NSView(); line.wantsLayer = true; line.layer?.backgroundColor = Theme.border.cgColor
+            line.translatesAutoresizingMaskIntoConstraints = false
+            stack.addArrangedSubview(line)
+            line.heightAnchor.constraint(equalToConstant: 1).isActive = true
+            line.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+    }
+    private func secTitle(_ t: String, first: Bool = false) {
+        let l = NSTextField(labelWithString: t); l.font = Theme.ui(10, .bold); l.textColor = Theme.muted
+        addRow(pad(l, first ? 4 : 6, 10, 2, 10), border: false)
+    }
+    private func line(_ k: String, _ v: NSTextField) -> NSView {
+        let lab = small(k); v.font = Theme.ui(11); v.textColor = Theme.muted
+        return hstack([lab, v], gap: 6)
+    }
+    private func small(_ s: String) -> NSTextField { let l = NSTextField(labelWithString: s); l.font = Theme.ui(11); l.textColor = Theme.muted; return l }
+    private func spacer() -> NSView { let v = NSView(); v.setContentHuggingPriority(.init(1), for: .horizontal); return v }
+    private func linkBtn(_ t: String, _ a: Selector) -> NSButton {
+        let b = NSButton(title: t, target: self, action: a); b.isBordered = false; b.bezelStyle = .regularSquare
+        b.attributedTitle = NSAttributedString(string: t, attributes: [.foregroundColor: Theme.accent, .font: Theme.ui(11)]); return b
+    }
+    private func hstack(_ v: [NSView], gap: CGFloat) -> NSStackView { let s = NSStackView(views: v); s.orientation = .horizontal; s.spacing = gap; s.alignment = .centerY; return s }
+    private func vstack(_ v: [NSView], gap: CGFloat) -> NSStackView { let s = NSStackView(views: v); s.orientation = .vertical; s.alignment = .leading; s.spacing = gap; return s }
+    private func vstackFull(_ v: [NSView]) -> NSStackView { let s = NSStackView(views: v); s.orientation = .vertical; s.alignment = .leading; s.spacing = 0; s.distribution = .fill; return s }
+    private func pad(_ v: NSView, _ t: CGFloat, _ l: CGFloat, _ b: CGFloat, _ r: CGFloat) -> NSView {
+        let c = NSView(); c.translatesAutoresizingMaskIntoConstraints = false; v.translatesAutoresizingMaskIntoConstraints = false
+        c.addSubview(v)
+        NSLayoutConstraint.activate([
+            v.topAnchor.constraint(equalTo: c.topAnchor, constant: t), v.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: l),
+            v.bottomAnchor.constraint(equalTo: c.bottomAnchor, constant: -b), v.trailingAnchor.constraint(lessThanOrEqualTo: c.trailingAnchor, constant: -r),
+        ]); return c
+    }
+
+    // 进程表头/行（内存48 蓝 | CPU40 红居中 | 命令）
+    private func procHeader() -> NSView {
+        let h = tableRow("内存", "CPU", "命令", memC: Theme.muted, cpuC: Theme.muted, cmdC: Theme.muted, bg: Theme.bg2, bold: true)
+        return h
+    }
+    private func procRow(_ mem: String, _ cpu: String, _ cmd: String, even: Bool) -> NSView {
+        tableRow(mem, cpu, cmd, memC: Theme.accent, cpuC: Theme.err, cmdC: Theme.text, bg: even ? Theme.bg3 : Theme.side, bold: false)
+    }
+    private func tableRow(_ a: String, _ b: String, _ c: String, memC: NSColor, cpuC: NSColor, cmdC: NSColor, bg: NSColor, bold: Bool) -> NSView {
+        let row = NSView(); row.wantsLayer = true; row.layer?.backgroundColor = bg.cgColor
+        let f = Theme.mono(10)
+        let aL = NSTextField(labelWithString: a); aL.font = f; aL.textColor = memC
+        let bL = NSTextField(labelWithString: b); bL.font = f; bL.textColor = cpuC; bL.alignment = .center
+        let cL = NSTextField(labelWithString: c); cL.font = f; cL.textColor = cmdC; cL.lineBreakMode = .byTruncatingTail
+        [aL, bL, cL].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
+        row.addSubview(aL); row.addSubview(bL); row.addSubview(cL)
+        NSLayoutConstraint.activate([
+            row.heightAnchor.constraint(equalToConstant: 17),
+            aL.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 6), aL.centerYAnchor.constraint(equalTo: row.centerYAnchor), aL.widthAnchor.constraint(equalToConstant: 48),
+            bL.leadingAnchor.constraint(equalTo: aL.trailingAnchor), bL.centerYAnchor.constraint(equalTo: row.centerYAnchor), bL.widthAnchor.constraint(equalToConstant: 40),
+            cL.leadingAnchor.constraint(equalTo: bL.trailingAnchor, constant: 4), cL.centerYAnchor.constraint(equalTo: row.centerYAnchor), cL.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -6),
+        ])
+        return row
+    }
+    private func diskHeader() -> NSView { diskRowV("路径", "可用/大小", header: true, even: false) }
+    private func diskRowV(_ p: String, _ s: String, header: Bool, even: Bool) -> NSView {
+        let row = NSView(); row.wantsLayer = true; row.layer?.backgroundColor = (header ? Theme.bg2 : Theme.side).cgColor
+        let pL = NSTextField(labelWithString: p); pL.font = header ? Theme.ui(10) : Theme.mono(10); pL.textColor = header ? Theme.muted : Theme.text
+        let sL = NSTextField(labelWithString: s); sL.font = header ? Theme.ui(10) : Theme.mono(10); sL.textColor = header ? Theme.muted : Theme.text
+        [pL, sL].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
+        row.addSubview(pL); row.addSubview(sL)
+        NSLayoutConstraint.activate([
+            row.heightAnchor.constraint(equalToConstant: header ? 20 : 17),
+            pL.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 8), pL.centerYAnchor.constraint(equalTo: row.centerYAnchor), pL.widthAnchor.constraint(equalToConstant: 74),
+            sL.leadingAnchor.constraint(equalTo: pL.trailingAnchor, constant: 4), sL.centerYAnchor.constraint(equalTo: row.centerYAnchor), sL.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor, constant: -8),
+        ])
+        return row
+    }
+    @objc private func copyIP() { onCopyIP?() }
+    @objc private func sysInfoTap() { onSysInfo?() }
+
+    // MARK: 数据更新
+    func setConnected(_ on: Bool, ip: String) {
+        isConnected = on
+        connDot.setColor(on ? Theme.ok : Theme.err)      // 红绿灯：绿=已连接 / 红=已断开
+        connText.stringValue = on ? "已连接" : "已断开"
+        connBtn.title = on ? "断开" : "连接"
+        connBtn.style = on ? .danger : .primary          // 触发重绘配色
+        ipValue.stringValue = ip.isEmpty ? "-" : ip
+    }
+    @objc private func toggleConn() { onToggleConnection?() }
+    func update(_ m: [String: String]) {
+        uptime.stringValue = m["uptime"] ?? "-"
+        load.stringValue = m["load"] ?? "-"
+        cpuBar.set(pct: dbl(m["cpu"]), size: "")
+        if let mem = m["mem"] { let p = parts(mem); memBar.set(pct: p.0, size: p.1) }
+        if let sw = m["swap"] { let p = parts(sw); swapBar.set(pct: p.0, size: p.1) }
+        procBody.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for (i, ln) in (m["procs"] ?? "").split(separator: ";").prefix(5).enumerated() {
+            let f = ln.split(separator: "|", maxSplits: 2).map(String.init)
+            if f.count == 3 { let r = procRow(f[0], f[1], f[2], even: i % 2 == 1); procBody.addArrangedSubview(r); r.widthAnchor.constraint(equalTo: procBody.widthAnchor).isActive = true }
+        }
+        diskBody.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for (i, ln) in (m["disks"] ?? "").split(separator: ";").prefix(6).enumerated() {
+            let f = ln.split(separator: "|").map(String.init)
+            if f.count >= 3 { let r = diskRowV(f[0], "\(f[1])/\(f[2])", header: false, even: i % 2 == 1); diskBody.addArrangedSubview(r); r.widthAnchor.constraint(equalTo: diskBody.widthAnchor).isActive = true }
+        }
+        netTitle.stringValue = m["netif"] ?? "-"
+        if let v = m["netval"], let d = Double(v) { netSpark.push(d) }
+        // 延迟：网关 ping。之前只写死"网关"两个字、也从没往 pingSpark 推数据 —— 整个"延迟"区是死的。
+        let gw = m["pinghost"] ?? ""
+        if let ms = m["pingms"], let d = Double(ms) {
+            pingTitle.stringValue = gw.isEmpty ? String(format: "网关 %.1f ms", d)
+                                              : String(format: "网关 %@ · %.1f ms", gw, d)
+            pingSpark.push(d)
+        } else {
+            pingTitle.stringValue = gw.isEmpty ? "网关 -" : "网关 \(gw) · 超时"
+        }
+    }
+    private func dbl(_ s: String?) -> Double { Double((s ?? "").replacingOccurrences(of: "%", with: "")) ?? 0 }
+    private func parts(_ s: String) -> (Double, String) { let f = s.split(separator: "|").map(String.init); return (Double(f.first ?? "0") ?? 0, f.count > 1 ? f[1] : "") }
+}
+
+/// 满宽药丸渐变进度条(% 叠在条内左侧) —— 照抄 .lm-bar / .lm-bar-row。
+final class Bar: NSView {
+    enum Kind { case cpu, mem, swap }
+    private let kind: Kind
+    private let track = NSView()
+    private let fill = NSView()
+    private let grad = CAGradientLayer()
+    private let pct = NSTextField(labelWithString: "0%")
+    private let sizeL = NSTextField(labelWithString: "")
+    private var fillW: NSLayoutConstraint!
+
+    init(kind: Kind) {
+        self.kind = kind
+        super.init(frame: .zero); translatesAutoresizingMaskIntoConstraints = false
+        let labText = kind == .cpu ? "CPU" : kind == .mem ? "内存" : "交换"
+        let lab = NSTextField(labelWithString: labText); lab.font = Theme.ui(11); lab.textColor = Theme.text
+        lab.translatesAutoresizingMaskIntoConstraints = false
+        track.wantsLayer = true; track.layer?.cornerRadius = 7; track.layer?.backgroundColor = Theme.fill.cgColor
+        track.layer?.borderColor = Theme.border.cgColor; track.layer?.borderWidth = 1
+        track.translatesAutoresizingMaskIntoConstraints = false
+        fill.wantsLayer = true; fill.layer?.cornerRadius = 7; fill.layer?.masksToBounds = true
+        fill.translatesAutoresizingMaskIntoConstraints = false
+        grad.startPoint = CGPoint(x: 0, y: 0.5); grad.endPoint = CGPoint(x: 1, y: 0.5)
+        fill.layer?.addSublayer(grad)
+        track.addSubview(fill)
+        pct.font = Theme.ui(10, .semibold); pct.textColor = Theme.text; pct.translatesAutoresizingMaskIntoConstraints = false
+        track.addSubview(pct)
+        sizeL.font = Theme.mono(10); sizeL.textColor = Theme.muted; sizeL.alignment = .right; sizeL.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(lab); addSubview(track); addSubview(sizeL)
+        fillW = fill.widthAnchor.constraint(equalToConstant: 0)
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 16),
+            widthAnchor.constraint(equalToConstant: 184),
+            lab.leadingAnchor.constraint(equalTo: leadingAnchor), lab.centerYAnchor.constraint(equalTo: centerYAnchor), lab.widthAnchor.constraint(equalToConstant: 34),
+            track.leadingAnchor.constraint(equalTo: lab.trailingAnchor, constant: 6), track.centerYAnchor.constraint(equalTo: centerYAnchor),
+            track.heightAnchor.constraint(equalToConstant: 14), sizeL.leadingAnchor.constraint(equalTo: track.trailingAnchor, constant: 6),
+            track.trailingAnchor.constraint(equalTo: sizeL.leadingAnchor, constant: -6),
+            sizeL.trailingAnchor.constraint(equalTo: trailingAnchor), sizeL.centerYAnchor.constraint(equalTo: centerYAnchor), sizeL.widthAnchor.constraint(equalToConstant: 60),
+            fill.leadingAnchor.constraint(equalTo: track.leadingAnchor), fill.topAnchor.constraint(equalTo: track.topAnchor),
+            fill.bottomAnchor.constraint(equalTo: track.bottomAnchor), fillW,
+            pct.leadingAnchor.constraint(equalTo: track.leadingAnchor, constant: 6), pct.centerYAnchor.constraint(equalTo: track.centerYAnchor),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func layout() { super.layout(); grad.frame = fill.bounds }
+
+    func set(pct p: Double, size: String) {
+        let c = max(0, min(100, p))
+        layoutSubtreeIfNeeded()
+        let trackW = track.bounds.width
+        fillW.constant = trackW * CGFloat(c / 100)
+        pct.stringValue = String(format: "%.0f%%", c)
+        sizeL.stringValue = size
+        let colors: [NSColor]
+        if c >= 90 { colors = [Theme.c("#ff9f0a"), Theme.c("#ff453a")] }
+        else if c >= 75 { colors = [Theme.c("#ffd60a"), Theme.c("#ff9f0a")] }
+        else {
+            switch kind {
+            case .cpu: colors = [Theme.c("#30d158"), Theme.c("#64d2ff")]
+            case .mem: colors = [Theme.c("#64d2ff"), Theme.c("#0a84ff")]
+            case .swap: colors = [Theme.c("#bf5af2"), Theme.c("#5e5ce6")]
+            }
+        }
+        grad.colors = colors.map { $0.cgColor }
+        DispatchQueue.main.async { self.grad.frame = self.fill.bounds }
+    }
+}
+
+/// 折线图（滚动窗口）。
+final class Sparkline: NSView {
+    private var values: [Double] = []
+    private let color: NSColor
+    init(color: NSColor) { self.color = color; super.init(frame: .zero); wantsLayer = true; translatesAutoresizingMaskIntoConstraints = false }
+    required init?(coder: NSCoder) { fatalError() }
+    func push(_ v: Double) { values.append(v); if values.count > 60 { values.removeFirst() }; needsDisplay = true }
+    override func draw(_ dirty: NSRect) {
+        guard values.count > 1 else { return }
+        let mn = values.min() ?? 0, mx = values.max() ?? 1
+        let span = max(mx - mn, 1)
+        let path = NSBezierPath(); path.lineWidth = 1.5
+        for (i, v) in values.enumerated() {
+            let x = bounds.width * CGFloat(i) / CGFloat(values.count - 1)
+            let y = 3 + (bounds.height - 6) * CGFloat((v - mn) / span)
+            if i == 0 { path.move(to: NSPoint(x: x, y: y)) } else { path.line(to: NSPoint(x: x, y: y)) }
+        }
+        color.setStroke(); path.stroke()
+    }
+}

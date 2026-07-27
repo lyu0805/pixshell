@@ -1,0 +1,245 @@
+import AppKit
+
+/// 密钥管理器（遮罩 + 居中卡片，风格与连接管理器一致）。
+/// 老仓库 config.json 里有 `secret_key_list`，但没做出独立 UI；这里补上：
+/// 列出 ~/.ssh 下的私钥（类型/位数/指纹/注释/是否带口令），支持 生成 / 复制公钥 / 用于当前主机 / 删除 / 在访达中显示。
+final class KeyManager: NSView {
+    private let card = NSView()
+    private let listStack = NSStackView()
+    private let countLabel = NSTextField(labelWithString: "")
+    private var cardX: NSLayoutConstraint!
+    private var cardY: NSLayoutConstraint!
+    private var keys: [SSHKeys.KeyInfo] = []
+
+    /// 「用于此主机」：把选中的私钥路径回填给调用方（通常是主机编辑表单 / 当前主机）。
+    var onUseKey: ((String) -> Void)?
+    var onClose: (() -> Void)?
+
+    override init(frame frameRect: NSRect) { super.init(frame: frameRect); build() }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show() { isHidden = false; reload() }
+    func hide() { isHidden = true }
+
+    private func build() {
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(white: 0, alpha: 0.35).cgColor
+        translatesAutoresizingMaskIntoConstraints = false
+
+        card.rounded(Theme.radiusLg, bg: Theme.bg, border: Theme.borderStrong)
+        card.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(card)
+        cardX = card.centerXAnchor.constraint(equalTo: centerXAnchor)
+        cardY = card.topAnchor.constraint(equalTo: topAnchor, constant: 40)
+        NSLayoutConstraint.activate([cardX, cardY, card.widthAnchor.constraint(equalToConstant: 560)])
+
+        let title = NSTextField(labelWithString: "密钥管理")
+        title.font = Theme.ui(15, .semibold); title.textColor = Theme.text
+        let genBtn = PillButton("＋生成密钥", style: .primary, hPad: 10, target: self, action: #selector(generateAction))
+        let refBtn = PillButton("刷新", style: .secondary, hPad: 10, target: self, action: #selector(reloadAction))
+        let closeBtn = PillButton("关闭", style: .secondary, hPad: 10, target: self, action: #selector(hideAction))
+        let rightBtns = NSStackView(views: [genBtn, refBtn, closeBtn]); rightBtns.spacing = 6
+        let head = NSStackView(views: [title, NSView(), rightBtns]); head.spacing = 12; head.alignment = .centerY
+        head.translatesAutoresizingMaskIntoConstraints = false
+        head.addGestureRecognizer(HeaderPanGesture(target: self, action: #selector(dragCard(_:))))
+
+        countLabel.font = Theme.ui(12); countLabel.textColor = Theme.muted
+        countLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        listStack.orientation = .vertical; listStack.alignment = .leading; listStack.spacing = 8
+        listStack.translatesAutoresizingMaskIntoConstraints = false
+        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
+        doc.addSubview(listStack); scroll.documentView = doc
+
+        card.addSubview(head); card.addSubview(countLabel); card.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            head.topAnchor.constraint(equalTo: card.topAnchor, constant: 14),
+            head.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+            head.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            countLabel.topAnchor.constraint(equalTo: head.bottomAnchor, constant: 10),
+            countLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+            scroll.topAnchor.constraint(equalTo: countLabel.bottomAnchor, constant: 8),
+            scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+            scroll.heightAnchor.constraint(equalToConstant: 400),
+            doc.topAnchor.constraint(equalTo: scroll.topAnchor), doc.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            doc.trailingAnchor.constraint(equalTo: scroll.trailingAnchor), doc.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+            listStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 4),
+            listStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 4),
+            listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -4),
+            listStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -4),
+        ])
+    }
+
+    func reload() {
+        keys = SSHKeys.list()
+        countLabel.stringValue = keys.isEmpty
+            ? "~/.ssh 下没有找到密钥 —— 点「＋生成密钥」新建一个"
+            : "\(keys.count) 个密钥 · ~/.ssh"
+        listStack.arrangedSubviews.forEach { listStack.removeArrangedSubview($0); $0.removeFromSuperview() }
+        for (i, k) in keys.enumerated() {
+            let row = keyRow(k, index: i)
+            listStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
+        }
+    }
+
+    private func keyRow(_ k: SSHKeys.KeyInfo, index: Int) -> NSView {
+        let box = CardView(radius: Theme.radiusSm, bg: Theme.bg2, border: Theme.border)
+
+        let name = NSTextField(labelWithString: k.name)
+        name.font = Theme.ui(13, .semibold); name.textColor = Theme.text
+        let typeBadge = Badge(k.type == "-" ? "未知" : "\(k.type) \(k.bits)", kind: .accent)
+        let lockBadge = k.encrypted ? Badge("带口令", kind: .green) : Badge("无口令", kind: .gray)
+        let pubBadge = k.hasPublic ? Badge(".pub 就绪", kind: .gray) : Badge("缺 .pub", kind: .gray)
+        let topRow = NSStackView(views: [name, typeBadge, lockBadge, pubBadge, NSView()])
+        topRow.spacing = 6; topRow.alignment = .centerY
+
+        let fp = NSTextField(labelWithString: k.fingerprint)
+        fp.font = Theme.mono(10.5); fp.textColor = Theme.muted
+        fp.lineBreakMode = .byTruncatingMiddle
+        let cmt = NSTextField(labelWithString: k.comment.isEmpty ? k.path : "\(k.comment) · \(k.path)")
+        cmt.font = Theme.ui(10.5); cmt.textColor = Theme.muted
+        cmt.lineBreakMode = .byTruncatingMiddle
+
+        let useBtn = PillButton("用于此主机", style: .primary, hPad: 10, height: 24,
+                                font: Theme.ui(11, .semibold), target: self, action: #selector(useKey(_:)))
+        let copyBtn = PillButton("复制公钥", style: .secondary, hPad: 10, height: 24,
+                                 font: Theme.ui(11, .medium), target: self, action: #selector(copyPub(_:)))
+        let showBtn = PillButton("在访达中显示", style: .secondary, hPad: 10, height: 24,
+                                 font: Theme.ui(11, .medium), target: self, action: #selector(revealKey(_:)))
+        let delBtn = PillButton("删除", style: .danger, hPad: 10, height: 24,
+                                font: Theme.ui(11, .medium), target: self, action: #selector(deleteKey(_:)))
+        for b in [useBtn, copyBtn, showBtn, delBtn] { b.identifier = .init("\(index)") }
+        let btnRow = NSStackView(views: [useBtn, copyBtn, showBtn, NSView(), delBtn])
+        btnRow.spacing = 6; btnRow.alignment = .centerY
+
+        let v = NSStackView(views: [topRow, fp, cmt, btnRow])
+        v.orientation = .vertical; v.alignment = .leading; v.spacing = 5
+        v.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(v)
+        NSLayoutConstraint.activate([
+            v.topAnchor.constraint(equalTo: box.topAnchor, constant: 10),
+            v.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 12),
+            v.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -12),
+            v.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -10),
+            topRow.widthAnchor.constraint(equalTo: v.widthAnchor),
+            btnRow.widthAnchor.constraint(equalTo: v.widthAnchor),
+        ])
+        return box
+    }
+
+    private func key(_ b: NSButton) -> SSHKeys.KeyInfo? {
+        guard let i = Int(b.identifier?.rawValue ?? ""), keys.indices.contains(i) else { return nil }
+        return keys[i]
+    }
+
+    // MARK: 动作
+    @objc private func hideAction() { hide(); onClose?() }
+    @objc private func reloadAction() { reload() }
+    @objc private func dragCard(_ g: NSPanGestureRecognizer) {
+        let t = g.translation(in: self)
+        cardX.constant += t.x; cardY.constant += t.y
+        g.setTranslation(.zero, in: self)
+    }
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        if !card.frame.contains(p) { hide(); onClose?() } else { super.mouseDown(with: event) }
+    }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if !isHidden, event.keyCode == 53 { hide(); onClose?(); return true }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    @objc private func useKey(_ b: NSButton) {
+        guard let k = key(b) else { return }
+        Log.info("选用密钥 \(k.name) → 当前主机", "keys")
+        onUseKey?(k.path)
+        hide()
+    }
+
+    @objc private func copyPub(_ b: NSButton) {
+        guard let k = key(b) else { return }
+        guard let text = SSHKeys.publicKeyText(k) else {
+            Log.warn("读不到公钥 \(k.name)（缺 .pub 且私钥带口令）", "keys")
+            let a = NSAlert.pix(); a.messageText = "读不到公钥"
+            a.informativeText = "缺少 \(k.name).pub，且私钥带口令无法派生。可以用终端执行：\nssh-keygen -y -f \(k.path) > \(k.path).pub"
+            a.runModal(); return
+        }
+        Log.info("复制公钥 \(k.name)", "keys")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        let a = NSAlert.pix(); a.messageText = "公钥已复制"
+        a.informativeText = "粘到服务器的 ~/.ssh/authorized_keys 即可免密登录。"
+        a.runModal()
+    }
+
+    @objc private func revealKey(_ b: NSButton) {
+        guard let k = key(b) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: k.path)])
+    }
+
+    @objc private func deleteKey(_ b: NSButton) {
+        guard let k = key(b) else { return }
+        let a = NSAlert.pix(); a.messageText = "删除密钥 \(k.name)？"
+        a.informativeText = "会同时删除 \(k.name) 和 \(k.name).pub。此操作不可撤销；如果服务器上还留着对应的 authorized_keys 记录，请自行清理。"
+        a.addButton(withTitle: "删除"); a.addButton(withTitle: "取消")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        SSHKeys.delete(k)
+        reload()
+    }
+
+    /// 生成密钥表单：文件名 / 类型 / 注释 / 口令。
+    @objc private func generateAction() {
+        let a = NSAlert.pix()
+        a.messageText = "生成 SSH 密钥"
+        a.informativeText = "会在 ~/.ssh 下用系统 ssh-keygen 生成标准密钥对。"
+        a.addButton(withTitle: "生成"); a.addButton(withTitle: "取消")
+
+        let nameField = NSTextField(); nameField.stringValue = "id_pixshell"
+        let typePopup = NSPopUpButton()
+        typePopup.addItems(withTitles: SSHKeys.KeyType.allCases.map { $0.display })
+        let commentField = NSTextField()
+        commentField.stringValue = "\(NSUserName())@\(ProcessInfo.processInfo.hostName)"
+        let passField = NSSecureTextField()
+        passField.placeholderString = "留空 = 不加口令"
+
+        let grid = NSGridView(numberOfColumns: 2, rows: 0)
+        grid.columnSpacing = 8; grid.rowSpacing = 8
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        for (label, view) in [("文件名", nameField as NSView), ("类型", typePopup), ("注释", commentField), ("口令", passField)] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.widthAnchor.constraint(equalToConstant: 260).isActive = true
+            let l = NSTextField(labelWithString: label); l.alignment = .right
+            grid.addRow(with: [l, view])
+        }
+        let wrap = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 132))
+        wrap.addSubview(grid)
+        NSLayoutConstraint.activate([
+            grid.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 6),
+            grid.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 6),
+            grid.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -6),
+            grid.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -6),
+        ])
+        a.accessoryView = wrap
+
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        let type = SSHKeys.KeyType.allCases[max(0, typePopup.indexOfSelectedItem)]
+        Log.info("请求生成密钥 name=\(nameField.stringValue) type=\(type.rawValue) 带口令=\(!passField.stringValue.isEmpty)", "keys")
+        switch SSHKeys.generate(name: nameField.stringValue, type: type,
+                                comment: commentField.stringValue, passphrase: passField.stringValue) {
+        case .success(let path):
+            reload()
+            let ok = NSAlert.pix(); ok.messageText = "密钥已生成"
+            ok.informativeText = "\(path)\n\n点这条记录上的「复制公钥」，粘到服务器 ~/.ssh/authorized_keys 就能免密登录。"
+            ok.runModal()
+        case .failure(let e):
+            Log.error("生成密钥失败: \(e.message)", "keys")
+            let err = NSAlert.pix(); err.messageText = "生成失败"; err.informativeText = e.message
+            err.runModal()
+        }
+    }
+}

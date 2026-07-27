@@ -1,0 +1,300 @@
+<Application x:Class="PixShell.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Theme/ThemeConstants.xaml"/>
+                <!-- 默认深色；ThemeManager.Apply(dark) 会在运行时替换这一份，key 保持不变。 -->
+                <ResourceDictionary Source="Theme/ThemeDark.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- ================= 隐式样式：全部走 DynamicResource 令牌，主题切换实时生效 ================= -->
+
+            <!-- 窗口 -->
+            <Style TargetType="{x:Type Window}">
+                <Setter Property="Background" Value="{DynamicResource BrushBg}"/>
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
+            </Style>
+
+            <Style TargetType="{x:Type TextBlock}">
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+            </Style>
+
+            <!-- 按钮：默认平面按钮，pill/图标按钮用专门样式(见下) -->
+            <Style TargetType="{x:Type Button}">
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="Background" Value="{DynamicResource BrushControl}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="Padding" Value="8,3"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="{x:Type Button}">
+                            <Border x:Name="b" Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="{DynamicResource RadiusSm}" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="b" Property="Background" Value="{DynamicResource BrushControlHover}"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="b" Property="Opacity" Value="0.8"/>
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter Property="Foreground" Value="{DynamicResource BrushMuted}"/>
+                                    <Setter TargetName="b" Property="Opacity" Value="0.6"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- 图标按钮（顶栏/工具条常用：无边框，圆角方形，hover 高亮） -->
+            <Style x:Key="IconButton" TargetType="{x:Type Button}" BasedOn="{StaticResource {x:Type Button}}">
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="Width" Value="30"/>
+                <Setter Property="Height" Value="30"/>
+                <Setter Property="Padding" Value="0"/>
+                <Setter Property="FontSize" Value="15"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="{x:Type Button}">
+                            <Border x:Name="b" Background="{TemplateBinding Background}" CornerRadius="{DynamicResource RadiusSm}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="b" Property="Background" Value="{DynamicResource BrushControl}"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="b" Property="Background" Value="{DynamicResource BrushControlHover}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- 顶栏图标按钮：Segoe MDL2 Assets 单色字形，跟随主题着色（对齐 mac 的 SF Symbols 单色风格）。
+                 绝不用彩色 emoji（🖥🌙），它们不吃 Foreground，主题切换时颜色不变。 -->
+            <Style x:Key="GlyphIconButton" TargetType="{x:Type Button}" BasedOn="{StaticResource IconButton}">
+                <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+                <Setter Property="FontSize" Value="15"/>
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+            </Style>
+
+            <!-- Pill 按钮：主/次/幽灵 三种，通过 Tag 区分（Tag=Primary 时用 accent 底色） -->
+            <Style x:Key="PillButton" TargetType="{x:Type Button}" BasedOn="{StaticResource {x:Type Button}}">
+                <Setter Property="Padding" Value="14,5"/>
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="{x:Type Button}">
+                            <Border x:Name="b" Background="{DynamicResource BrushControl}"
+                                    BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1"
+                                    CornerRadius="6" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                   TextBlock.FontSize="{TemplateBinding FontSize}"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="b" Property="Background" Value="{DynamicResource BrushControlHover}"/>
+                                </Trigger>
+                                <Trigger Property="Tag" Value="Primary">
+                                    <Setter TargetName="b" Property="Background" Value="{DynamicResource BrushAccent}"/>
+                                    <Setter TargetName="b" Property="BorderBrush" Value="{DynamicResource BrushAccent}"/>
+                                    <Setter Property="Foreground" Value="White"/>
+                                </Trigger>
+                                <Trigger Property="Tag" Value="Danger">
+                                    <Setter Property="Foreground" Value="{DynamicResource BrushErr}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- 文本框 / 密码框 -->
+            <Style TargetType="{x:Type TextBox}">
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="Background" Value="{DynamicResource BrushBg2}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="Padding" Value="6,4"/>
+                <Setter Property="CaretBrush" Value="{DynamicResource BrushText}"/>
+                <Setter Property="SelectionBrush" Value="{DynamicResource BrushAccentSoft}"/>
+            </Style>
+            <Style TargetType="{x:Type PasswordBox}">
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="Background" Value="{DynamicResource BrushBg2}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="Padding" Value="6,4"/>
+                <Setter Property="CaretBrush" Value="{DynamicResource BrushText}"/>
+            </Style>
+            <Style TargetType="{x:Type ComboBox}">
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="Background" Value="{DynamicResource BrushBg2}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
+            </Style>
+            <Style TargetType="{x:Type CheckBox}">
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+            </Style>
+
+            <!-- 列表 -->
+            <Style TargetType="{x:Type ListBox}">
+                <Setter Property="Background" Value="{DynamicResource BrushBg2}"/>
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
+            </Style>
+            <Style TargetType="{x:Type ListView}">
+                <Setter Property="Background" Value="{DynamicResource BrushBg2}"/>
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
+            </Style>
+            <Style TargetType="{x:Type ListBoxItem}">
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Style.Triggers>
+                    <Trigger Property="IsSelected" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource BrushAccentSoft}"/>
+                    </Trigger>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource BrushControl}"/>
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+            <Style TargetType="{x:Type ListViewItem}">
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="Padding" Value="2"/>
+                <Style.Triggers>
+                    <Trigger Property="IsSelected" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource BrushAccentSoft}"/>
+                    </Trigger>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource BrushControl}"/>
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+            <Style TargetType="{x:Type GridViewColumnHeader}">
+                <Setter Property="Background" Value="{DynamicResource BrushBg2}"/>
+                <Setter Property="Foreground" Value="{DynamicResource BrushMuted}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
+                <Setter Property="Padding" Value="6,3"/>
+            </Style>
+
+            <!-- TreeView（远端目录树） -->
+            <Style TargetType="{x:Type TreeView}">
+                <Setter Property="Background" Value="{DynamicResource BrushBg2}"/>
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+            </Style>
+            <Style TargetType="{x:Type TreeViewItem}">
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Style.Triggers>
+                    <Trigger Property="IsSelected" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource BrushAccentSoft}"/>
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+
+            <!-- Tab：顶栏会话胶囊 tab（只渲染 header，内容在别处承载） -->
+            <Style TargetType="{x:Type TabControl}">
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+            </Style>
+            <Style TargetType="{x:Type TabItem}">
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="{x:Type TabItem}">
+                            <Border x:Name="b" Background="{DynamicResource BrushControl}"
+                                    BorderBrush="{DynamicResource BrushBorder}"
+                                    BorderThickness="1" CornerRadius="6"
+                                    Margin="3,0,0,0" Padding="10,4">
+                                <ContentPresenter ContentSource="Header" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsSelected" Value="True">
+                                    <Setter TargetName="b" Property="Background" Value="{DynamicResource BrushAccentSoft}"/>
+                                    <Setter TargetName="b" Property="BorderBrush" Value="{DynamicResource BrushAccent}"/>
+                                </Trigger>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="b" Property="Background" Value="{DynamicResource BrushControlHover}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <Style TargetType="{x:Type Expander}">
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="Background" Value="Transparent"/>
+            </Style>
+
+            <Style TargetType="{x:Type StatusBar}">
+                <Setter Property="Background" Value="{DynamicResource BrushStatusBg}"/>
+                <Setter Property="Foreground" Value="{DynamicResource BrushMuted}"/>
+            </Style>
+
+            <Style TargetType="{x:Type ScrollBar}">
+                <Setter Property="Background" Value="Transparent"/>
+            </Style>
+        
+    <!-- Windows 窗口控制按钮（最小化/最大化/关闭）。
+         Windows 习惯：位于右侧，顺序 — □ ✕；关闭键悬停红底白叉。用 Segoe MDL2 图标字体。 -->
+    <Style x:Key="CaptionButton" TargetType="Button">
+        <Setter Property="Width" Value="46"/>
+        <Setter Property="Height" Value="42"/>
+        <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+        <Setter Property="FontSize" Value="10"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="#22808080"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style x:Key="CaptionCloseButton" TargetType="Button" BasedOn="{StaticResource CaptionButton}">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}">
+                        <ContentPresenter x:Name="cp" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="#E81123"/>
+                            <Setter TargetName="cp" Property="TextElement.Foreground" Value="White"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>
+    </Application.Resources>
+</Application>

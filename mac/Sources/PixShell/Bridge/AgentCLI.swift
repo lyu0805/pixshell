@@ -1,0 +1,133 @@
+import Foundation
+
+/// 给本机 agent 用的 `pixshell` 命令行封装。
+///
+/// 目的：让 AI **像人一样直接操作这个软件** —— 读终端画面、往 shell 里敲字、跑命令、翻远端目录。
+/// 底层就是已有的本地桥（127.0.0.1，token 鉴权，见 Bridge/AgentBridge.swift），
+/// 而桥用的是**当前已经连上的那条 SSH 会话**，所以 agent 每发一条指令**不会**新建一次 SSH 连接
+/// —— 这正是"无头调用、不用每条指令都重连"想要的效果。
+///
+/// **token 不进 prompt**：脚本自己去读 `agent_token` 文件。
+/// 如果把 token 写进给 agent 的提示词里，它会被一起发到模型服务商那边去，没必要冒这个险。
+enum AgentCLI {
+
+    static var binDir: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent("PixShell/bin", isDirectory: true)
+    }
+    static var scriptPath: URL { binDir.appendingPathComponent("pixshell") }
+
+    /// 启动时写一次（内容变了会覆盖）。失败只记日志，不影响 App。
+    static func install(port: Int) {
+        do {
+            try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
+            let body = script(port: port)
+            let existing = try? String(contentsOf: scriptPath, encoding: .utf8)
+            if existing != body {
+                try body.write(to: scriptPath, atomically: true, encoding: .utf8)
+            }
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptPath.path)
+            Log.info("agent CLI 就绪：\(scriptPath.path)", "bridge")
+            AgentMCP.install()     // 同时生成 MCP server（桌面 AI 应用/支持 MCP 的客户端走它）
+            linkIntoPath()         // 软链到 ~/.local/bin，终端里直接 `pixshell` 就能用
+        } catch {
+            Log.warn("写 agent CLI 失败：\(error.localizedDescription)", "bridge")
+        }
+    }
+
+    /// 软链到 `~/.local/bin`（用户自己的 bin，不需要 sudo，通常已在 PATH 里）。
+    /// 这样任何终端里的 agent / 脚本 / 定时任务直接敲 `pixshell exec …` 就行，不用写长路径。
+    /// 只在目标不存在、或已经是指向我们自己的旧软链时才写 —— 绝不覆盖用户自己放的同名文件。
+    private static func linkIntoPath() {
+        let fm = FileManager.default
+        let dir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".local/bin", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        for src in [scriptPath, AgentMCP.scriptPath] {
+            let dst = dir.appendingPathComponent(src.lastPathComponent)
+            if let existing = try? fm.destinationOfSymbolicLink(atPath: dst.path) {
+                if existing == src.path { continue }          // 已经指向我们，不动
+                try? fm.removeItem(at: dst)                    // 指向旧位置的我们自己的链，更新它
+            } else if fm.fileExists(atPath: dst.path) {
+                Log.warn("~/.local/bin/\(src.lastPathComponent) 已存在且不是我们的软链，跳过（不覆盖用户文件）", "bridge")
+                continue
+            }
+            do { try fm.createSymbolicLink(at: dst, withDestinationURL: src) }
+            catch { Log.warn("软链 \(dst.path) 失败：\(error.localizedDescription)", "bridge") }
+        }
+    }
+
+    /// 拼给 agent 的说明。只给路径和用法，不给 token。
+    static func promptPreamble() -> String {
+        """
+        你可以直接操作我正在用的 SSH 客户端 PixShell —— 用这个命令：
+
+            \(scriptPath.path) <子命令>
+
+        可用子命令：
+          sessions              列出当前会话（拿 session 序号，通常是 0）
+          screen [行数]          读终端当前画面（默认 200 行）——**先读它再判断**
+          exec  <命令>           在当前会话上执行一条命令并拿到 stdout
+          type  <文本>           往终端里"敲字"（会自动补回车，等同人手输入）
+          hosts                 列出已保存的主机
+          sftp-ls [远端路径]     列远端目录
+
+        要点：
+        - 这些都跑在**已经连着的那条 SSH 会话**上，不会为每条命令新建连接。
+        - 只读信息优先用 `exec`；需要交互（比如 vim、要确认的提示、top）时用 `type` + `screen` 轮流看。
+        - 破坏性操作（rm、覆盖写、重启服务等）**先问我**，不要自己执行。
+        """
+    }
+
+    private static func script(port: Int) -> String {
+        // 每行都保持同样缩进（Swift 多行字面量要求），python 助手一律写成单行，
+        // 避免行首顶格导致 "insufficient indentation" 编译错。
+        let lines = [
+            "#!/bin/bash",
+            "# PixShell agent CLI —— 由 App 自动生成，勿手改（下次启动会被覆盖）。",
+            "# 走本地桥操作**当前已连接**的 SSH 会话；token 从文件读，不出现在命令行/提示词里。",
+            "set -euo pipefail",
+            "PORT=\"\(port)\"",
+            "TOKEN_FILE=\"$HOME/Library/Application Support/PixShell/agent_token\"",
+            "[ -r \"$TOKEN_FILE\" ] || { echo \"找不到 token：$TOKEN_FILE（PixShell 在运行吗？）\" >&2; printf '%s [cli] 找不到 token %s\\n' \"$(date '+%FT%T')\" \"$TOKEN_FILE\" >>\"$HOME/Library/Application Support/PixShell/logs/agent-cli.log\" 2>/dev/null; exit 1; }",
+            "TOKEN=\"$(cat \"$TOKEN_FILE\")\"",
+            "BASE=\"http://127.0.0.1:$PORT/v1/app\"",
+            "# 日志：进程外脚本不写日志就等于没法查（踩过）。每次调用都留一行，失败留响应体。",
+            "LOG=\"$HOME/Library/Application Support/PixShell/logs/agent-cli.log\"",
+            "log() { printf '%s [cli] %s\\n' \"$(date '+%Y-%m-%dT%H:%M:%S')\" \"$*\" >>\"$LOG\" 2>/dev/null || true; }",
+            "# 日志滚动：超过 2MB 就砍掉前一半，别让它无限长",
+            "if [ -f \"$LOG\" ] && [ \"$(wc -c <\"$LOG\" 2>/dev/null || echo 0)\" -gt 2097152 ]; then tail -c 1048576 \"$LOG\" >\"$LOG.tmp\" && mv \"$LOG.tmp\" \"$LOG\"; fi",
+            "SESSION=\"${PIXSHELL_SESSION:-0}\"",
+            "post() { r=$(curl -sS -m 60 -w '\\n%{http_code}' -X POST -H \"Authorization: Bearer $TOKEN\" -H 'Content-Type: application/json' -d \"$2\" \"$BASE/$1\"); c=${r##*$'\\n'}; b=${r%$'\\n'*}; [ \"$c\" = 200 ] || log \"POST $1 HTTP=$c body=${b:0:200}\"; printf '%s' \"$b\"; }",
+            "get() { r=$(curl -sS -m 60 -w '\\n%{http_code}' -H \"Authorization: Bearer $TOKEN\" \"$BASE/$1\"); c=${r##*$'\\n'}; b=${r%$'\\n'*}; [ \"$c\" = 200 ] || log \"GET $1 HTTP=$c body=${b:0:200}\"; printf '%s' \"$b\"; }",
+            "# 从返回 JSON 里挑第一个存在的字段打印；挑不到就原样打印整个 JSON",
+            "field() { python3 -c 'import json,sys; d=json.load(sys.stdin); ks=[k for k in sys.argv[1:] if isinstance(d,dict) and k in d]; v=d[ks[0]] if ks else d; print(v if isinstance(v,str) else json.dumps(v,ensure_ascii=False))' \"$@\"; }",
+            "mkjson() { python3 -c 'import json,sys; print(json.dumps({\"session\":int(sys.argv[1]),sys.argv[2]:sys.argv[3]}))' \"$@\"; }",
+            "cmd=\"${1:-help}\"; shift || true",
+            "log \"调用 cmd=$cmd session=$SESSION args=$*\"",
+            "case \"$cmd\" in",
+            "  sessions) get sessions ;;",
+            "  hosts) get hosts ;;",
+            "  screen) get \"screen?session=$SESSION&lines=${1:-200}\" | field text ;;",
+            "  exec)",
+            "    [ $# -ge 1 ] || { echo '用法: pixshell exec <命令>' >&2; exit 2; }",
+            "    post exec \"$(mkjson \"$SESSION\" cmd \"$*\")\" | field output text stdout ;;",
+            "  type)",
+            "    [ $# -ge 1 ] || { echo '用法: pixshell type <文本>' >&2; exit 2; }",
+            "    post shell \"$(mkjson \"$SESSION\" text \"$*\")\" >/dev/null; sleep 0.6",
+            "    get \"screen?session=$SESSION&lines=40\" | field text ;;",
+            "  sftp-ls) post sftp/list \"$(mkjson \"$SESSION\" path \"${1:-.}\")\" | field entries ;;",
+            "  *)",
+            "    echo 'pixshell <子命令>'",
+            "    echo '  sessions          列出会话'",
+            "    echo '  screen [行数]      读终端画面（默认 200 行）'",
+            "    echo '  exec <命令>        在当前会话执行并拿 stdout'",
+            "    echo '  type <文本>        往终端敲字（自动回车），随后回显 40 行画面'",
+            "    echo '  hosts             列出已保存主机'",
+            "    echo '  sftp-ls [路径]     列远端目录'",
+            "    echo '环境变量 PIXSHELL_SESSION 可指定会话序号（默认 0）。' ;;",
+            "esac",
+            "",
+        ]
+        return lines.joined(separator: "\n")
+    }
+}
