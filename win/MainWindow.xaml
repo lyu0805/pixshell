@@ -199,7 +199,7 @@
             <StatusBarItem>
                 <StackPanel Orientation="Horizontal">
                     <TextBlock Text="PixShell" FontWeight="Bold" Foreground="{DynamicResource BrushText}"/>
-                    <TextBlock Text="0.1.0" Margin="6,0,0,0" Opacity="0.85"/>
+                    <TextBlock Text="v0.1.1" Margin="6,0,0,0" Opacity="0.85"/>
                 </StackPanel>
             </StatusBarItem>
             <!-- 本地 CLI/Agent 桥三态：未开启(红)/已开启(黄)/已对接(绿)，对齐 mac updateCliStatus。 -->

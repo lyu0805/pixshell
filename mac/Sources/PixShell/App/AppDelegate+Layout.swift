@@ -696,7 +696,7 @@ extension AppDelegate {
         sep.translatesAutoresizingMaskIntoConstraints = false
 
         let brand = NSTextField(labelWithString: "PixShell"); brand.font = Theme.ui(12, .bold); brand.textColor = Theme.text
-        let ver = NSTextField(labelWithString: "0.1.0"); ver.font = Theme.ui(11); ver.textColor = Theme.muted
+        let ver = NSTextField(labelWithString: "v0.1.1"); ver.font = Theme.ui(11); ver.textColor = Theme.muted
         statusDot = Dot(Theme.warn, size: 8)
         statusLabel = NSTextField(labelWithString: "CLI 未开启"); statusLabel.font = Theme.ui(11); statusLabel.textColor = Theme.muted
         let leftStack = NSStackView(views: [brand, ver, statusDot, statusLabel])
