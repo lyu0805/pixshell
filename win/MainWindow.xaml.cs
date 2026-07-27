@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
@@ -15,6 +16,7 @@ using Microsoft.Win32;
 using PixShell.Logging;
 using PixShell.Proxy;
 using PixShell.UI;
+using Renci.SshNet.Common;
 
 namespace PixShell;
 
@@ -31,6 +33,8 @@ public partial class MainWindow : Window
 {
     private readonly ObservableCollection<HostEntry> _hosts = new();
     private string _htmlPath = "";
+    /// <summary>与 csproj / mac CFBundleShortVersionString 对齐的展示与更新比较版本。</summary>
+    private const string AppVersion = "0.1.1";
 
     private bool _sideCollapsed;
     private double _sidebarWidth = UiStore.Load().SidebarWidth;
@@ -61,7 +65,7 @@ public partial class MainWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        Log.Banner("0.1.1");
+        Log.Banner(AppVersion);
         ThemeManager.Initialize();   // 读回上次选的主题（之前 Windows 端主题完全没持久化）
         HighlightColors.Load();
         SourceInitialized += MainWindow_SourceInitialized;
@@ -306,7 +310,8 @@ public partial class MainWindow : Window
         QuickConnectPanel.Reload();
     }
 
-    // 密码解析：DPAPI 已存 → 直接用；否则弹框输入(可选记住)。对齐 mac openSession 的密码解析链。
+    // 密码解析：DPAPI 已存 → 直接用；有可用私钥可无密码直连；否则弹框输入(可选记住)。
+    // 对齐 ReconnectInPlaceAsync / BridgeConnect：key-only 不强制 PromptPassword。
     private void ConnectToHost(HostEntry host)
     {
         // RDP 类型不走 SSH：直接拉起系统远程桌面 mstsc（对齐老仓库 app.js connectionType===200 分支）。
@@ -314,14 +319,30 @@ public partial class MainWindow : Window
         var pass = CredentialStore.GetPassword(host.Id);
         if (pass == null)
         {
-            var (entered, remember) = PromptPassword(host);
-            if (entered == null) return;
-            pass = entered;
-            if (remember) CredentialStore.SetPassword(host.Id, pass);
+            if (HasUsablePrivateKey(host))
+            {
+                // 私钥文件在：允许空密码走公钥认证，不再无条件弹框。
+                pass = "";
+            }
+            else
+            {
+                var (entered, remember) = PromptPassword(host);
+                if (entered == null) return;
+                pass = entered;
+                if (remember) CredentialStore.SetPassword(host.Id, pass);
+            }
         }
         RecentsStore.NoteRecent(host.Id);
         QuickConnectPanel.Reload();
         _ = OpenSessionTab(host, pass);
+    }
+
+    /// <summary>主机配置了 KeyPath 且文件真实存在（展开 ~ / 环境变量后）。</summary>
+    private static bool HasUsablePrivateKey(HostEntry host)
+    {
+        if (string.IsNullOrWhiteSpace(host.KeyPath)) return false;
+        try { return File.Exists(TerminalSession.ExpandKeyPath(host.KeyPath)); }
+        catch { return false; }
     }
 
     /// <summary>RDP 主机：拉起 Windows 系统远程桌面 mstsc。端口默认 3389（主机端口是 SSH 默认 22 时兜底）。
@@ -397,9 +418,29 @@ public partial class MainWindow : Window
         UpdateWorkCenterVisibility();
 
         ConnectAnim.Begin($"{host.Username}@{host.Host}:{host.Port}");   // 连接动画（终端里不写"连接中"）
+
+        // ---- 终端初始化与 SSH 分 catch：Init 失败绝不当成认证失败、不删密码、不成功动画 ----
         try
         {
             await session.InitAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"终端初始化失败 {host.Username}@{host.Host}: {ex.Message}", "session");
+            ConnectAnim.Fail("终端初始化失败");
+            SetStatus("终端初始化失败: " + ex.Message);
+            MessageBox.Show(this,
+                "终端无法启动：
+" + ex.Message + "
+
+不会尝试 SSH 连接，已保存的密码也未改动。",
+                "PixShell", MessageBoxButton.OK, MessageBoxImage.Warning);
+            CloseTab(item);
+            return;
+        }
+
+        try
+        {
             session.ApplyTermScheme(Terminal.TermSchemeStore.Current);
             var proxy = ProxyStore.Find(host.ProxyId);
             await session.ConnectAsync(host.Host, host.Port, host.Username, pass, host.KeyPath, proxy);
@@ -411,15 +452,32 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             Log.Error($"会话打开失败 {host.Username}@{host.Host}: {ex.Message}", "session");
-            // 认证/连接失败：清掉可能错误的已记住密码，避免下次仍用坏密码反复重试触发锁定（对齐 mac 认证失败自愈）。
-            CredentialStore.Remove(host.Id);
-            ConnectAnim.Fail("认证失败");
-            SetStatus("连接失败: " + ex.Message);
-            // 并且**当场重新弹密码框**（带"记住密码"勾选）让用户改密码重试，
-            // 而不是只丢一行报错让用户自己去点重连（对齐 mac promptRetryPassword）。
-            // 私钥登录失败不弹密码框——那是 key 的问题，不是密码错。
-            if (string.IsNullOrEmpty(host.KeyPath)) PromptRetryPassword(host, item);
+            var authFail = IsAuthFailure(ex);
+            // 仅认证失败才清 DPAPI 密码；断网/超时/算法协商等保留凭据，避免误伤。
+            if (authFail) CredentialStore.Remove(host.Id);
+            ConnectAnim.Fail(authFail ? "认证失败" : "连接失败");
+            SetStatus((authFail ? "认证失败: " : "连接失败: ") + ex.Message);
+            // 认证失败且非私钥路径：当场重弹密码框（对齐 mac promptRetryPassword）。
+            // 私钥登录失败不弹密码框——那是 key 的问题。
+            if (authFail && string.IsNullOrEmpty(host.KeyPath)) PromptRetryPassword(host, item);
         }
+    }
+
+    /// <summary>区分 SSH 认证失败 vs 网络/超时/其它。只有前者才应清掉已存密码。</summary>
+    private static bool IsAuthFailure(Exception ex)
+    {
+        for (Exception? e = ex; e != null; e = e.InnerException)
+        {
+            if (e is SshAuthenticationException) return true;
+            var name = e.GetType().FullName ?? e.GetType().Name;
+            if (name.Contains("SshAuthentication", StringComparison.OrdinalIgnoreCase)) return true;
+            var msg = e.Message ?? "";
+            if (msg.Contains("Permission denied", StringComparison.OrdinalIgnoreCase)) return true;
+            if (msg.Contains("Authentication failed", StringComparison.OrdinalIgnoreCase)) return true;
+            if (msg.Contains("authentication failed", StringComparison.OrdinalIgnoreCase)) return true;
+            if (msg.Contains("认证失败", StringComparison.Ordinal) || msg.Contains("认证被拒", StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -538,8 +596,8 @@ public partial class MainWindow : Window
         Sessions.SelectedItem = item;
 
         var pass = session.Password ?? CredentialStore.GetPassword(host.Id);
-        // 没有可用密码且不是私钥登录 → 要一次密码（框里带"记住密码"）。
-        if (string.IsNullOrEmpty(pass) && string.IsNullOrEmpty(host.KeyPath))
+        // 没有可用密码且没有可用私钥 → 要一次密码（框里带"记住密码"）。
+        if (string.IsNullOrEmpty(pass) && !HasUsablePrivateKey(host))
         {
             var (entered, remember) = PromptPassword(host);
             if (entered == null) return;
@@ -1175,10 +1233,10 @@ public partial class MainWindow : Window
 
         menu.Items.Add(new Separator());
         var help = new MenuItem { Header = "帮助" };
-        help.Items.Add(Item("关于 PixShell", () => MessageBox.Show(this, "PixShell 0.1.1\nWindows 原生 SSH / SFTP 客户端\nWPF + WebView2/xterm.js + SSH.NET", "关于")));
+        help.Items.Add(Item("关于 PixShell", () => MessageBox.Show(this, $"PixShell {AppVersion}\nWindows 原生 SSH / SFTP 客户端\nWPF + WebView2/xterm.js + SSH.NET", "关于")));
         help.Items.Add(Item("接入 AI 工具…", OpenAIIntegration));
         help.Items.Add(new Separator());
-        help.Items.Add(Item("项目仓库", () => { try { Process.Start(new ProcessStartInfo("https://github.com/") { UseShellExecute = true }); } catch { } }));
+        help.Items.Add(Item("项目仓库", () => { try { Process.Start(new ProcessStartInfo("https://github.com/lyu0805/pixshell") { UseShellExecute = true }); } catch { } }));
         menu.Items.Add(help);
 
         menu.IsOpen = true;
@@ -1208,14 +1266,109 @@ public partial class MainWindow : Window
         if (Sessions.SelectedItem is TabItem item) _ = ReconnectInPlaceAsync(item);
     }
 
-    /// <summary>软件更新：对齐 mac checkUpdate。发行服务端尚为占位（同 OAuth 备份），
-    /// 故先诚实地报"已是最新"，接入真实 releases 端点后替换为版本比对。</summary>
+    /// <summary>软件更新：对齐 mac AppUpdate/checkUpdate。
+    /// 请求 GitHub Releases latest，semver 比较；网络/解析失败不谎称已是最新。</summary>
     private void CheckUpdate()
     {
         SetStatus("检查更新…");
-        SetStatus("已是最新版本 0.1.1");
-        
-        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/lyu0805/pixshell/releases") { UseShellExecute = true });
+        _ = CheckUpdateAsync();
+    }
+
+    private async Task CheckUpdateAsync()
+    {
+        const string repo = "lyu0805/pixshell";
+        const string releasesUrl = "https://github.com/" + repo + "/releases";
+        const string apiUrl = "https://api.github.com/repos/" + repo + "/releases/latest";
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            http.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/vnd.github+json");
+            http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "PixShell/" + AppVersion);
+            using var resp = await http.GetAsync(apiUrl);
+            if (!resp.IsSuccessStatusCode)
+            {
+                Log.Warn($"检查更新 HTTP {(int)resp.StatusCode}", "update");
+                SetStatus("无法获取更新信息");
+                MessageBox.Show(this,
+                    "无法获取更新信息（网络或仓库不可达）。
+可手动打开发行页查看。",
+                    "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            var json = await resp.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var tag = root.TryGetProperty("tag_name", out var tn) ? tn.GetString() ?? ""
+                    : root.TryGetProperty("name", out var nm) ? nm.GetString() ?? "" : "";
+            var latest = NormalizeVersion(tag);
+            if (string.IsNullOrEmpty(latest))
+            {
+                SetStatus("无法获取更新信息");
+                MessageBox.Show(this, "无法解析远端版本号。", "检查更新",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var cmp = CompareSemver(latest, AppVersion);
+            if (cmp > 0)
+            {
+                SetStatus($"发现新版本 {latest}");
+                var ans = MessageBox.Show(this,
+                    $"发现新版本 {latest}
+当前 {AppVersion}。是否打开发行页下载？",
+                    "软件更新", MessageBoxButton.YesNo, MessageBoxImage.Information);
+                if (ans == MessageBoxResult.Yes)
+                {
+                    Process.Start(new ProcessStartInfo(releasesUrl) { UseShellExecute = true });
+                }
+            }
+            else
+            {
+                SetStatus($"已是最新版本 {AppVersion}");
+                MessageBox.Show(this, $"当前 {AppVersion} 已是最新版本", "已是最新",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            Log.Info($"检查更新结果 latest={latest} current={AppVersion} cmp={cmp}", "update");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"检查更新失败: {ex.Message}", "update");
+            SetStatus("无法获取更新信息");
+            MessageBox.Show(this,
+                "无法获取更新信息（网络或仓库不可达）。
+可手动打开发行页查看。",
+                "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
+
+    /// <summary>去掉前缀 v，只留版本主体。</summary>
+    private static string NormalizeVersion(string raw)
+    {
+        var s = (raw ?? "").Trim();
+        if (s.StartsWith("v", StringComparison.OrdinalIgnoreCase)) s = s[1..];
+        return s.Trim();
+    }
+
+    /// <summary>语义化比较：a&gt;b → 1，a&lt;b → -1，相等 0（缺失段按 0）。</summary>
+    private static int CompareSemver(string a, string b)
+    {
+        static int[] Parts(string v) =>
+            NormalizeVersion(v).Split('.').Select(p =>
+            {
+                var digits = new string(p.TakeWhile(char.IsDigit).ToArray());
+                return int.TryParse(digits, out var n) ? n : 0;
+            }).ToArray();
+
+        var x = Parts(a);
+        var y = Parts(b);
+        var n = Math.Max(x.Length, y.Length);
+        for (var i = 0; i < n; i++)
+        {
+            var l = i < x.Length ? x[i] : 0;
+            var r = i < y.Length ? y[i] : 0;
+            if (l != r) return l > r ? 1 : -1;
+        }
+        return 0;
     }
 
     private async Task TermCopy()

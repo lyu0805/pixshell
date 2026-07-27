@@ -105,7 +105,15 @@ extension AppDelegate {
     }
 
     // MARK: 焦点模型（老仓库交互文档 §6：⌃; 命令框 / ⌃` 终端 / Esc 从命令框回终端）
-    @objc func focusCommandBox() { if let f = cmdInput { window.makeFirstResponder(f) } }
+    @objc func focusCommandBox() {
+        // 底栏命令框已合并：焦点落到命令板编辑器
+        if let ed = cmdPanel?.editor {
+            window.makeFirstResponder(ed)
+            showCmds()
+        } else if let f = cmdInput {
+            window.makeFirstResponder(f)
+        }
+    }
     @objc func focusTerminal() {
         guard sessions.indices.contains(current) else { return }
         window.makeFirstResponder(sessions[current].termView)

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="220" viewBox="0 0 960 220" role="img" aria-label="PixShell">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1220"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="text" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#e2e8f0"/>
+      <stop offset="100%" stop-color="#93c5fd"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="220" rx="28" fill="url(#bg)"/>
+  <rect x="1.5" y="1.5" width="957" height="217" rx="26.5" fill="none" stroke="#1f2937" stroke-width="3"/>
+  <g transform="translate(48,35)">
+    <rect x="0" y="0" width="150" height="150" rx="28" fill="#020617" stroke="#334155" stroke-width="4"/>
+    <g transform="translate(11,11) scale(4)">
+      <rect x="2" y="2" width="28" height="28" fill="#000000"/>
+      <rect x="4" y="4" width="24" height="24" fill="#1e1e2e"/>
+      <rect x="4" y="4" width="24" height="2" fill="#313244"/>
+      <rect x="4" y="4" width="2" height="24" fill="#313244"/>
+      <rect x="6" y="6" width="20" height="16" fill="#000000"/>
+      <rect x="7" y="7" width="18" height="14" fill="#0f172a"/>
+      <rect x="7" y="10" width="18" height="1" fill="#1e293b"/>
+      <rect x="7" y="14" width="18" height="1" fill="#1e293b"/>
+      <rect x="9" y="9" width="2" height="2" fill="#38bdf8"/>
+      <rect x="11" y="11" width="2" height="2" fill="#38bdf8"/>
+      <rect x="9" y="13" width="2" height="2" fill="#38bdf8"/>
+      <rect x="14" y="12" width="4" height="4" fill="#4ade80"/>
+      <rect x="6" y="24" width="20" height="4" fill="#181825"/>
+      <rect x="8" y="25" width="4" height="2" fill="#f38ba8"/>
+      <rect x="14" y="25" width="4" height="2" fill="#f9e2af"/>
+      <rect x="22" y="25" width="2" height="2" fill="#a6e3a1"/>
+    </g>
+  </g>
+  <text x="230" y="118" font-family="SF Pro Display, Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="84" font-weight="700" fill="url(#text)">PixShell</text>
+  <text x="234" y="158" font-family="SF Pro Text, Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="24" fill="#94a3b8">Cross-platform SSH / SFTP client</text>
+</svg>

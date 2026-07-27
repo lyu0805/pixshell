@@ -7,7 +7,7 @@ final class DragBar: NSView { override var mouseDownCanMoveWindow: Bool { true }
 // 五区布局（自绘复刻老仓库）：自定义标题栏(红绿灯+图标+胶囊tab) / 侧栏 | 终端 / 底部坞 / 命令栏 / 状态栏。
 extension AppDelegate {
     func buildWindow() {
-        let rect = NSRect(x: 0, y: 0, width: 1024, height: 768)
+        let rect = NSRect(x: 0, y: 0, width: 800, height: 600)
         window = NSWindow(contentRect: rect,
                           styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
@@ -17,7 +17,7 @@ extension AppDelegate {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
-        window.setFrameAutosaveName("PixShell-Main-v3")
+        window.setFrameAutosaveName("PixShell-Main-v4")  // 恢复 800×600 默认；换名避免 v3 的 1024 autosave 覆盖
         window.center()
         installContent()
         window.makeKeyAndOrderFront(nil)
@@ -556,10 +556,18 @@ extension AppDelegate {
                   let ssh = self.sessions[self.current].ssh else { done(""); return }
             ssh.exec(cmd) { done($0) }
         }
-        sftpPanel.onInsertToCommand = { [weak self] path in                          // 右键「插入命令框」
-            guard let self = self, let f = self.cmdInput else { return }
-            f.stringValue = f.stringValue.isEmpty ? path : f.stringValue + " " + path
-            self.window.makeFirstResponder(f)
+        sftpPanel.onInsertToCommand = { [weak self] path in                          // 右键「插入命令框」→ 命令板
+            guard let self = self, let panel = self.cmdPanel else { return }
+            let cur = panel.editor.string
+            if cur.isEmpty {
+                panel.editor.string = path
+            } else if cur.hasSuffix(" ") || cur.hasSuffix("\n") {
+                panel.editor.string = cur + path
+            } else {
+                panel.editor.string = cur + " " + path
+            }
+            self.window.makeFirstResponder(panel.editor)
+            self.showCmds()
         }
         bottomBody.addSubview(sftpPanel); bottomBody.addSubview(cmdPanel)
         for p: NSView in [sftpPanel, cmdPanel] {
@@ -630,13 +638,53 @@ extension AppDelegate {
         sftpPanel?.connectIfNeeded(host: sess.host, password: sess.password)
     }
 
-    // MARK: 发送（原单行命令栏已合并至命令板，保留此入口供扩展）
+    // MARK: 发送（底栏单行已合并至命令板；历史「运行」统一走 sendCommandText，禁止空 cmdInput）
     @objc func sendCommand() {
-        let t = cmdInput.stringValue
-        guard !t.isEmpty, sessions.indices.contains(current) else { return }
-        sessions[current].ssh?.send(Array((t + "\r").utf8))
-        cmdInput.stringValue = ""
+        // 无参入口：读命令板编辑器
+        sendCommandText(cmdPanel?.editor.string)
     }
+
+    /// 发送文本到当前会话。历史「运行」必须传非空 cmd，避免读未初始化的 cmdInput。
+    func sendCommandText(_ raw: String?) {
+        var t = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty, let input = cmdInput {
+            t = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !t.isEmpty else { return }
+        guard sessions.indices.contains(current) else { setStatus("无活动会话"); return }
+
+        var payload = t
+        if CommandParams.hasUnresolved(payload) {
+            var values: [String: String] = [:]
+            for name in CommandParams.parse(payload) {
+                let a = NSAlert.pix(); a.messageText = "参数 \(name)"; a.informativeText = "请输入 ${\(name)} 的值"
+                a.addButton(withTitle: "确定"); a.addButton(withTitle: "取消")
+                let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 22)); a.accessoryView = tf
+                guard a.runModal() == .alertFirstButtonReturn else { return }
+                values[name] = tf.stringValue
+            }
+            payload = CommandParams.render(payload, values: values)
+        }
+
+        let sendText: String
+        if payload.hasSuffix("\r") {
+            sendText = payload
+        } else if payload.hasSuffix("\n") {
+            sendText = String(payload.dropLast()) + "\r"
+        } else {
+            sendText = payload + "\r"
+        }
+        sessions[current].ssh?.send(Array(sendText.utf8))
+        let hist = payload.trimmingCharacters(in: CharacterSet(charactersIn: "\r\n"))
+        cmdHistory.push(hist)
+        applyCdSync(for: hist)
+        // 清空命令板/残留输入，避免下次空跑
+        if let panel = cmdPanel, raw == nil || raw == panel.editor.string {
+            panel.editor.string = ""
+        }
+        cmdInput?.stringValue = ""
+    }
+
     // 底栏高度拖拽条（对齐老仓库 #bottomResizer：拖动改高度并持久化）
     func buildDockResizer() -> NSView {
         let d = HDividerView(); d.translatesAutoresizingMaskIntoConstraints = false

@@ -75,6 +75,12 @@ extension AppDelegate: NSTextFieldDelegate {
 
     // MARK: 发送
     @objc func sendCommandBox() {
+        // 底栏命令框已合并到命令板：有 cmdInput 走旧路径，否则委托 sendCommandText
+        if cmdInput == nil {
+            sendCommandText(cmdPanel?.editor.string)
+            if let ed = cmdPanel?.editor { window.makeFirstResponder(ed) }
+            return
+        }
         guard let cmdInput = cmdInput else { return }
         var text = cmdInput.stringValue
         guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
@@ -140,13 +146,15 @@ extension AppDelegate: NSTextFieldDelegate {
             pop.close()
         }
         vc.onRun = { [weak self] cmd in
+            // 直接把历史文本交给 sendCommandText，禁止走空的 cmdInput
             self?.cmdPanel?.editor.string = cmd
             if let ed = self?.cmdPanel?.editor {
                 self?.window.makeFirstResponder(ed)
             }
-            self?.sendCommand()
+            self?.sendCommandText(cmd)
             pop.close()
         }
+
         vc.onCopy = { [weak self] cmd in
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(cmd, forType: .string)

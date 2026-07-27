@@ -81,6 +81,9 @@ public sealed class TerminalSession : IDisposable
     private readonly object _pendingMsgLock = new();
     private readonly List<string> _pendingMsgs = new();
     private const int PendingMsgCap = 500;
+    /// <summary>InitAsync 等待 JS ready；超时/失败则连接前就能明确报错，避免黑屏假成功。</summary>
+    private TaskCompletionSource<bool>? _readyTcs;
+    private const int ReadyTimeoutMs = 10_000;
 
     private void AppendOutputBuffer(string text)
     {
@@ -118,16 +121,54 @@ public sealed class TerminalSession : IDisposable
         _htmlPath = htmlPath;
     }
 
-    /// <summary>初始化 WebView2 并加载本地 xterm 页面（连接前调用一次）。</summary>
+    /// <summary>初始化 WebView2 并加载本地 xterm 页面（连接前调用一次）。
+    /// 缺 terminal.html / Runtime 缺失 / 导航失败 / ready 超时都会抛异常，
+    /// 由 MainWindow 回滚 tab 并展示明确失败，而不是成功动画+黑屏。</summary>
     public async Task InitAsync()
     {
-        await View.EnsureCoreWebView2Async();
+        if (string.IsNullOrWhiteSpace(_htmlPath) || !File.Exists(_htmlPath))
+            throw new FileNotFoundException(
+                "终端页面缺失，无法打开会话。请确认安装目录下存在 web/terminal.html。",
+                _htmlPath);
+
+        _readyTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _jsReady = false;
+
+        try
+        {
+            await View.EnsureCoreWebView2Async();
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                "WebView2 初始化失败（请安装 Microsoft Edge WebView2 Runtime）：" + ex.Message, ex);
+        }
+
         View.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
         // 关掉 WebView2 自带的浏览器右键菜单（刷新/查看源码等），改用下面的自绘终端右键菜单
         // （复制/粘贴/全选/清屏 + 设置背景，对齐 mac 版终端右键菜单）。
         View.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
         View.CoreWebView2.ContextMenuRequested += OnContextMenuRequested;
+
+        var navFailed = (string?)null;
+        void OnNav(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+        {
+            View.CoreWebView2.NavigationCompleted -= OnNav;
+            if (!e.IsSuccess)
+            {
+                navFailed = $"终端页面导航失败 (WebErrorStatus={e.WebErrorStatus})";
+                _readyTcs?.TrySetResult(false);
+            }
+        }
+        View.CoreWebView2.NavigationCompleted += OnNav;
         View.CoreWebView2.Navigate(new Uri(_htmlPath).AbsoluteUri);
+
+        var completed = await Task.WhenAny(_readyTcs.Task, Task.Delay(ReadyTimeoutMs));
+        if (completed != _readyTcs.Task)
+            throw new TimeoutException("终端页面加载超时（xterm 未就绪）。请检查 web/terminal.html 与依赖资源。");
+
+        if (!await _readyTcs.Task)
+            throw new InvalidOperationException(navFailed ?? "终端页面未能就绪。");
     }
 
     // ---------------------------------------------------------------------
@@ -243,22 +284,35 @@ public sealed class TerminalSession : IDisposable
     }
 
     // 后台线程：建立 SSH 会话 + 交互式 shell + 启动读线程。
+    // try/finally：Connect/CreateShellStream 中途失败时释放 SshClient，避免句柄泄漏。
     private void Connect(string host, int port, string user, string pass, string? keyPath, ProxyConfig? proxy)
     {
         var info = BuildConnectionInfo(host, port, user, pass, keyPath, proxy);
 
         var ssh = new SshClient(info);
-        ssh.Connect();
+        try
+        {
+            ssh.KeepAliveInterval = TimeSpan.FromSeconds(30);
+            ssh.Connect();
 
-        var shell = ssh.CreateShellStream("xterm-256color", _cols, _rows, 0, 0, 4096);
+            var shell = ssh.CreateShellStream("xterm-256color", _cols, _rows, 0, 0, 4096);
 
-        _ssh = ssh;
-        _shell = shell;
+            _ssh = ssh;
+            _shell = shell;
+            ssh = null; // 所有权已转给字段，finally 不再 Dispose
 
-        CacheChannelReflection(shell);
+            CacheChannelReflection(shell);
 
-        _readThread = new Thread(ReadPump) { IsBackground = true, Name = "ssh-read-pump" };
-        _readThread.Start();
+            _readThread = new Thread(ReadPump) { IsBackground = true, Name = "ssh-read-pump" };
+            _readThread.Start();
+        }
+        finally
+        {
+            if (ssh != null)
+            {
+                try { ssh.Dispose(); } catch { /* 失败路径清理 */ }
+            }
+        }
     }
 
     // 后台读线程主体。ShellStream.Read 阻塞直到有数据；返回 0 表示通道关闭。
@@ -382,6 +436,7 @@ public sealed class TerminalSession : IDisposable
                     FlushPendingMessages();
                     if (_pendingSchemeJson != null) SendRawToTerm("{\"t\":\"theme\",\"theme\":" + _pendingSchemeJson + "}");
                     if (_pendingFocus) FocusWhenReady();
+                    _readyTcs?.TrySetResult(true);
                     break;
             }
         }
@@ -508,6 +563,17 @@ public sealed class TerminalSession : IDisposable
         return sftp;
     }
 
+    /// <summary>展开 ~ 与环境变量，供私钥路径存在性检查与加载共用。</summary>
+    internal static string ExpandKeyPath(string path)
+    {
+        path = path.Trim();
+        if (path == "~")
+            return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (path.StartsWith("~/") || path.StartsWith("~\\"))
+            path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path[2..]);
+        return Environment.ExpandEnvironmentVariables(path);
+    }
+
     /// <summary>
     /// 构造认证方式列表：私钥优先（配置了 keyPath 且能成功加载时），密码兜底——两种方式各只提交一次，
     /// 被拒即干净失败，不重试，避免反复尝试触发服务器端账号锁定（对齐 mac SSHUserAuthDelegate）。
@@ -518,7 +584,7 @@ public sealed class TerminalSession : IDisposable
         var methods = new List<Renci.SshNet.AuthenticationMethod>();
         if (!string.IsNullOrWhiteSpace(keyPath))
         {
-            var expanded = Environment.ExpandEnvironmentVariables(keyPath);
+            var expanded = ExpandKeyPath(keyPath);
             try
             {
                 if (!File.Exists(expanded))

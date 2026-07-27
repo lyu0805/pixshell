@@ -254,16 +254,19 @@ extension AppDelegate {
         AppUpdate.check(current: "0.1.1") { [weak self] st in
             guard let self = self else { return }
             self.setStatus(st.text)
-            if st.hasUpdate {
-                let v = st.version ?? "未知"
+            switch st {
+            case .updateAvailable(let v):
                 let a = NSAlert.pix(); a.messageText = "发现新版本 \(v)"
                 a.informativeText = "当前 0.1.1。是否打开发行页下载？"
                 a.addButton(withTitle: "打开发行页"); a.addButton(withTitle: "稍后")
-                if a.runModal() == .alertFirstButtonReturn, let u = st.htmlURL {
+                if a.runModal() == .alertFirstButtonReturn, let u = AppUpdate.releasesURL {
                     NSWorkspace.shared.open(u)
                 }
-            } else {
-                self.alert("软件更新", st.text)
+            case .latest:
+                self.alert("已是最新", "当前 0.1.1 已是最新版本")
+            case .unknown:
+                // 失败不谎称最新
+                self.alert("检查更新", "无法获取更新信息（网络或仓库不可达）")
             }
         }
     }
@@ -273,7 +276,7 @@ extension AppDelegate {
         alert("PixShell 0.1.1", "macOS 原生 SSH / SFTP 客户端\nSwift + AppKit + SwiftTerm + swift-nio-ssh")
     }
     @objc func menuRepo() {
-        if let u = URL(string: "https://github.com/") { NSWorkspace.shared.open(u) }
+        if let u = URL(string: "https://github.com/lyu0805/pixshell") { NSWorkspace.shared.open(u) }
     }
 
     // MARK: 通用

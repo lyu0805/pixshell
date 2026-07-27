@@ -3,6 +3,7 @@ name: build
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -14,17 +15,24 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Tag v0.1.1 → 0.1.1; branch/PR/dispatch default 0.1.1
+  PRODUCT_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.1.1' }}
+
 jobs:
+  # ─────────────────────────────────────────────
+  # macOS matrix: arm64 + x64 → dmg + zip
+  # ─────────────────────────────────────────────
   macos:
-    name: macOS ${{ matrix.target }}
+    name: macOS ${{ matrix.arch_label }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: mac-arm64
+          - arch_label: arm64
             runner: macos-15
             expected_arch: arm64
-          - target: mac-x64
+          - arch_label: x64
             runner: macos-15-intel
             expected_arch: x86_64
     runs-on: ${{ matrix.runner }}
@@ -34,6 +42,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW="${{ env.PRODUCT_VERSION }}"
+          RAW="${RAW#v}"
+          if [[ -z "$RAW" || "$RAW" == refs/* ]]; then
+            RAW="0.1.1"
+          fi
+          echo "version=$RAW" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $RAW"
 
       - name: Show toolchain
         run: |
@@ -49,21 +70,40 @@ jobs:
       - name: Build release
         run: swift build -c release -v
 
-      - name: Package app bundle
+      - name: Package .app
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: bash scripts/package-mac.sh release
 
-      - name: Create artifact archive
-        run: |
-          mkdir -p dist/artifacts
-          ditto -c -k --keepParent dist/PixShell.app "dist/artifacts/PixShell-${{ matrix.target }}.zip"
+      - name: Build DMG
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          ARCH: ${{ matrix.arch_label }}
+        run: bash scripts/make-dmg.sh
 
-      - name: Upload macOS app bundle
+      - name: Create app zip
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/artifacts
+          ZIP="dist/artifacts/PixShell-${VERSION}-mac-${{ matrix.arch_label }}.zip"
+          ditto -c -k --keepParent dist/PixShell.app "$ZIP"
+          ls -lh dist/artifacts/
+          file dist/artifacts/* || true
+
+      - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: PixShell-${{ matrix.target }}
-          path: mac/dist/artifacts/PixShell-${{ matrix.target }}.zip
+          name: PixShell-${{ steps.ver.outputs.version }}-mac-${{ matrix.arch_label }}
+          path: |
+            mac/dist/artifacts/PixShell-${{ steps.ver.outputs.version }}-mac-${{ matrix.arch_label }}.dmg
+            mac/dist/artifacts/PixShell-${{ steps.ver.outputs.version }}-mac-${{ matrix.arch_label }}.zip
           if-no-files-found: error
 
+  # ─────────────────────────────────────────────
+  # Windows: self-contained publish → zip + Inno
+  # ─────────────────────────────────────────────
   windows:
     name: Windows win-x64
     runs-on: windows-2025
@@ -74,6 +114,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW="${{ env.PRODUCT_VERSION }}"
+          RAW="${RAW#v}"
+          if [[ -z "$RAW" || "$RAW" == refs/* ]]; then
+            RAW="0.1.1"
+          fi
+          echo "version=$RAW" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $RAW"
+
       - name: Setup .NET 9 SDK
         uses: actions/setup-dotnet@v4
         with:
@@ -81,28 +134,217 @@ jobs:
 
       - name: Show toolchain
         shell: pwsh
-        run: |
-          dotnet --info
+        run: dotnet --info
 
       - name: Restore
         run: dotnet restore PixShell.csproj -r win-x64
 
-      - name: Build release
-        run: dotnet build PixShell.csproj -c Release -r win-x64 --no-restore --self-contained true -v minimal
-
-      - name: Publish win-x64
-        run: dotnet publish PixShell.csproj -c Release -r win-x64 --no-restore --no-build --self-contained true -o publish/win-x64
+      - name: Publish self-contained win-x64
+        run: >
+          dotnet publish PixShell.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -o publish/win-x64
+          -v minimal
+          -nologo
 
       - name: Check packaged web assets
         shell: pwsh
         run: |
-          foreach ($file in @('publish/win-x64/web/terminal.html','publish/win-x64/web/xterm.js','publish/win-x64/web/xterm.css','publish/win-x64/web/addon-fit.js')) {
+          $required = @(
+            'publish/win-x64/PixShell.exe',
+            'publish/win-x64/web/terminal.html',
+            'publish/win-x64/web/xterm.js',
+            'publish/win-x64/web/xterm.css',
+            'publish/win-x64/web/addon-fit.js'
+          )
+          foreach ($file in $required) {
             if (!(Test-Path $file)) { throw "Missing packaged asset: $file" }
           }
+          Write-Host '[OK] publish/win-x64 complete'
 
-      - name: Upload Windows publish output
+      - name: Zip publish output
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outDir = Join-Path (Get-Location) 'dist\artifacts'
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $zip = Join-Path $outDir "PixShell-$env:VERSION-win-x64.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path (Join-Path (Get-Location) 'publish\win-x64\*') `
+            -DestinationPath $zip -CompressionLevel Optimal
+          if (!(Test-Path $zip)) { throw "Zip missing: $zip" }
+          Get-Item $zip | Format-List FullName, Length
+
+      - name: Install Inno Setup 6
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if ($iscc) {
+            Write-Host "ISCC already present: $iscc"
+            echo "INNO_SETUP_ISCC=$iscc" >> $env:GITHUB_ENV
+            exit 0
+          }
+
+          $choco = Get-Command choco -ErrorAction SilentlyContinue
+          if ($choco) {
+            Write-Host 'Installing Inno Setup via chocolatey...'
+            choco install innosetup --no-progress -y
+          } else {
+            Write-Host 'Chocolatey missing; downloading official Inno Setup installer...'
+            $installer = Join-Path $env:RUNNER_TEMP 'innosetup-installer.exe'
+            # Official silent installer
+            Invoke-WebRequest -Uri 'https://jrsoftware.org/download.php/is.exe' `
+              -OutFile $installer -UseBasicParsing
+            Start-Process -FilePath $installer `
+              -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -Wait
+          }
+
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            $iscc = Get-ChildItem -Path "${env:ProgramFiles(x86)}","$env:ProgramFiles" `
+              -Filter ISCC.exe -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $iscc) { throw 'ISCC.exe not found after Inno Setup install' }
+          Write-Host "ISCC=$iscc"
+          echo "INNO_SETUP_ISCC=$iscc" >> $env:GITHUB_ENV
+          & $iscc /?
+
+      - name: Compile Inno Setup installer
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = $env:INNO_SETUP_ISCC
+          if (-not $iscc -or !(Test-Path -LiteralPath $iscc)) {
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          if (!(Test-Path -LiteralPath $iscc)) { throw "ISCC not found: $iscc" }
+
+          $publishAbs = (Resolve-Path 'publish\win-x64').Path
+          $outDir = Join-Path (Get-Location) 'dist\artifacts'
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $outputAbs = (Resolve-Path $outDir).Path
+          $iss = Join-Path (Get-Location) 'installer\PixShell.iss'
+          if (!(Test-Path -LiteralPath $iss)) { throw "Missing ISS: $iss" }
+
+          & $iscc `
+            "/DMyAppVersion=$env:VERSION" `
+            "/DPublishDir=$publishAbs" `
+            "/DOutputDir=$outputAbs" `
+            "/DArchLabel=x64" `
+            $iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
+
+          $setup = Join-Path $outDir "PixShell-$env:VERSION-win-x64-setup.exe"
+          if (!(Test-Path -LiteralPath $setup)) {
+            throw "Installer not produced: $setup"
+          }
+          Get-Item $setup | Format-List FullName, Length
+
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: PixShell-win-x64
-          path: win/publish/win-x64/
+          name: PixShell-${{ steps.ver.outputs.version }}-win-x64
+          path: |
+            win/dist/artifacts/PixShell-${{ steps.ver.outputs.version }}-win-x64.zip
+            win/dist/artifacts/PixShell-${{ steps.ver.outputs.version }}-win-x64-setup.exe
           if-no-files-found: error
+
+  # ─────────────────────────────────────────────
+  # Optional release on tag v*
+  # ─────────────────────────────────────────────
+  release:
+    name: GitHub Release
+    needs: [macos, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW="${GITHUB_REF_NAME}"
+          RAW="${RAW#v}"
+          echo "version=$RAW" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release version: $RAW (tag ${GITHUB_REF_NAME})"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: PixShell-${{ steps.ver.outputs.version }}-*
+          merge-multiple: true
+
+      - name: Stage release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER="${{ steps.ver.outputs.version }}"
+          mkdir -p staged
+          find release-assets -type f | sort
+          # merge-multiple flattens files into release-assets/
+          for f in \
+            "PixShell-${VER}-mac-arm64.dmg" \
+            "PixShell-${VER}-mac-arm64.zip" \
+            "PixShell-${VER}-mac-x64.dmg" \
+            "PixShell-${VER}-mac-x64.zip" \
+            "PixShell-${VER}-win-x64.zip" \
+            "PixShell-${VER}-win-x64-setup.exe"
+          do
+            src=$(find release-assets -type f -name "$f" | head -n1)
+            if [[ -z "$src" ]]; then
+              echo "Missing asset: $f" >&2
+              find release-assets -type f >&2 || true
+              exit 1
+            fi
+            cp -v "$src" "staged/$f"
+          done
+          ls -lh staged
+
+      - name: Create / update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find staged -type f | sort)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No staged release assets" >&2
+            exit 1
+          fi
+          notes="PixShell ${VERSION}
+
+          - macOS arm64 / x64: .dmg + .zip (unsigned CI build)
+          - Windows x64: self-contained .zip + Inno Setup installer
+
+          Tag: ${TAG}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists — uploading assets"
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            echo "Creating release $TAG"
+            gh release create "$TAG" "${files[@]}" \
+              --title "PixShell ${VERSION}" \
+              --notes "$notes"
+          fi

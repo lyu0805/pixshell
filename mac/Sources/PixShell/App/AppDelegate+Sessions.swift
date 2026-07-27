@@ -1,5 +1,6 @@
 import AppKit
 import SwiftTerm
+@preconcurrency import NIOSSH
 
 // 多会话开/切/关 + 顶栏 tab + SSH/终端 delegate。
 extension AppDelegate {
@@ -9,7 +10,8 @@ extension AppDelegate {
         openSession(to: store.hosts[tv.selectedRow])
     }
 
-    // 打开会话：解析密码（env → 钥匙串 → 弹框输入），再真正建立连接。
+    // 打开会话：解析凭据（env → 钥匙串 → 仅私钥直连 → 弹框密码），再真正建立连接。
+    // key-only（配置了 keyPath、无密码）不得强制弹密码；空密码 + 无私钥才是 password-auth 闸门。
     func openSession(to host: Host) {
         // RDP 类型不走 SSH：直接拉起系统远程桌面客户端（对齐老仓库 app.js connectionType===200 分支）。
         if host.isRdp { launchRdp(host); return }
@@ -19,7 +21,11 @@ extension AppDelegate {
         if let stored = Keychain.password(for: host.id), !stored.isEmpty {
             beginSession(to: host, password: stored); return
         }
-        // 没有可用密码 → 弹框让用户输入（可勾选记住）。这是"连不上"的根治：不再依赖易失配的钥匙串。
+        // 仅私钥：后端 SSHUserAuthDelegate / OpenSSH -i 已支持 key-first，UI 不再拦。
+        if !host.keyPath.isEmpty {
+            beginSession(to: host, password: ""); return
+        }
+        // 密码认证路径：无 key、无已存密码 → 必须向用户要密码；空串直接 return（与 key auth 区分）。
         promptPassword(for: host, prefill: "") { [weak self] pw, remember in
             guard let self = self, let pw = pw, !pw.isEmpty else { return }
             if remember { Keychain.setPassword(pw, for: host.id) }
@@ -65,6 +71,17 @@ extension AppDelegate {
     /// nio-ssh 谈崩时抛的是 keyExchange/unsupported 一类错误；命中就该回落到系统 ssh。
     static func looksLikeAlgorithmMismatch(_ error: Error?) -> Bool {
         guard let e = error else { return false }
+        // 强类型优先（ErrorType 是 struct，用 == 而不是 enum switch）。
+        if let nio = e as? NIOSSHError {
+            let t = nio.type
+            if t == .keyExchangeNegotiationFailure
+                || t == .unknownPublicKey
+                || t == .unknownSignature
+                || t == .invalidHostKeyForKeyExchange
+                || t == .invalidExchangeHashSignature {
+                return true
+            }
+        }
         let s = "\(e) \(e.localizedDescription)".lowercased()
         for k in ["no matching", "keyexchange", "key exchange", "unsupported", "negotiat",
                   "algorithm", "nosuitable", "no common", "unknownpublickey", "invalidhostkey"] {
@@ -73,9 +90,89 @@ extension AppDelegate {
         return false
     }
 
+    /// 网络/代理/DNS/超时类失败 —— **禁止**清 Keychain、不要误导成「密码错了」。
+    static func looksLikeNetworkFailure(_ error: Error?) -> Bool {
+        guard let e = error else { return false }
+        if e is ProxyDialError { return true }
+        let ns = e as NSError
+        if ns.domain == NSPOSIXErrorDomain { return true }
+        if ns.domain == NSURLErrorDomain { return true }
+        // 注意：NIOSSHError.tcpShutdown 在认证被拒时也很常见，不能单凭它当网络失败，
+        // 否则错密不会弹重试。只认更明确的连通性错误。
+        let s = "\(e) \(e.localizedDescription)".lowercased()
+        let hint: String
+        if let oe = e as? OpenSSHExitError { hint = oe.hint.lowercased() } else { hint = "" }
+        let blob = s + " " + hint
+        for k in [
+            "connection refused", "connection reset", "timed out", "timeout",
+            "nodename nor servname", "network is unreachable", "host is down",
+            "no route to host", "could not resolve", "name or service not known",
+            "broken pipe", "connect failed",
+            "host unreachable", "network down",
+            "socket not connected", "operation timed out", "i/o timeout",
+            "nio connection", "connect() failed", "无法分配伪终端",
+            "socks5", "socks4", "http connect", "network is down",
+            "host key verification failed",
+            "proxycommand", "proxy connect"
+        ] {
+            if blob.contains(k) { return true }
+        }
+        return false
+    }
+
+    /// 明确的认证失败（错密/拒公钥/无更多方法）。
+    static func looksLikeAuthFailure(_ error: Error?) -> Bool {
+        guard let e = error else { return false }
+        let s = "\(e) \(e.localizedDescription)".lowercased()
+        for k in [
+            "permission denied", "authentication failed", "auth fail",
+            "invalid credentials", "access denied", "too many authentication",
+            "no more authentication methods", "permission_denied",
+            "unauthorized", "wrong password", "invalid userauth",
+            "userauth", "authentication methods", "not authorized"
+        ] {
+            if s.contains(k) { return true }
+        }
+        if let oe = e as? OpenSSHExitError {
+            let h = (oe.hint + " " + (oe.errorDescription ?? "")).lowercased()
+            // 有明确网络语义 → 不当认证（交给 network）。
+            for k in ["connection refused", "connection reset", "timed out", "timeout",
+                      "could not resolve", "no route", "network is unreachable",
+                      "operation timed out", "connection timed out", "nodename",
+                      "host key verification failed"] {
+                if h.contains(k) { return false }
+            }
+            for k in ["permission denied", "authentication failed", "auth fail",
+                      "denied", "publickey", "password"] {
+                if h.contains(k) { return true }
+            }
+            // 无 hint 的 exit≠0：偏向认证，保证错密仍能弹重试。
+            return true
+        }
+        return false
+    }
+
+    /// 关闭原因分类：决定是否回落 OpenSSH / 是否删 Keychain / 是否弹密码。
+    enum SSHCloseClass { case clean, algorithm, network, auth }
+
+    static func classifyClose(_ error: Error?) -> SSHCloseClass {
+        guard let error = error else { return .clean }
+        if looksLikeAlgorithmMismatch(error) { return .algorithm }
+        // 认证关键字优先于笼统网络，保证错密仍弹重试。
+        if looksLikeAuthFailure(error) { return .auth }
+        if looksLikeNetworkFailure(error) { return .network }
+        // 未知错误且 shell 从未打开：保守当认证（保留错密弹重试）；网络关键字已尽量覆盖 P0-1。
+        return .auth
+    }
+
     func startSSH(for sess: TermSession, password: String, forceOpenSSH: Bool = false) {
         let host = sess.host
         sess.password = password
+        // 先拆旧传输，避免 EventLoopGroup / 旧 pty 泄漏，也防止迟到回调串台。
+        if let old = sess.ssh {
+            sess.ssh = nil
+            old.close()
+        }
         // 复位一次性状态：这是一条全新的连接，别把上一条的"曾经连上过/已处理关闭"带过来。
         sess.connected = false
         sess.shellOpened = false
@@ -502,28 +599,44 @@ extension AppDelegate {
         sess.connected = false
         let t = sess.termView.getTerminal()
         if !wasUp {
-            // 内置实现算法太窄（没有 RSA 主机密钥 / 没有 aes-ctr / 没有 dh-group），
-            // 老服务器会在**握手阶段**就谈崩。这种情况不是密码问题，别去动钥匙串、别弹密码框，
-            // 直接用系统 OpenSSH 把这条会话重连一次（见 OpenSSHSession 注释）。
-            if !sess.triedOpenSSHFallback, Self.looksLikeAlgorithmMismatch(error) {
-                sess.triedOpenSSHFallback = true
-                Log.warn("算法协商失败（\(error?.localizedDescription ?? "未知")），改用系统 ssh 重连 \(sess.host.subtitle)", "ssh")
-                let pw = sess.password ?? ""
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self, let s = sess as TermSession? else { return }
-                    self.startSSH(for: s, password: pw, forceOpenSSH: true)
+            let kind = Self.classifyClose(error)
+            switch kind {
+            case .algorithm:
+                // 内置实现算法太窄：不是密码问题，别动钥匙串、别弹密码框，回落系统 OpenSSH 一次。
+                if !sess.triedOpenSSHFallback {
+                    sess.triedOpenSSHFallback = true
+                    Log.warn("算法协商失败（\(error?.localizedDescription ?? "未知")），改用系统 ssh 重连 \(sess.host.subtitle)", "ssh")
+                    let pw = sess.password ?? ""
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
+                        self.startSSH(for: sess, password: pw, forceOpenSSH: true)
+                    }
+                    return
                 }
-                return
+                // 已经回落过仍算法向失败（极少）：只报错，不动钥匙串。
+                Log.warn("系统 ssh 回落后仍失败 \(sess.host.subtitle): \(error?.localizedDescription ?? "未知")", "ssh")
+                t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：算法/协议不兼容。\u{1b}[0m\r\n")
+                connectOverlay?.fail("协议不兼容")
+            case .network:
+                // P0：网络/超时/DNS/代理失败 —— 保留 Keychain，禁止当认证失败清密码。
+                let detail = error?.localizedDescription ?? "网络不可达"
+                Log.warn("网络/连接失败 \(sess.host.subtitle): \(detail)（保留钥匙串）", "session")
+                t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：\(detail)\u{1b}[0m\r\n")
+                connectOverlay?.fail("网络失败")
+            case .auth:
+                // 仅认证失败才清 Keychain +（无 keyPath 时）弹密码重试。
+                Log.warn("认证失败 \(sess.host.subtitle)，已清除保存的密码", "session")
+                Keychain.delete(sess.host.id)
+                t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：认证被拒。\u{1b}[0m\r\n")
+                connectOverlay?.fail("认证失败")
+                let host = sess.host
+                // 私钥登录失败不该弹密码框（那是 key 的问题）；仅密码登录路径重试。
+                if host.keyPath.isEmpty { promptRetryPassword(for: host) }
+            case .clean:
+                // 用户取消/主动断开且从未 open：不动钥匙串。
+                Log.info("连接在认证前结束 \(sess.host.subtitle)（干净关闭，保留钥匙串）", "session")
+                connectOverlay?.fail("已取消")
             }
-            // 从未成功打开 shell → 认证被拒/连接失败。清掉可能过期的密码，并**当场重新弹密码框**
-            // （框里带"记住密码"勾选）让用户改密码重试，而不是只丢一行报错让用户自己去重连。
-            Log.warn("认证失败/无法连接 \(sess.host.subtitle)，已清除保存的密码", "session")
-            Keychain.delete(sess.host.id)
-            t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：认证被拒或无法连接。\u{1b}[0m\r\n")
-            connectOverlay?.fail("认证失败")
-            let host = sess.host
-            // 私钥登录失败不该弹密码框（那是 key 的问题）；仅密码登录路径重试。
-            if host.keyPath.isEmpty { promptRetryPassword(for: host) }
         } else {
             let msg = error.map { "\r\n\u{1b}[1;31m连接关闭: \($0.localizedDescription)\u{1b}[0m\r\n" } ?? "\r\n\u{1b}[90m连接已关闭。\u{1b}[0m\r\n"
             t.feed(text: msg)

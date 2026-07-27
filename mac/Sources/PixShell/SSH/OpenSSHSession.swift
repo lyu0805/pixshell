@@ -1,21 +1,44 @@
 import Foundation
 import Darwin
 
+/// 系统 OpenSSH 退出错误（exit≠0）。上层用它区分「假 open 后静默关掉」和真实失败。
+/// `hint` 来自退出前 pty 输出摘要，用于区分认证失败 vs 网络失败（禁止一律清 Keychain）。
+public struct OpenSSHExitError: Error, LocalizedError {
+    public let code: Int
+    public let hint: String
+    public init(code: Int, hint: String = "") {
+        self.code = code
+        self.hint = hint
+    }
+    public var errorDescription: String? {
+        let base: String
+        switch code {
+        case 255: base = "系统 ssh 失败（exit 255）"
+        case 127: base = "无法启动 /usr/bin/ssh"
+        default:  base = "系统 ssh 退出码 \(code)"
+        }
+        let h = hint.trimmingCharacters(in: .whitespacesAndNewlines)
+        if h.isEmpty { return base }
+        // 截一段给 UI/分类器，避免整屏 MOTD。
+        let clip = h.count > 240 ? String(h.suffix(240)) : h
+        return base + "：" + clip
+    }
+}
+
 /// 用**系统自带的 OpenSSH**（`/usr/bin/ssh`）跑一个会话，作为算法协商失败时的回落传输。
 ///
 /// 为什么需要它：内置的 swift-nio-ssh 实现的算法很窄 —— 主机密钥只有 ed25519/ecdsa（**没有 RSA**）、
 /// 加密只有 aes-gcm、KEX 只有 curve25519/ecdh。而只提供 RSA 主机密钥 + aes-ctr + dh-group14 的老机器
 /// （CentOS 7、老 OpenSSH、交换机路由器等网络设备）在市面上仍然大量存在，那些机器内置实现根本握不上手。
-/// 那个库的密钥类型是 `internal enum`，模块外无法扩展，只补一样也没用（RSA/ctr/dh-group 得同时补齐），
-/// 等于把 OpenSSH 已经做好的事重写一遍 —— 所以直接复用系统 OpenSSH。
 ///
 /// 设计取舍：
 /// - **默认不用它**。只有当内置实现在"还没打开 shell"时就因算法协商失败挂掉，才自动回落（见
 ///   AppDelegate+Sessions.startSSH）。已经能连的机器行为一个字都不变。
-/// - 跑在**伪终端(pty)**里，所以 ssh 自己的任何交互式提问（口令、一次性验证码、首次连接确认）
-///   都会原样出现在终端里由用户自己回答。这里**不做任何自动应答**，也不借 SSH_ASKPASS/sshpass 之类
-///   的手段去塞凭据 —— 用户在终端里敲，和他平时用 ssh 一模一样。
-/// - 顺带白拿了 OpenSSH 的全部能力：~/.ssh/config、ProxyJump、证书登录、ssh-agent、全部算法。
+/// - 跑在**伪终端(pty)**里。
+/// - 若 App 已持有密码（Keychain / 用户刚输入），通过受控 `SSH_ASKPASS` 注入一次，避免回落后还要再敲。
+///   无私钥且无密码时，交互提问仍原样出现在终端。
+/// - **禁止**在 fork 后立刻宣称 shell 已打开：必须等认证迹象确认，或 exit≠0 时带错误码上抛，
+///   否则 UI 会假显示「已连接」再灰字「连接已关闭」。
 public final class OpenSSHSession: SSHSession {
 
     public weak var delegate: SSHSessionDelegate?
@@ -25,6 +48,15 @@ public final class OpenSSHSession: SSHSession {
     private var readSource: DispatchSourceRead?
     private var closed = false
     private var creds: SSHCredentials?
+    /// 是否已向 UI 确认过「真的登录成功」（与 pty 已 fork 严格分离）。
+    private var shellOpenedEmitted = false
+    private var sawAuthPrompt = false
+    private var pendingOpenWorkItem: DispatchWorkItem?
+    /// 退出前输出摘要，供 OpenSSHExitError.hint 做 auth/network 分类。
+    private var recentOutput = ""
+    /// ASKPASS 临时文件，finish 时清理（不在日志里打印密码）。
+    private var askPassScriptPath: String?
+    private var askPassSecretPath: String?
 
     public init() {}
 
@@ -47,9 +79,20 @@ public final class OpenSSHSession: SSHSession {
         // fork 之后只能调 async-signal-safe 的东西，所以字符串在 fork 前就转成 C 数组备好。
         var cArgs: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) }
         cArgs.append(nil)
+
         var env: [String] = ["TERM=\(term)"]   // TERM 要传对，否则远端 shell 的颜色/光标行为会退化
         for k in ["HOME", "PATH", "LANG", "SSH_AUTH_SOCK", "USER"] {
             if let v = ProcessInfo.processInfo.environment[k] { env.append("\(k)=\(v)") }
+        }
+        // 已有密码 → 受控 ASKPASS 注入（不写进参数、不打日志）。
+        if let pw = creds.password, !pw.isEmpty, let ask = Self.installAskPass(password: pw) {
+            askPassScriptPath = ask.script
+            askPassSecretPath = ask.secret
+            env.append("SSH_ASKPASS=\(ask.script)")
+            env.append("SSH_ASKPASS_REQUIRE=force")
+            // OpenSSH 只在认为「有 display」时才走 ASKPASS；给一个占位即可。
+            env.append("DISPLAY=:")
+            env.append("SSH_ASKPASS_PROMPT=none")
         }
         var cEnv: [UnsafeMutablePointer<CChar>?] = env.map { strdup($0) }
         cEnv.append(nil)
@@ -58,11 +101,11 @@ public final class OpenSSHSession: SSHSession {
         if child == -1 {
             for p in cArgs where p != nil { free(p) }
             for p in cEnv where p != nil { free(p) }
+            cleanupAskPass()
             finish(NSError(domain: "PixShell.openssh", code: 1,
                            userInfo: [NSLocalizedDescriptionKey: "无法分配伪终端"]))
             return
         }
-        Log.info("系统 ssh 启动 pid 待定，cwd=\(FileManager.default.currentDirectoryPath)", "ssh")
         if child == 0 {
             // 子进程：直接 exec，失败就硬退出（这里不能再碰 Swift 运行时）。
             execve("/usr/bin/ssh", &cArgs, &cEnv)
@@ -75,11 +118,8 @@ public final class OpenSSHSession: SSHSession {
         pid = child
         Log.info("系统 ssh 已启动 pid=\(child) fd=\(master) \(creds.username)@\(creds.host):\(creds.port)", "ssh")
         startReading()
-        // pty 一建好就能收发了；shell 是否真的登录成功由用户在终端里看到的内容决定。
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.delegate?.sshSessionDidOpenShell(self)
-        }
+        // 注意：这里**不**回调 didOpenShell。fork 成功 ≠ 认证成功。
+        // 等读到认证后的真实输出，或 exit≠0 时带错误码关闭。
         watchExit()
     }
 
@@ -94,6 +134,11 @@ public final class OpenSSHSession: SSHSession {
         if let kp = c.keyPath, !kp.isEmpty {
             a += ["-i", (kp as NSString).expandingTildeInPath]
             a += ["-o", "IdentitiesOnly=yes"]               // 指定了私钥就只用它，别把 agent 里的全试一遍
+            // 仅 key 时：不要再回落到密码交互（除非同时给了 password 走 ASKPASS）。
+            if c.password == nil || c.password?.isEmpty == true {
+                a += ["-o", "PreferredAuthentications=publickey"]
+                a += ["-o", "BatchMode=yes"]                // 无密码 key-only：失败立刻退，不假连
+            }
         }
         // 代理：SOCKS/HTTP 交给 ssh 自己的 ProxyCommand（用 nc），跳板机用 ProxyJump。
         if let p = c.proxy {
@@ -110,6 +155,38 @@ public final class OpenSSHSession: SSHSession {
         return a
     }
 
+    /// 写一次性 ASKPASS 脚本 + 0600 密文文件。返回路径；失败返回 nil（退回终端交互）。
+    private static func installAskPass(password: String) -> (script: String, secret: String)? {
+        let base = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pixshell-askpass-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let secret = base.appendingPathComponent("secret")
+            let script = base.appendingPathComponent("askpass.sh")
+            try password.data(using: .utf8)?.write(to: secret, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: secret.path)
+            // 脚本只 cat 密文文件；不把密码写进脚本正文。
+            let sh = "#!/bin/sh\nexec cat '\(secret.path)'\n"
+            try sh.write(to: script, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+            return (script.path, secret.path)
+        } catch {
+            Log.warn("ASKPASS 准备失败：\(error.localizedDescription)", "ssh")
+            return nil
+        }
+    }
+
+    private func cleanupAskPass() {
+        if let s = askPassSecretPath { try? FileManager.default.removeItem(atPath: s) }
+        if let s = askPassScriptPath {
+            let dir = (s as NSString).deletingLastPathComponent
+            try? FileManager.default.removeItem(atPath: s)
+            try? FileManager.default.removeItem(atPath: dir)
+        }
+        askPassSecretPath = nil
+        askPassScriptPath = nil
+    }
+
     // MARK: - IO
 
     private func startReading() {
@@ -120,14 +197,70 @@ public final class OpenSSHSession: SSHSession {
             let n = read(self.masterFD, &buf, buf.count)
             if n > 0 {
                 let chunk = Array(buf[0..<n])
+                self.considerOpen(afterReceiving: chunk)
                 DispatchQueue.main.async { self.delegate?.sshSession(self, didReceive: chunk) }
             } else if n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR) {
                 if n < 0 { Log.warn("系统 ssh 读取结束 errno=\(errno)", "ssh") }
-                self.finish(nil)
+                // 读侧 EOF：真正的结果以 waitpid 的 exit code 为准，这里不抢先 finish(nil)。
+                // 若进程已退，watchExit 会收口；若还在，继续等。
             }
         }
         src.resume()
         readSource = src
+    }
+
+    /// 根据输出判断是否已越过认证、可以宣称 shell 打开。
+    private func considerOpen(afterReceiving chunk: [UInt8]) {
+        if let raw = String(bytes: chunk, encoding: .utf8), !raw.isEmpty {
+            recentOutput += raw
+            if recentOutput.count > 4000 {
+                recentOutput = String(recentOutput.suffix(2000))
+            }
+        }
+        guard !shellOpenedEmitted, !closed else { return }
+        let text = String(bytes: chunk, encoding: .utf8)?.lowercased() ?? ""
+        // 明确失败输出：等 watchExit 带错误码，绝不假 open。
+        if text.contains("permission denied")
+            || text.contains("authentication failed")
+            || text.contains("auth failed")
+            || text.contains("connection refused")
+            || text.contains("could not resolve")
+            || text.contains("no route to host")
+            || text.contains("operation timed out")
+            || text.contains("connection timed out")
+            || text.contains("host key verification failed") {
+            pendingOpenWorkItem?.cancel()
+            pendingOpenWorkItem = nil
+            return
+        }
+        // 还在问密码 / 主机确认：先别 open。
+        if text.contains("password:")
+            || text.contains("passphrase")
+            || text.contains("'s password")
+            || text.contains("(yes/no")
+            || text.contains("are you sure you want to continue connecting") {
+            sawAuthPrompt = true
+            pendingOpenWorkItem?.cancel()
+            pendingOpenWorkItem = nil
+            return
+        }
+        // 其余输出（MOTD / 提示符 / 远端数据）→ 短防抖后确认 open。
+        // 刚答完密码时可能先有一小段噪声，防抖避免抢跑。
+        pendingOpenWorkItem?.cancel()
+        let delay: TimeInterval = sawAuthPrompt ? 0.35 : 0.12
+        let work = DispatchWorkItem { [weak self] in
+            self?.emitOpenIfNeeded()
+        }
+        pendingOpenWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func emitOpenIfNeeded() {
+        guard !shellOpenedEmitted, !closed else { return }
+        shellOpenedEmitted = true
+        pendingOpenWorkItem = nil
+        Log.info("系统 ssh shell 已确认打开", "ssh")
+        delegate?.sshSessionDidOpenShell(self)
     }
 
     public func send(_ data: [UInt8]) {
@@ -164,6 +297,20 @@ public final class OpenSSHSession: SSHSession {
             p.standardOutput = pipe
             p.standardError = FileHandle.nullDevice
             p.standardInput = FileHandle.nullDevice
+            // 监控 exec 也可带 ASKPASS（BatchMode 下 publickey 优先；有密码时允许密码回退）
+            var env = ProcessInfo.processInfo.environment
+            var secretPath: String?
+            var scriptPath: String?
+            if let pw = c.password, !pw.isEmpty, let ask = Self.installAskPass(password: pw) {
+                secretPath = ask.secret
+                scriptPath = ask.script
+                env["SSH_ASKPASS"] = ask.script
+                env["SSH_ASKPASS_REQUIRE"] = "force"
+                env["DISPLAY"] = ":"
+                // BatchMode 会禁密码；有密码时去掉 BatchMode 的严格限制——但监控通道更稳妥保持 key/agent。
+                // 这里保留 BatchMode：exec 仅在 key/agent 可用时采监控，失败返回空。
+            }
+            p.environment = env
             var text = ""
             do {
                 try p.run()
@@ -173,6 +320,12 @@ public final class OpenSSHSession: SSHSession {
             } catch {
                 text = ""
             }
+            if let s = secretPath { try? FileManager.default.removeItem(atPath: s) }
+            if let s = scriptPath {
+                let dir = (s as NSString).deletingLastPathComponent
+                try? FileManager.default.removeItem(atPath: s)
+                try? FileManager.default.removeItem(atPath: dir)
+            }
             DispatchQueue.main.async { completion(text) }
         }
     }
@@ -180,6 +333,7 @@ public final class OpenSSHSession: SSHSession {
     public func close() {
         guard !closed else { return }
         if pid > 0 { kill(pid, SIGHUP) }
+        // 用户主动关：error=nil，上层不得当认证失败清钥匙串。
         finish(nil)
     }
 
@@ -193,17 +347,28 @@ public final class OpenSSHSession: SSHSession {
             waitpid(p, &status, 0)
             // 退出码是排查"连不上但没报错"的关键线索：255=ssh 自身失败，1=远端命令失败
             let code = (status & 0x7f) == 0 ? (status >> 8) & 0xff : -(status & 0x7f)
-            Log.info("系统 ssh 退出 pid=\(p) code=\(code)", "ssh")
-            self?.finish(nil)
+            Log.info("系统 ssh 退出 pid=\(p) code=\(code) opened=\(self?.shellOpenedEmitted ?? false)", "ssh")
+            if code == 0 {
+                self?.finish(nil)
+            } else if self?.shellOpenedEmitted == true {
+                // 曾经真的连上过再退：当正常/带码关闭，不再伪装成「认证阶段失败」。
+                self?.finish(OpenSSHExitError(code: Int(code), hint: self?.recentOutput ?? ""))
+            } else {
+                // 从未确认 shell → 必须带错误，禁止 finish(nil) 让上层以为「干净断开」。
+                self?.finish(OpenSSHExitError(code: Int(code), hint: self?.recentOutput ?? ""))
+            }
         }
     }
 
     private func finish(_ error: Error?) {
         guard !closed else { return }
         closed = true
+        pendingOpenWorkItem?.cancel()
+        pendingOpenWorkItem = nil
         readSource?.cancel(); readSource = nil
         if masterFD >= 0 { Darwin.close(masterFD); masterFD = -1 }
         pid = -1
+        cleanupAskPass()
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.delegate?.sshSession(self, didCloseWith: error)

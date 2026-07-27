@@ -1,0 +1,212 @@
+name: release
+
+# Tag push already releases via build.yml's release job.
+# This workflow is a manual / explicit entry point that reuses the same packaging
+# path by dispatching equivalent jobs (duplicated minimally for standalone trigger).
+
+on:
+  # Tag pushes are handled by build.yml (build + softprops release).
+  # Use this workflow for manual rebuild/re-upload of release assets.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version without leading v (e.g. 0.1.1). Empty defaults to 0.1.1; release tag becomes v{version}'
+        required: false
+        default: '0.1.1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PRODUCT_VERSION: ${{ github.event.inputs.version != '' && github.event.inputs.version || (startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.1.1') }}
+
+jobs:
+  macos:
+    name: macOS ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: mac-arm64
+            runner: macos-15
+            expected_arch: arm64
+            arch_label: arm64
+          - target: mac-x64
+            runner: macos-15-intel
+            expected_arch: x86_64
+            arch_label: x64
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: mac
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW="${{ env.PRODUCT_VERSION }}"
+          RAW="${RAW#v}"
+          if [[ -z "$RAW" ]]; then RAW="0.1.1"; fi
+          echo "version=$RAW" >> "$GITHUB_OUTPUT"
+
+      - name: Show toolchain
+        run: |
+          uname -a
+          test "$(uname -m)" = "${{ matrix.expected_arch }}"
+          xcodebuild -version
+          swift --version
+
+      - name: Resolve Swift packages
+        run: swift package resolve
+
+      - name: Build release
+        run: swift build -c release -v
+
+      - name: Package app + DMG
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          ARCH: ${{ matrix.arch_label }}
+        run: |
+          bash scripts/package-mac.sh release
+          bash scripts/make-dmg.sh
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: PixShell-${{ steps.ver.outputs.version }}-${{ matrix.target }}-dmg
+          path: mac/dist/artifacts/PixShell-${{ steps.ver.outputs.version }}-mac-${{ matrix.arch_label }}.dmg
+          if-no-files-found: error
+
+  windows:
+    name: Windows win-x64
+    runs-on: windows-2025
+    defaults:
+      run:
+        working-directory: win
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW="${{ env.PRODUCT_VERSION }}"
+          RAW="${RAW#v}"
+          if [[ -z "$RAW" ]]; then RAW="0.1.1"; fi
+          echo "version=$RAW" >> "$GITHUB_OUTPUT"
+
+      - name: Setup .NET 9 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Restore / Build / Publish
+        run: |
+          dotnet restore PixShell.csproj -r win-x64
+          dotnet build PixShell.csproj -c Release -r win-x64 --no-restore --self-contained true -v minimal
+          dotnet publish PixShell.csproj -c Release -r win-x64 --no-restore --no-build --self-contained true -o publish/win-x64
+
+      - name: Install Inno Setup 6
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $iscc = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw 'ISCC.exe not found after choco install innosetup' }
+          echo "INNO_SETUP_ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Package zip + setup.exe
+        shell: pwsh
+        run: |
+          ./installer/package-win.ps1 `
+            -Version '${{ steps.ver.outputs.version }}' `
+            -Runtime win-x64 `
+            -PublishDir (Join-Path (Get-Location) 'publish/win-x64') `
+            -OutputDir (Join-Path (Get-Location) 'dist/artifacts') `
+            -InnoSetupCompiler $env:INNO_SETUP_ISCC
+
+      - name: Upload Windows zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: PixShell-${{ steps.ver.outputs.version }}-win-x64-zip
+          path: win/dist/artifacts/PixShell-${{ steps.ver.outputs.version }}-win-x64.zip
+          if-no-files-found: error
+
+      - name: Upload Windows setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: PixShell-${{ steps.ver.outputs.version }}-win-x64-setup
+          path: win/dist/artifacts/PixShell-${{ steps.ver.outputs.version }}-win-x64-setup.exe
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [macos, windows]
+    # On tag always; on workflow_dispatch only when version input provided or we still publish draft-less under v{version} if tag exists.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve version / tag
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW="${{ env.PRODUCT_VERSION }}"
+          RAW="${RAW#v}"
+          if [[ -z "$RAW" ]]; then RAW="0.1.1"; fi
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="v${RAW}"
+          fi
+          echo "version=$RAW" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Stage release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER="${{ steps.ver.outputs.version }}"
+          mkdir -p staged
+          find release-assets -type f -print
+          cp -v release-assets/PixShell-${VER}-mac-arm64-dmg/PixShell-${VER}-mac-arm64.dmg staged/
+          cp -v release-assets/PixShell-${VER}-mac-x64-dmg/PixShell-${VER}-mac-x64.dmg staged/
+          cp -v release-assets/PixShell-${VER}-win-x64-setup/PixShell-${VER}-win-x64-setup.exe staged/
+          cp -v release-assets/PixShell-${VER}-win-x64-zip/PixShell-${VER}-win-x64.zip staged/
+          ls -lh staged
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: PixShell ${{ steps.ver.outputs.version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            staged/PixShell-${{ steps.ver.outputs.version }}-mac-arm64.dmg
+            staged/PixShell-${{ steps.ver.outputs.version }}-mac-x64.dmg
+            staged/PixShell-${{ steps.ver.outputs.version }}-win-x64-setup.exe
+            staged/PixShell-${{ steps.ver.outputs.version }}-win-x64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

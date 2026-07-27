@@ -13,6 +13,13 @@ Thumbs.db
 *.log.*
 *.binlog
 
+# Local engineering notes (never publish)
+代码概要.md
+**/代码概要.md
+
+# Local CI/build drop folders
+artifacts/
+
 # macOS / SwiftPM / Xcode
 mac/.build/
 mac/.swiftpm/
@@ -41,6 +48,6 @@ win/**/*.snupkg
 win/node_modules/
 win/.npm/
 win/npm-debug.log*
-代码概要.md
-mac/代码概要.md
-win/代码概要.md
+
+# Windows packaging output
+win/dist/
