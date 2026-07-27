@@ -430,10 +430,7 @@ public partial class MainWindow : Window
             ConnectAnim.Fail("终端初始化失败");
             SetStatus("终端初始化失败: " + ex.Message);
             MessageBox.Show(this,
-                "终端无法启动：
-" + ex.Message + "
-
-不会尝试 SSH 连接，已保存的密码也未改动。",
+                "终端无法启动：\n" + ex.Message + "\n\n不会尝试 SSH 连接，已保存的密码也未改动。",
                 "PixShell", MessageBoxButton.OK, MessageBoxImage.Warning);
             CloseTab(item);
             return;
@@ -1290,8 +1287,7 @@ public partial class MainWindow : Window
                 Log.Warn($"检查更新 HTTP {(int)resp.StatusCode}", "update");
                 SetStatus("无法获取更新信息");
                 MessageBox.Show(this,
-                    "无法获取更新信息（网络或仓库不可达）。
-可手动打开发行页查看。",
+                    "无法获取更新信息（网络或仓库不可达）。\n可手动打开发行页查看。",
                     "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
@@ -1314,8 +1310,7 @@ public partial class MainWindow : Window
             {
                 SetStatus($"发现新版本 {latest}");
                 var ans = MessageBox.Show(this,
-                    $"发现新版本 {latest}
-当前 {AppVersion}。是否打开发行页下载？",
+                    $"发现新版本 {latest}\n当前 {AppVersion}。是否打开发行页下载？",
                     "软件更新", MessageBoxButton.YesNo, MessageBoxImage.Information);
                 if (ans == MessageBoxResult.Yes)
                 {
@@ -1335,8 +1330,7 @@ public partial class MainWindow : Window
             Log.Warn($"检查更新失败: {ex.Message}", "update");
             SetStatus("无法获取更新信息");
             MessageBox.Show(this,
-                "无法获取更新信息（网络或仓库不可达）。
-可手动打开发行页查看。",
+                "无法获取更新信息（网络或仓库不可达）。\n可手动打开发行页查看。",
                 "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
         }
     }
