@@ -12,7 +12,7 @@
 
 **🌐 Multi-language support / 多国语言支持**
 
-🇺🇸 **English** · 🇨🇳 **中文**（本页双语）
+🇺🇸 **English** · 🇨🇳 [**中文**](./README_CN.md)
 
 **🖥️ Native cross-platform SSH / SFTP desktop client · ⚡ Terminal · 🗂️ Connection manager · 📦 File transfer**
 
