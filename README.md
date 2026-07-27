@@ -1,6 +1,18 @@
+<div align="center">
+
+<img src="docs/assets/logo.svg" alt="PixShell logo" width="120" height="120">
+
 # PixShell
 
-PixShell 是一款原生的高性能跨平台终端与运维工具客户端，致力于为开发者和运维人员提供极致流畅的 SSH、SFTP 与服务器管理体验。
+**原生的高性能跨平台终端与运维工具客户端**
+
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue)](#)
+
+</div>
+
+---
+
+PixShell 致力于为开发者和运维人员提供极致流畅的 SSH、SFTP 与服务器管理体验。
 
 基于系统原生 UI 框架彻底重构，目前支持 macOS 与 Windows 双平台原生版本。
 
@@ -67,4 +79,3 @@ dotnet publish PixShell.csproj -c Release -r win-x64 --self-contained false -o p
 | **win-x64** | `windows-2025` | `PixShell-win-x64` |
 
 > ⚠️ 当前的自动构建 CI 产物均为 Unsigned (未签名) 的纯净安装包形式，通常可作为体验或内部测试使用。正式对公分发前，仍需执行额外的 macOS Developer ID 公证和 Windows 安装包代码签发。
-
