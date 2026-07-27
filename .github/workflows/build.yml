@@ -88,10 +88,10 @@ jobs:
         run: dotnet restore PixShell.csproj -r win-x64
 
       - name: Build release
-        run: dotnet build PixShell.csproj -c Release -r win-x64 --no-restore --self-contained false -v minimal
+        run: dotnet build PixShell.csproj -c Release -r win-x64 --no-restore --self-contained true -v minimal
 
       - name: Publish win-x64
-        run: dotnet publish PixShell.csproj -c Release -r win-x64 --no-restore --no-build --self-contained false -o publish/win-x64
+        run: dotnet publish PixShell.csproj -c Release -r win-x64 --no-restore --no-build --self-contained true -o publish/win-x64
 
       - name: Check packaged web assets
         shell: pwsh
