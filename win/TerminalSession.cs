@@ -74,6 +74,14 @@ public sealed class TerminalSession : IDisposable
     private readonly StringBuilder _outputBuffer = new();
     private const int OutputBufferCap = 500_000; // ~500KB
 
+    // JS 页 ready 前 C#→JS 消息会丢（PostWebMessage 无人听）。
+    // 队列暂存 payload，ready 后按序冲刷；theme 另有 _pendingSchemeJson 兜底。
+    private volatile bool _jsReady;
+    private volatile bool _pendingFocus;
+    private readonly object _pendingMsgLock = new();
+    private readonly List<string> _pendingMsgs = new();
+    private const int PendingMsgCap = 500;
+
     private void AppendOutputBuffer(string text)
     {
         lock (_outputBufLock)
@@ -117,7 +125,7 @@ public sealed class TerminalSession : IDisposable
         View.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
         // 关掉 WebView2 自带的浏览器右键菜单（刷新/查看源码等），改用下面的自绘终端右键菜单
         // （复制/粘贴/全选/清屏 + 设置背景，对齐 mac 版终端右键菜单）。
-        View.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
+        View.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
         View.CoreWebView2.ContextMenuRequested += OnContextMenuRequested;
         View.CoreWebView2.Navigate(new Uri(_htmlPath).AbsoluteUri);
     }
@@ -183,8 +191,8 @@ public sealed class TerminalSession : IDisposable
         menu.Items.Add(bgItem);
 
         menu.Items.Add(new System.Windows.Controls.Separator());
-        Add("放大字号", () => { _ = View.CoreWebView2?.ExecuteScriptAsync("window.termFontSize = (window.termFontSize || 14) + 1; term.options.fontSize = window.termFontSize; term.fit();"); });
-        Add("缩小字号", () => { _ = View.CoreWebView2?.ExecuteScriptAsync("window.termFontSize = Math.max(8, (window.termFontSize || 14) - 1); term.options.fontSize = window.termFontSize; term.fit();"); });
+        Add("放大字号", () => { _ = View.CoreWebView2?.ExecuteScriptAsync("window.pixSetFontSize && window.pixSetFontSize((window.termFontSize || 14) + 1);"); });
+        Add("缩小字号", () => { _ = View.CoreWebView2?.ExecuteScriptAsync("window.pixSetFontSize && window.pixSetFontSize(Math.max(8, (window.termFontSize || 14) - 1));"); });
 
         menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
         menu.IsOpen = true;
@@ -231,7 +239,7 @@ public sealed class TerminalSession : IDisposable
         Log.Info($"SSH 握手完成，已连接 {user}@{host}:{port}", "ssh");
         SetStatus($"已连接 {user}@{host}");
         SendToTerm("status", "connected");
-        _ = View.CoreWebView2.ExecuteScriptAsync("window.pixFocus && window.pixFocus();");
+        FocusWhenReady();
     }
 
     // 后台线程：建立 SSH 会话 + 交互式 shell + 启动读线程。
@@ -259,21 +267,33 @@ public sealed class TerminalSession : IDisposable
         var shell = _shell;
         if (shell == null) return;
         var buf = new byte[4096];
+        // 跨 read 块保持多字节 UTF-8 状态，避免中文/emoji 被截断成 U+FFFD。
+        var decoder = Encoding.UTF8.GetDecoder();
+        var chars = new char[Encoding.UTF8.GetMaxCharCount(buf.Length)];
         try
         {
             while (true)
             {
                 int n = shell.Read(buf, 0, buf.Length);
                 if (n <= 0) break;
-                var text = Encoding.UTF8.GetString(buf, 0, n);
-                // 近似解码累加进输出缓冲（跨块的多字节 UTF-8 边界可能产生少量替换字符，不影响可读性）。
-                AppendOutputBuffer(text);
+                int c = decoder.GetChars(buf, 0, n, chars, 0, flush: false);
+                var text = c > 0 ? new string(chars, 0, c) : "";
+                if (text.Length > 0)
+                    AppendOutputBuffer(text);
                 // 语义高亮：给纯文本段注入 truecolor SGR，已有的 ANSI 转义原样保留。
                 // 关掉开关就走原始字节，一个字节都不改。
-                var b64 = HighlightEnabled
-                    ? Convert.ToBase64String(Encoding.UTF8.GetBytes(
-                          Highlight.SemanticHighlight.Decorate(text, ThemeManager.IsDark)))
-                    : Convert.ToBase64String(buf, 0, n);
+                string b64;
+                if (HighlightEnabled)
+                {
+                    // 高亮必须用状态解码后的完整字符；本块若只有未完成序列则跳过本轮 out。
+                    if (c == 0) continue;
+                    b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                        Highlight.SemanticHighlight.Decorate(text, ThemeManager.IsDark)));
+                }
+                else
+                {
+                    b64 = Convert.ToBase64String(buf, 0, n);
+                }
                 // 回到 UI 线程调用 WebView2（有线程亲和性）。
                 View.Dispatcher.BeginInvoke(new Action(() => SendToTerm("out", b64)));
             }
@@ -358,8 +378,10 @@ public sealed class TerminalSession : IDisposable
                     break;
 
                 case "ready":
-                    // 页面刚加载完成：若之前应用配色方案时页面还没就绪导致消息丢失，这里兜底重发一次。
+                    // 页面 listener 已挂上：冲刷 ready 前积压的 out/status，并兜底重发 theme。
+                    FlushPendingMessages();
                     if (_pendingSchemeJson != null) SendRawToTerm("{\"t\":\"theme\",\"theme\":" + _pendingSchemeJson + "}");
+                    if (_pendingFocus) FocusWhenReady();
                     break;
             }
         }
@@ -582,11 +604,58 @@ public sealed class TerminalSession : IDisposable
     // ---------------------------------------------------------------------
     private void SendToTerm(string type, string data)
     {
+        var payload = "{\"t\":\"" + type + "\",\"d\":\"" + JsonEncode(data) + "\"}";
+        EnqueueOrPost(payload);
+    }
+
+    /// <summary>JS ready 前入队，ready 后直接 Post；避免 MOTD/banner/status 在 listener 挂上前丢失。</summary>
+    private void EnqueueOrPost(string payload)
+    {
+        lock (_pendingMsgLock)
+        {
+            if (!_jsReady)
+            {
+                if (_pendingMsgs.Count >= PendingMsgCap)
+                    _pendingMsgs.RemoveAt(0);
+                _pendingMsgs.Add(payload);
+                return;
+            }
+        }
+        PostWebMessage(payload);
+    }
+
+    private void FlushPendingMessages()
+    {
+        List<string> batch;
+        lock (_pendingMsgLock)
+        {
+            _jsReady = true;
+            batch = new List<string>(_pendingMsgs);
+            _pendingMsgs.Clear();
+        }
+        foreach (var payload in batch)
+            PostWebMessage(payload);
+    }
+
+    private void PostWebMessage(string payload)
+    {
         var core = View.CoreWebView2;
         if (core == null) return;
-        var payload = "{\"t\":\"" + type + "\",\"d\":\"" + JsonEncode(data) + "\"}";
         try { core.PostWebMessageAsString(payload); }
-        catch { /* 页面尚未就绪时忽略 */ }
+        catch { /* 页面销毁/导航中忽略 */ }
+    }
+
+
+    private void FocusWhenReady()
+    {
+        if (!_jsReady)
+        {
+            _pendingFocus = true;
+            return;
+        }
+        _pendingFocus = false;
+        try { _ = View.CoreWebView2?.ExecuteScriptAsync("window.pixFocus && window.pixFocus();"); }
+        catch { /* 页面销毁/导航中忽略 */ }
     }
 
     private static string JsonEncode(string s)
@@ -614,9 +683,8 @@ public sealed class TerminalSession : IDisposable
     /// 不能套用 SendToTerm 的字符串转义包装）。</summary>
     private void SendRawToTerm(string json)
     {
-        var core = View.CoreWebView2;
-        if (core == null) return;
-        try { core.PostWebMessageAsString(json); } catch { /* 页面尚未就绪时忽略 */ }
+        // theme 等对象消息：ready 前也入队，避免与 out 一样在 listener 前丢失。
+        EnqueueOrPost(json);
     }
 
     private void SetStatus(string s) => StatusChanged?.Invoke(this, s);

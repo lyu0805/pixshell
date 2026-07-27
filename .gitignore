@@ -1,13 +1,46 @@
-# macOS & Swift
+# OS / editor
 .DS_Store
+Thumbs.db
+*.swp
+*.tmp
+*.bak
+*.orig
+.vscode/
+.idea/
+
+# Logs / diagnostics
+*.log
+*.log.*
+*.binlog
+
+# macOS / SwiftPM / Xcode
 mac/.build/
 mac/.swiftpm/
 mac/dist/
-mac/*.log
+mac/DerivedData/
+mac/**/*.xcuserdata/
+mac/**/*.xcuserstate
 
-# Windows & C#
+# Windows / .NET / Visual Studio
 win/bin/
 win/obj/
+win/**/bin/
+win/**/obj/
 win/.vs/
-win/*.log*
+win/**/*.user
+win/**/*.suo
+win/**/*.rsuser
+win/TestResults/
+win/**/TestResults/
+win/artifacts/
+win/publish/
+win/**/*.nupkg
+win/**/*.snupkg
+
+# Node dependencies; keep win/web vendored runtime assets tracked
 win/node_modules/
+win/.npm/
+win/npm-debug.log*
+代码概要.md
+mac/代码概要.md
+win/代码概要.md

@@ -8,6 +8,8 @@
     <!-- DPI 感知清单：不加的话 WPF 外壳被位图拉伸、WebView2 终端按真实 DPI 渲染，内外缩放对不上 -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
 
   <ItemGroup>

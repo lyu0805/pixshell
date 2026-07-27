@@ -22,7 +22,7 @@ final class CommandPanel: NSView {
     private let groupFlow = FlowView()          // 分类文件夹（换行）
     private let cmdFlow = FlowView()            // 命令列表（换行）
     private let edTargetPopup = NSPopUpButton()     // 发送到目标选择
-    private var editor: NSTextView!
+    var editor: NSTextView!
     private var editorScroll: NSScrollView!
     private var rightCol: NSView!
     private var rightWidthC: NSLayoutConstraint!
@@ -367,6 +367,10 @@ final class CommandPanel: NSView {
     }
 
     // MARK: - 右侧栏动作
+
+    @objc private func showHistory(_ sender: NSButton) {
+        onShowHistory?(sender)
+    }
 
     @objc private func sendEditor() {
         let sel = editor.selectedRange()

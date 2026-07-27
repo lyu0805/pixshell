@@ -1,0 +1,53 @@
+<Window x:Class="PixShell.UI.ProxyEditWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="代理"
+        Width="360" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False"
+        Background="{DynamicResource BrushBg}"
+        Foreground="{DynamicResource BrushText}">
+    <Grid Margin="14">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="名称" VerticalAlignment="Center" Margin="0,4"/>
+        <TextBox   Grid.Row="0" Grid.Column="1" Name="NameBox" Margin="6,4"/>
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="类型" VerticalAlignment="Center" Margin="0,4"/>
+        <ComboBox  Grid.Row="1" Grid.Column="1" Name="TypeBox" Margin="6,4" SelectionChanged="OnTypeChanged">
+            <ComboBoxItem Content="SOCKS5"/>
+            <ComboBoxItem Content="SOCKS4"/>
+            <ComboBoxItem Content="HTTP"/>
+        </ComboBox>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="主机" VerticalAlignment="Center" Margin="0,4"/>
+        <TextBox   Grid.Row="2" Grid.Column="1" Name="HostBox" Margin="6,4"/>
+
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="端口" VerticalAlignment="Center" Margin="0,4"/>
+        <TextBox   Grid.Row="3" Grid.Column="1" Name="PortBox" Margin="6,4"/>
+
+        <TextBlock Grid.Row="4" Grid.Column="0" Text="用户名" VerticalAlignment="Center" Margin="0,4"/>
+        <TextBox   Grid.Row="4" Grid.Column="1" Name="UserBox" Margin="6,4"/>
+
+        <TextBlock Grid.Row="5" Grid.Column="0" Text="密码" VerticalAlignment="Center" Margin="0,4"/>
+        <PasswordBox Grid.Row="5" Grid.Column="1" Name="PassBox" Margin="6,4"/>
+
+        <StackPanel Grid.Row="6" Grid.Column="1" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="6,12,0,0">
+            <Button Content="保存" Width="72" Margin="0,0,8,0" IsDefault="True" Click="OnSave"/>
+            <Button Content="取消" Width="72" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

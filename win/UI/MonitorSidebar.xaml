@@ -1,0 +1,133 @@
+<UserControl x:Class="PixShell.UI.MonitorSidebar"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:PixShell.UI"
+             Background="{DynamicResource BrushSide}">
+    <!-- 服务器监控仪表盘侧栏（非主机列表）——1:1 对齐 mac UI/MonitorSidebar.swift：
+         连接状态/IP+复制/系统信息 按钮 · 实时监控(运行/负载/CPU/内存/交换 药丸条)
+         · 进程 TOP 表 · 网络(iface+火花线) · 延迟/网关 · 磁盘表。 -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="0,0,0,12">
+
+            <!-- 连接状态：红绿灯 + 文案 + 断开/连接按钮（这一行是可操作的，不只是个标签） -->
+            <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="10,8,10,6">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Ellipse x:Name="ConnDot" Width="8" Height="8" Fill="{DynamicResource BrushMuted}" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="ConnText" Grid.Column="1" Text="已断开" FontSize="12" FontWeight="SemiBold" Margin="6,0,0,0"
+                               Foreground="{DynamicResource BrushText}" VerticalAlignment="Center"/>
+                    <Button x:Name="ConnToggleBtn" Grid.Column="2" Content="连接" Style="{StaticResource PillButton}"
+                            Padding="10,2" FontSize="11" Click="ConnToggle_Click"/>
+                </Grid>
+            </Border>
+
+            <!-- IP + 复制 -->
+            <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="10,6,10,6">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="IP" FontSize="11" Foreground="{DynamicResource BrushMuted}" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="IpValue" Grid.Column="1" Text="-" FontSize="12" FontWeight="Bold" Margin="6,0,0,0"
+                               Foreground="{DynamicResource BrushText}" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"/>
+                    <Button Grid.Column="2" Content="复制" Style="{StaticResource PillButton}" Padding="8,2"
+                            FontSize="11" Click="CopyIp_Click"/>
+                </Grid>
+            </Border>
+
+            <!-- 系统信息 -->
+            <Border Padding="10,8,10,8">
+                <Button Content="系统信息" HorizontalAlignment="Stretch" Style="{StaticResource PillButton}"
+                        Foreground="{DynamicResource BrushAccent}" Click="SysInfo_Click"/>
+            </Border>
+
+            <!-- 实时监控 -->
+            <TextBlock Text="实时监控" FontSize="10" FontWeight="Bold" Margin="10,6,10,2"
+                       Foreground="{DynamicResource BrushMuted}"/>
+            <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="10,6,10,8">
+                <StackPanel>
+                    <Grid Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="36"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="运行" FontSize="11" Foreground="{DynamicResource BrushMuted}"/>
+                        <TextBlock x:Name="UptimeValue" Grid.Column="1" Text="-" FontSize="11" Foreground="{DynamicResource BrushMuted}"/>
+                    </Grid>
+                    <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="36"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="负载" FontSize="11" Foreground="{DynamicResource BrushMuted}"/>
+                        <TextBlock x:Name="LoadValue" Grid.Column="1" Text="-" FontSize="11" Foreground="{DynamicResource BrushMuted}"/>
+                    </Grid>
+                    <local:MetricBar x:Name="CpuBar" Margin="0,0,0,5"/>
+                    <local:MetricBar x:Name="MemBar" Margin="0,0,0,5"/>
+                    <local:MetricBar x:Name="SwapBar"/>
+                </StackPanel>
+            </Border>
+
+            <!-- 进程 TOP -->
+            <TextBlock Text="进程 TOP" FontSize="10" FontWeight="Bold" Margin="10,6,10,2"
+                       Foreground="{DynamicResource BrushMuted}"/>
+            <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1">
+                <StackPanel>
+                    <Grid Background="{DynamicResource BrushBg2}" Height="20">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="52"/>
+                            <ColumnDefinition Width="42"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="内存" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="1" Text="CPU" FontSize="10" Foreground="{DynamicResource BrushMuted}" TextAlignment="Center" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="2" Text="命令" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="4,0,0,0" VerticalAlignment="Center"/>
+                    </Grid>
+                    <StackPanel x:Name="ProcBody"/>
+                </StackPanel>
+            </Border>
+
+            <!-- 网络 -->
+            <TextBlock Text="网络" FontSize="10" FontWeight="Bold" Margin="10,6,10,2"
+                       Foreground="{DynamicResource BrushMuted}"/>
+            <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="8,6,8,6">
+                <StackPanel>
+                    <TextBlock x:Name="NetTitle" Text="-" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="0,0,0,2"/>
+                    <local:Sparkline x:Name="NetSpark" Height="44"/>
+                </StackPanel>
+            </Border>
+
+            <!-- 延迟 -->
+            <TextBlock Text="延迟" FontSize="10" FontWeight="Bold" Margin="10,6,10,2"
+                       Foreground="{DynamicResource BrushMuted}"/>
+            <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="8,6,8,6">
+                <StackPanel>
+                    <TextBlock x:Name="PingTitle" Text="网关" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="0,0,0,2"/>
+                    <local:Sparkline x:Name="PingSpark" Height="32"/>
+                </StackPanel>
+            </Border>
+
+            <!-- 磁盘 -->
+            <TextBlock Text="磁盘" FontSize="10" FontWeight="Bold" Margin="10,6,10,2"
+                       Foreground="{DynamicResource BrushMuted}"/>
+            <StackPanel>
+                <Grid Background="{DynamicResource BrushBg2}" Height="20">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="82"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="路径" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="1" Text="可用/大小" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="4,0,0,0" VerticalAlignment="Center"/>
+                </Grid>
+                <StackPanel x:Name="DiskBody"/>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

@@ -1,0 +1,108 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: mac-arm64
+            runner: macos-15
+            expected_arch: arm64
+          - target: mac-x64
+            runner: macos-15-intel
+            expected_arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: mac
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          uname -a
+          echo "machine=$(uname -m)"
+          test "$(uname -m)" = "${{ matrix.expected_arch }}"
+          xcodebuild -version
+          swift --version
+
+      - name: Resolve Swift packages
+        run: swift package resolve
+
+      - name: Build release
+        run: swift build -c release -v
+
+      - name: Package app bundle
+        run: bash scripts/package-mac.sh release
+
+      - name: Create artifact archive
+        run: |
+          mkdir -p dist/artifacts
+          ditto -c -k --keepParent dist/PixShell.app "dist/artifacts/PixShell-${{ matrix.target }}.zip"
+
+      - name: Upload macOS app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: PixShell-${{ matrix.target }}
+          path: mac/dist/artifacts/PixShell-${{ matrix.target }}.zip
+          if-no-files-found: error
+
+  windows:
+    name: Windows win-x64
+    runs-on: windows-2025
+    defaults:
+      run:
+        working-directory: win
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          dotnet --info
+
+      - name: Restore
+        run: dotnet restore PixShell.csproj -r win-x64
+
+      - name: Build release
+        run: dotnet build PixShell.csproj -c Release -r win-x64 --no-restore --self-contained false -v minimal
+
+      - name: Publish win-x64
+        run: dotnet publish PixShell.csproj -c Release -r win-x64 --no-restore --no-build --self-contained false -o publish/win-x64
+
+      - name: Check packaged web assets
+        shell: pwsh
+        run: |
+          foreach ($file in @('publish/win-x64/web/terminal.html','publish/win-x64/web/xterm.js','publish/win-x64/web/xterm.css','publish/win-x64/web/addon-fit.js')) {
+            if (!(Test-Path $file)) { throw "Missing packaged asset: $file" }
+          }
+
+      - name: Upload Windows publish output
+        uses: actions/upload-artifact@v4
+        with:
+          name: PixShell-win-x64
+          path: win/publish/win-x64/
+          if-no-files-found: error

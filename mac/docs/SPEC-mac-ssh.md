@@ -1,7 +1,7 @@
 # 任务：实现 mac 原生 SSH 交互式 PTY 会话（Swift）
 
 ## 背景
-PixShell-mac 是 macOS 原生 SSH 客户端（AppKit + SwiftTerm）。仓库 `/Volumes/ssd1t/opencode/PixShell-mac/`，SwiftPM 包，`swift-tools-version: 6.0`。
+PixShell-mac 是 macOS 原生 SSH 客户端（AppKit + SwiftTerm）。仓库 `mac/`，SwiftPM 包，`swift-tools-version: 6.0`。
 **构建必须带环境变量**（否则 CLT 的 SwiftPM 会链接失败）：
 ```
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer

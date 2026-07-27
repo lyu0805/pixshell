@@ -45,7 +45,7 @@ Sources/PixShell/
 docs/
   LAYOUT-PARITY.md        # 布局契约(与 Electron 老仓库对齐)
   BLUEPRINT.md            # 全模块拆分蓝图
-  WIN-CONN.md             # (跨端)Windows 稳定连接方法
+  WIN-CONN.md             # Windows 构建说明
 ```
 
 ## 演示用环境变量（无人值守/调试）

@@ -3,10 +3,11 @@ import AppKit
 /// 连接管理器弹窗（自绘复刻老仓库 conn-mgr）：遮罩 + 居中圆角卡片，
 /// 头部三色圆点 + 标题 + ＋连接/＋分组/刷新/关闭；搜索；分组行(▶ 📁 名称 计数 重命名 删除)。
 /// 宿主提供 hosts()、连接/新建/编辑/删除回调。
-final class ConnManager: NSWindowController {
+final class ConnManager: NSWindowController, NSTextFieldDelegate {
     private let card = NSView()
     private let listStack = NSStackView()
     private let countLabel = NSTextField(labelWithString: "")
+    private let searchField = NSTextField()
     private var collapsed = Set<String>()
 
     var hostsProvider: (() -> [Host])?
@@ -77,9 +78,10 @@ final class ConnManager: NSWindowController {
 
         // 搜索
         countLabel.font = Theme.ui(12); countLabel.textColor = Theme.muted
-        let search = NSTextField(); search.placeholderString = "搜索主机…"; search.font = Theme.ui(12)
+        let search = searchField; search.placeholderString = "搜索主机…"; search.font = Theme.ui(12)
         search.isBordered = false; search.drawsBackground = false; search.textColor = Theme.text
         search.focusRingType = .none
+        search.delegate = self
         let searchWrap = NSView(); searchWrap.rounded(Theme.radiusSm, bg: Theme.bg2, border: Theme.border)
         searchWrap.translatesAutoresizingMaskIntoConstraints = false
         search.translatesAutoresizingMaskIntoConstraints = false; searchWrap.addSubview(search)
@@ -124,6 +126,7 @@ final class ConnManager: NSWindowController {
 
     @objc private func hideAction() { hide() }
     @objc private func reloadAction() { reload() }
+    func controlTextDidChange(_ obj: Notification) { reload() }
     @objc private func newHost() { onNew?() }
 
     /// ＋分组：把当前选中/首台主机移入新分组（分组是主机上的字段，没有主机的空分组无意义）
@@ -159,13 +162,30 @@ final class ConnManager: NSWindowController {
     }
 
     func reload() {
-        let hosts = hostsProvider?() ?? []
+        let allHosts = hostsProvider?() ?? []
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let hosts: [Host]
+        if query.isEmpty {
+            hosts = allHosts
+        } else {
+            hosts = allHosts.filter { h in
+                [h.display, h.host, h.username, h.group, h.osId, h.subtitle]
+                    .contains { $0.lowercased().contains(query) }
+            }
+        }
+
         var groups: [String: [Host]] = [:]
         for h in hosts { groups[h.group.isEmpty ? "默认" : h.group, default: []].append(h) }
         let names = groups.keys.sorted { $0 == "默认" ? false : ($1 == "默认" ? true : $0 < $1) }
-        countLabel.stringValue = "\(hosts.count) 台 · \(names.count) 组"
+        countLabel.stringValue = query.isEmpty ? "\(allHosts.count) 台 · \(names.count) 组" : "\(hosts.count)/\(allHosts.count) 台 · \(names.count) 组"
         listStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for g in names { listStack.addArrangedSubview(groupRow(g, groups[g] ?? [])) }
+        if hosts.isEmpty, !query.isEmpty {
+            let empty = NSTextField(labelWithString: "没有匹配的主机")
+            empty.font = Theme.ui(12); empty.textColor = Theme.muted
+            listStack.addArrangedSubview(empty)
+        } else {
+            for g in names { listStack.addArrangedSubview(groupRow(g, groups[g] ?? [])) }
+        }
         listStack.arrangedSubviews.forEach { $0.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true }
     }
 

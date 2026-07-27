@@ -139,7 +139,7 @@ public partial class SftpPanel : UserControl
         _sftp = null;
         Dispatcher.InvokeAsync(() => {
             RemoteTree.Items.Clear();
-            RemoteFileList.Items.Clear();
+            RemoteList.Items.Clear();
         });
     }
 

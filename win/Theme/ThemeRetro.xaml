@@ -1,0 +1,26 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- 复古令牌 —— 与 mac 版 UI/Theme.swift 的 .retro 分支 1:1 对齐。
+         暖米色宣纸 + 靛青/赭黄/青绿等矿物颜料，做旧调。和「水墨」是两回事。 -->
+
+    <SolidColorBrush x:Key="BrushBg"          Color="#F5F2EA"/>
+    <SolidColorBrush x:Key="BrushBg2"         Color="#FBF9F4"/>
+    <SolidColorBrush x:Key="BrushBg3"         Color="#E8E2D5"/>
+    <SolidColorBrush x:Key="BrushSide"        Color="#EFE9DC"/>
+    <SolidColorBrush x:Key="BrushTerm"        Color="#F7F4EC"/>
+    <SolidColorBrush x:Key="BrushStatusBg"    Color="#EFE9DC"/>
+    <SolidColorBrush x:Key="BrushBorder"       Color="#1F2B2B2B"/>
+    <SolidColorBrush x:Key="BrushBorderStrong" Color="#332B2B2B"/>
+    <SolidColorBrush x:Key="BrushText"         Color="#2B2B2B"/>
+    <SolidColorBrush x:Key="BrushMuted"        Color="#9E2B2B2B"/>
+    <SolidColorBrush x:Key="BrushAccent"       Color="#3F6B7A"/>
+    <SolidColorBrush x:Key="BrushAccentHover"  Color="#4D8093"/>
+    <SolidColorBrush x:Key="BrushAccentSoft"   Color="#2E3F6B7A"/>
+    <SolidColorBrush x:Key="BrushOk"           Color="#5C8A4A"/>
+    <SolidColorBrush x:Key="BrushWarn"         Color="#C9922E"/>
+    <SolidColorBrush x:Key="BrushErr"          Color="#B13B3B"/>
+    <SolidColorBrush x:Key="BrushControl"      Color="#142B2B2B"/>
+    <SolidColorBrush x:Key="BrushControlHover" Color="#242B2B2B"/>
+    <SolidColorBrush x:Key="BrushFill"         Color="#1A2B2B2B"/>
+    <SolidColorBrush x:Key="BrushOverlay"      Color="#332B2B2B"/>
+</ResourceDictionary>

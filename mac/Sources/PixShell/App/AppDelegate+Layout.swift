@@ -492,6 +492,7 @@ extension AppDelegate {
         placeholder.isHidden = true   // 落地页取代占位文案
 
         // 命令栏（在 文件/命令 之上）+ 拖拽条 + 文件/命令坞（可折叠、可拖高）
+        let dockResizer = buildDockResizer()
         let dock = buildBottomDock()
         dock.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(center); container.addSubview(dockResizer); container.addSubview(dock)
@@ -879,6 +880,11 @@ extension AppDelegate {
 
     func applyThemeKind(_ kind: Theme.Kind) {
         Log.info("切换主题 → \(kind.display)", "ui")
+        // installContent() 会重建 editorPanel。若独立编辑器窗口仍持有旧面板，
+        // 后续保存/主题状态会指向新旧两个实例；先收起并释放窗口，下一次打开时
+        // 再挂载新面板，避免主题切换后的编辑器状态分裂。
+        editorWindow?.orderOut(nil)
+        editorWindow = nil
         Theme.kind = kind
         NSApp.appearance = NSAppearance(named: Theme.dark ? .darkAqua : .aqua)
         for s in sessions { TermTheme.apply(to: s.termView, dark: Theme.dark) }

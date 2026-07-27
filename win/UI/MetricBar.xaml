@@ -1,0 +1,36 @@
+<UserControl x:Class="PixShell.UI.MetricBar"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Height="16">
+    <!-- 满宽药丸渐变进度条：CPU/内存/交换 三种(kind 决定低占用时的配色)。
+         [label][track(渐变填充+条内百分比)][size]，对齐 mac UI/MonitorSidebar.swift 的 Bar。 -->
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="36"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="56"/>
+        </Grid.ColumnDefinitions>
+
+        <TextBlock x:Name="LabelText" Grid.Column="0" FontSize="11"
+                   Foreground="{DynamicResource BrushText}" VerticalAlignment="Center"/>
+
+        <Border x:Name="Track" Grid.Column="1" Height="14" CornerRadius="7" Margin="4,0"
+                Background="{DynamicResource BrushFill}"
+                BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition x:Name="FillCol" Width="0*"/>
+                    <ColumnDefinition x:Name="RestCol" Width="100*"/>
+                </Grid.ColumnDefinitions>
+                <Border x:Name="Fill" Grid.Column="0" CornerRadius="7"/>
+                <TextBlock x:Name="PctText" Grid.Column="0" Grid.ColumnSpan="2" Text="0%"
+                           FontSize="10" FontWeight="SemiBold" Margin="6,0,0,0"
+                           Foreground="{DynamicResource BrushText}" VerticalAlignment="Center"/>
+            </Grid>
+        </Border>
+
+        <TextBlock x:Name="SizeText" Grid.Column="2" FontSize="10" TextAlignment="Right"
+                   FontFamily="{DynamicResource FontMono}"
+                   Foreground="{DynamicResource BrushMuted}" VerticalAlignment="Center"/>
+    </Grid>
+</UserControl>

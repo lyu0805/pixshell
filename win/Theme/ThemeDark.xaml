@@ -1,0 +1,26 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- 深色令牌 —— 从 mac 版 UI/Theme.swift 的 dark 分支 1:1 提取（原值来自老仓库 shell.css :root）。 -->
+
+    <SolidColorBrush x:Key="BrushBg"          Color="#1C1C1E"/>
+    <SolidColorBrush x:Key="BrushBg2"         Color="#2C2C2E"/>
+    <SolidColorBrush x:Key="BrushBg3"         Color="#3A3A3C"/>
+    <SolidColorBrush x:Key="BrushSide"        Color="#1C1C1E"/>
+    <SolidColorBrush x:Key="BrushTerm"        Color="#191C27"/>
+    <SolidColorBrush x:Key="BrushStatusBg"    Color="#1C1C1E"/>
+    <SolidColorBrush x:Key="BrushBorder"       Color="#1AFFFFFF"/>
+    <SolidColorBrush x:Key="BrushBorderStrong" Color="#29FFFFFF"/>
+    <SolidColorBrush x:Key="BrushText"         Color="#F7F7FA"/>
+    <SolidColorBrush x:Key="BrushMuted"        Color="#C7EBEBF5"/>
+    <SolidColorBrush x:Key="BrushAccent"       Color="#0A84FF"/>
+    <SolidColorBrush x:Key="BrushAccentHover"  Color="#409CFF"/>
+    <SolidColorBrush x:Key="BrushAccentSoft"   Color="#380A84FF"/>
+    <SolidColorBrush x:Key="BrushOk"           Color="#30D158"/>
+    <SolidColorBrush x:Key="BrushWarn"         Color="#FFD60A"/>
+    <SolidColorBrush x:Key="BrushErr"          Color="#FF453A"/>
+    <SolidColorBrush x:Key="BrushControl"      Color="#52787880"/>
+    <SolidColorBrush x:Key="BrushControlHover" Color="#6B787880"/>
+    <SolidColorBrush x:Key="BrushFill"         Color="#3D787880"/>
+    <!-- 反色（浅色主题下用于深色场景反过来的少数场景，深色主题本身即是） -->
+    <SolidColorBrush x:Key="BrushOverlay"      Color="#59000000"/>
+</ResourceDictionary>

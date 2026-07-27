@@ -138,17 +138,6 @@ public partial class MainWindow : Window
         _monitorTimer.Start();
         StartAgentBridge();
         StateChanged += (_, __) => UpdateMaxButtonGlyph();   // Win+↑/双击顶栏也要同步图标
-
-        // [临时验证钩子-2] 编辑器保存状态验证用，验证完删除。PIX_AUTOSHOW=editor | editor+fail
-        var _dbg = Environment.GetEnvironmentVariable("PIX_AUTOSHOW");
-        if (!string.IsNullOrEmpty(_dbg) && _dbg.Contains("editor"))
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                var w = new UI.EditorWindow { Owner = this };
-                w.Open("/tmp/demo.sh", "#!/bin/sh\necho hello world\nls -la /tmp\n");
-                w.OnSave = (t, report) => report(_dbg.Contains("fail") ? "远端只读：Permission denied" : null);
-                w.Show();
-            }), System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
     private void MainWindow_SourceInitialized(object? sender, EventArgs e)

@@ -1,11 +1,11 @@
 # PixShell 原生化总蓝图（mac Swift / Windows C#）
 
 路线 A：纯原生 ×2。前后端功能对齐现有 Electron 版（`/Volumes/d/pixshell`，renderer≈16K 行 + main≈5.7K 行）。
-- mac → `/Volumes/ssd1t/opencode/PixShell-mac/`（AppKit/SwiftUI + SwiftTerm，我直接掌控）
-- win → `C:\PixShell-win`（WPF + WebView2/xterm.js + SSH.NET，SSH 驱动 Windows agent 写）
+- mac → `mac/`（AppKit/SwiftUI + SwiftTerm，我直接掌控）
+- win → `<repo>\win`（WPF + WebView2/xterm.js + SSH.NET，SSH 驱动 Windows agent 写）
 
 ## 角色
-- **我(Claude)**：架构 / 关键路径 / 集成 / 审核所有产出 / 端到端验证（编译+运行+截屏）
+- **我(developer)**：架构 / 关键路径 / 集成 / 审核所有产出 / 端到端验证（编译+运行+截屏）
 - **local-codex**：mac Swift 模块（grok-4.5）
 - **win-opencode / win-codex / Hermes**：Windows C# 模块（SSH 驱动）
 
