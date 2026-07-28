@@ -222,7 +222,7 @@ Both platforms expose a local automation bridge for host connect, command execut
 - 📦 Packaged builds omit hosts, passwords, and private keys.
 - 📝 Runtime logs stay local and are git-ignored.
 - 🔐 Prefer OS secure storage for passwords when available.
-- 📄 Internal engineering notes such as `代码概要.md` are **local-only** and git-ignored（不进入发布树）。
+
 
 ## 📄 License
 
