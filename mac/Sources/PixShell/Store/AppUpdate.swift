@@ -61,9 +61,10 @@ enum AppUpdate {
 
     private static var preferredAssetHints: [String] {
         #if arch(arm64)
-        return ["mac-arm64.dmg", "mac-arm64.zip", "darwin-arm64", "macos-arm64"]
+        // macOS ships DMG installer only (no portable zip on Releases)
+        return ["mac-arm64.dmg", "darwin-arm64", "macos-arm64", "mac-arm64"]
         #else
-        return ["mac-x64.dmg", "mac-x64.zip", "darwin-x64", "macos-x64", "mac-amd64"]
+        return ["mac-x64.dmg", "darwin-x64", "macos-x64", "mac-amd64", "mac-x64"]
         #endif
     }
 
