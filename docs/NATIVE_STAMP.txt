@@ -1,1 +1,1 @@
-2026-07-28T03:57:46Z v0.1.1 backup-popup-window mac-dmg-only win-setup+portable
+2026-07-28T04:10:00Z v0.1.1 published win+mac keychain-acl backup-popup
