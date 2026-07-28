@@ -6,17 +6,18 @@ import Network
 /// - **不能**静默写入授权（无 MDM / 无 Full Disk Access 改 TCC.db 的产品路径）。
 /// - **能**做的 best-effort：
 ///   1. 启动时用 NWBrowser 扫 `_ssh._tcp`，触发系统「允许 PixShell 查找并连接到本地网络上的设备？」弹窗
-///   2. 连接失败（errno 65 / No route to host）时一键打开「系统设置 → 隐私与安全性 → 本地网络」
+///   2. **仅**经「帮助 → 授权本地网络…」手动打开帮助 sheet / 系统设置（**禁止**在会话失败时自动弹）
 ///   3. 要求以 `dist/PixShell.app` 启动（有 bundle id + usage description）；裸 binary 没有稳定 TCC 身份
 ///
 /// 注意：用户点「允许」后本进程内重连即可；若点了「不允许」必须去系统设置手动开。
+/// errno 65 / No route 也常见于主机离线，自动 sheet 会反复挡屏——会话失败只写终端/状态栏。
 enum LocalNetworkAuth {
     private static let promptedKey = "pixshell.localNetwork.prompted"
     private static var browser: NWBrowser?
     private static var holdTimer: Timer?
 
     /// 启动后异步触发一次系统本地网络授权弹窗（幂等：每个用户配置只主动扫一次，
-    /// 除非 `force`；连接失败路径也会再 force 一次）。
+    /// 除非 `force`；仅帮助菜单等显式用户动作可 force）。
     static func requestAuthorizationIfNeeded(force: Bool = false) {
         if !force, UserDefaults.standard.bool(forKey: promptedKey) { return }
         UserDefaults.standard.set(true, forKey: promptedKey)
@@ -85,8 +86,9 @@ enum LocalNetworkAuth {
         return true
     }
 
-    /// 连接失败（No route / errno 65）时：再触发一次探测 + 弹 sheet。
+    /// **仅手动入口**（帮助菜单「授权本地网络…」）：再触发一次探测 + 弹 sheet。
     /// 一键路径 = 开系统设置本地网络页 + 同时再扫 Bonjour 触发系统弹窗（无法静默写 TCC）。
+    /// 禁止在 `didCloseWith` / 网络错误路径自动调用——主机离线也会 errno 65。
     static func presentGrantHelp(from window: NSWindow?, onRetry: (() -> Void)? = nil) {
         requestAuthorizationIfNeeded(force: true)
 

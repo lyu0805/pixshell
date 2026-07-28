@@ -675,6 +675,8 @@ extension AppDelegate {
         let wasUp = sess.shellOpened
         sess.connected = false
         let t = sess.termView.getTerminal()
+        // 认证前网络失败会写具体文案；末尾不要用笼统「连接失败」盖掉。
+        var statusDetail: String? = nil
         if !wasUp {
             let kind = Self.classifyClose(error)
             switch kind {
@@ -699,20 +701,19 @@ extension AppDelegate {
                     connectOverlay?.fail("认证失败")
                     if sess.host.keyPath.isEmpty { promptRetryPassword(for: sess.host) }
                 } else if Self.looksLikeNetworkFailure(error) || LocalNetworkAuth.looksLikeLocalNetworkBlock(error) {
-                    let detail = LocalNetworkAuth.looksLikeLocalNetworkBlock(error)
-                        ? "无法到达主机（本地网络未授权）。点「一键打开授权设置」允许 PixShell，再点「立即重连」。"
-                        : (error?.localizedDescription ?? "网络不可达")
+                    // 绝不自动弹本地网络 sheet：主机离线/断网也会 errno 65，弹窗会挡屏。
+                    // 用户需要授权时走「帮助 → 授权本地网络…」。
+                    let endpoint = "\(sess.host.host):\(sess.host.port)"
+                    let detail: String
+                    if LocalNetworkAuth.looksLikeLocalNetworkBlock(error) {
+                        detail = "无法到达主机 (\(endpoint)) - 请检查网络连通性或本地网络权限"
+                    } else {
+                        detail = error?.localizedDescription ?? "网络不可达 (\(endpoint))"
+                    }
                     Log.warn("系统 ssh 回落后网络失败 \(sess.host.subtitle): \(detail)（保留钥匙串）", "session")
                     t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：\(detail)\u{1b}[0m\r\n")
                     connectOverlay?.fail("网络失败")
-                    if LocalNetworkAuth.looksLikeLocalNetworkBlock(error) {
-                        DispatchQueue.main.async { [weak self] in
-                            guard let self = self else { return }
-                            LocalNetworkAuth.presentGrantHelp(from: self.window) { [weak self] in
-                                self?.menuReconnect()
-                            }
-                        }
-                    }
+                    statusDetail = "✗ 连接失败：\(detail)"
                 } else {
                     Log.warn("系统 ssh 回落后仍失败 \(sess.host.subtitle): \(error?.localizedDescription ?? "未知")", "ssh")
                     t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：算法/协议不兼容（系统 ssh 亦失败）。\u{1b}[0m\r\n")
@@ -720,23 +721,19 @@ extension AppDelegate {
                 }
             case .network:
                 // P0：网络/超时/DNS/代理失败 —— 保留 Keychain，禁止当认证失败清密码。
-                let noRoute = LocalNetworkAuth.looksLikeLocalNetworkBlock(error)
+                // 禁止自动 presentGrantHelp：errno 65 / No route 常见于主机离线、Wi‑Fi 掉线，
+                // 自动 sheet 会反复挡屏。本地网络授权仅由启动 NWBrowser + 帮助菜单手动触发。
+                let endpoint = "\(sess.host.host):\(sess.host.port)"
                 let detail: String
-                if noRoute {
-                    // macOS 15+：未授权局域网 TCP → 伪装 EHOSTUNREACH。不能静默授权，弹一键开设置。
-                    detail = "无法到达主机（本地网络未授权）。点「一键打开授权设置」允许 PixShell，再点「立即重连」。"
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        LocalNetworkAuth.presentGrantHelp(from: self.window) { [weak self] in
-                            self?.menuReconnect()
-                        }
-                    }
+                if LocalNetworkAuth.looksLikeLocalNetworkBlock(error) {
+                    detail = "无法到达主机 (\(endpoint)) - 请检查网络连通性或本地网络权限"
                 } else {
-                    detail = error?.localizedDescription ?? "网络不可达"
+                    detail = error?.localizedDescription ?? "网络不可达 (\(endpoint))"
                 }
                 Log.warn("网络/连接失败 \(sess.host.subtitle): \(detail)（保留钥匙串）", "session")
                 t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：\(detail)\u{1b}[0m\r\n")
                 connectOverlay?.fail("网络失败")
+                statusDetail = "✗ 连接失败：\(detail)"
             case .auth:
                 // 仅认证失败才清 Keychain +（无 keyPath 时）弹密码重试。
                 Log.warn("认证失败 \(sess.host.subtitle)，已清除保存的密码", "session")
@@ -759,7 +756,11 @@ extension AppDelegate {
         if sessions.indices.contains(current), sessions[current] === sess {
             // P1：活动会话掉线 → 文件系统/系统信息跟着关，别留"连接关闭"后的僵尸面板
             clearSessionSidePanels()
-            setStatus(wasUp ? "已断开" : "连接失败")
+            if wasUp {
+                setStatus("已断开")
+            } else {
+                setStatus(statusDetail ?? "连接失败")
+            }
         }
     }
 
