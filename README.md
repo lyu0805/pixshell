@@ -37,15 +37,43 @@ PixShell 是面向运维场景的 **SSH / SFTP** 桌面客户端。自 **v0.1.1*
 > ⚠️ macOS **不内置** xterm.js；Mac 终端渲染走 **SwiftTerm**。Windows 终端才是 WebView2 + xterm.js。
 
 
-## 🖼️ Screenshots / 截图
+## 🖼️ App Interface / 软件界面
 
-| Main Terminal | Connection Manager |
-| :---: | :---: |
-| ![Main Terminal](./docs/assets/screenshots/main-terminal.png) | ![Connection Manager](./docs/assets/screenshots/connection-manager.png) |
+### Dark / Light theme · 暗色模式 / 淡色模式
 
-| SFTP Transfer | Text Editor |
+| Dark theme · 暗色模式 | Light theme · 淡色模式 |
 | :---: | :---: |
-| ![Transfer](./docs/assets/screenshots/transfer.png) | ![Editor](./docs/assets/screenshots/text-editor.png) |
+| <img src="./docs/assets/screenshots/dark-theme.png" alt="Dark theme / 暗色模式" width="480"> | <img src="./docs/assets/screenshots/light-theme.png" alt="Light theme / 淡色模式" width="480"> |
+
+### Host manager / New connection · 主机管理 / 新建连接
+
+| Host manager · 主机管理 | New connection · 新建连接 |
+| :---: | :---: |
+| <img src="./docs/assets/screenshots/connection-manager.png" alt="Host manager / 主机管理" width="480"> | <img src="./docs/assets/screenshots/new-connection.png" alt="New connection / 新建连接" width="480"> |
+
+### Quick connect history / Sidebar collapsed · 快速连接:历史 / 收起侧边栏
+
+| Quick connect · history · 快速连接:历史 | Sidebar collapsed · 收起侧边栏 |
+| :---: | :---: |
+| <img src="./docs/assets/screenshots/quick-connect-history.png" alt="Quick connect history / 快速连接:历史" width="480"> | <img src="./docs/assets/screenshots/sidebar-collapsed.png" alt="Sidebar collapsed / 收起侧边栏" width="480"> |
+
+### AI tools / MCP · local CLI · AI 工具交互 / 对接 MCP:本地 CLI
+
+| AI tool interaction · AI 工具交互 | MCP / local CLI · 对接 MCP:本地 CLI |
+| :---: | :---: |
+| <img src="./docs/assets/screenshots/ai-interaction.png" alt="AI tool interaction / AI 工具交互" width="480"> | <img src="./docs/assets/screenshots/mcp-cli-bridge.png" alt="MCP and local CLI bridge / 对接 MCP:本地 CLI" width="480"> |
+
+### Text editor / Download manager · 文本编辑器 / 下载管理
+
+| Text editor · 文本编辑器 | Download manager · 下载管理 |
+| :---: | :---: |
+| <img src="./docs/assets/screenshots/text-editor.png" alt="Text editor / 文本编辑器" width="480"> | <img src="./docs/assets/screenshots/download-manager.png" alt="Download manager / 下载管理" width="480"> |
+
+### Cloud / local backup / Key manager · 云备份:本地备份 / 密钥管理
+
+| Cloud & local backup · 云备份:本地备份 | Key manager · 密钥管理 |
+| :---: | :---: |
+| <img src="./docs/assets/screenshots/cloud-backup.png" alt="Cloud and local backup / 云备份:本地备份" width="480"> | <img src="./docs/assets/screenshots/key-manager.png" alt="Key manager / 密钥管理" width="480"> |
 
 ## 📚 Contents / 目录
 

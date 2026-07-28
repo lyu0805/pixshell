@@ -1,1 +1,4 @@
-2026-07-28T19:10:00Z OpenSSH SFTP Data startIndex-safe parse (fix subscript crash)
+2026-07-28T22:20:00Z Win: SFTP pack-transfer toggle + Ctrl A/X/C/V text shortcuts + FocusTerminal Esc; ChmodWindow hex perms; Release 0w0e
+2026-07-28T21:50:00Z Docs: README screenshots refreshed (12 product PNGs; README.md + README_CN.md grouped <img width=480> tables)
+2026-07-28T13:55:50Z Mac: input-field edit shortcuts + SFTP pack-transfer toggle + ChmodWindow
+2026-07-28T21:45:00Z Win: SysInfo multi-OS Command+WindowsCommand+CommandFor; DetectRemoteOs windows; Release 0w0e

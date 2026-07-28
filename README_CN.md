@@ -33,15 +33,43 @@ PixShell 是面向运维场景的 **SSH / SFTP** 桌面客户端。自 **v0.1.1*
 
 > ⚠️ macOS **不内置** xterm.js；Mac 终端渲染走 **SwiftTerm**。Windows 终端才是 WebView2 + xterm.js。
 
-## 🖼️ 截图
+## 🖼️ App Interface / 软件界面
 
-| 主终端 | 连接管理 |
-| :---: | :---: |
-| ![Main Terminal](./docs/assets/screenshots/main-terminal.png) | ![Connection Manager](./docs/assets/screenshots/connection-manager.png) |
+### 暗色模式 / 淡色模式
 
-| SFTP 传输 | 文本编辑 |
+| 暗色模式 | 淡色模式 |
 | :---: | :---: |
-| ![Transfer](./docs/assets/screenshots/transfer.png) | ![Editor](./docs/assets/screenshots/text-editor.png) |
+| <img src="./docs/assets/screenshots/dark-theme.png" alt="暗色模式" width="480"> | <img src="./docs/assets/screenshots/light-theme.png" alt="淡色模式" width="480"> |
+
+### 主机管理 / 新建连接
+
+| 主机管理 | 新建连接 |
+| :---: | :---: |
+| <img src="./docs/assets/screenshots/connection-manager.png" alt="主机管理" width="480"> | <img src="./docs/assets/screenshots/new-connection.png" alt="新建连接" width="480"> |
+
+### 快速连接:历史 / 收起侧边栏
+
+| 快速连接:历史 | 收起侧边栏 |
+| :---: | :---: |
+| <img src="./docs/assets/screenshots/quick-connect-history.png" alt="快速连接:历史" width="480"> | <img src="./docs/assets/screenshots/sidebar-collapsed.png" alt="收起侧边栏" width="480"> |
+
+### AI 工具交互 / 对接 MCP:本地 CLI
+
+| AI 工具交互 | 对接 MCP:本地 CLI |
+| :---: | :---: |
+| <img src="./docs/assets/screenshots/ai-interaction.png" alt="AI 工具交互" width="480"> | <img src="./docs/assets/screenshots/mcp-cli-bridge.png" alt="对接 MCP:本地 CLI" width="480"> |
+
+### 文本编辑器 / 下载管理
+
+| 文本编辑器 | 下载管理 |
+| :---: | :---: |
+| <img src="./docs/assets/screenshots/text-editor.png" alt="文本编辑器" width="480"> | <img src="./docs/assets/screenshots/download-manager.png" alt="下载管理" width="480"> |
+
+### 云备份:本地备份 / 密钥管理
+
+| 云备份:本地备份 | 密钥管理 |
+| :---: | :---: |
+| <img src="./docs/assets/screenshots/cloud-backup.png" alt="云备份:本地备份" width="480"> | <img src="./docs/assets/screenshots/key-manager.png" alt="密钥管理" width="480"> |
 
 ## 🚀 核心特性
 
