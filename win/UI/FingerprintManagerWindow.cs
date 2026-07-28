@@ -3,12 +3,13 @@ using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using Microsoft.Win32;
 
 namespace PixShell.UI;
 
 /// <summary>
 /// 主机指纹管理（对齐 mac UI/FingerprintManager.swift）。
-/// 列出 %USERPROFILE%\.ssh\known_hosts 条目（主机 / 类型 / SHA256·MD5），支持删除。
+/// 列出 %USERPROFILE%\.ssh\known_hosts 条目（主机 / 类型 / SHA256·MD5），支持删除 / 导入 / 导出。
 /// 纯代码构建（与 KeyManagerWindow 同样取舍）。
 /// </summary>
 public sealed class FingerprintManagerWindow
@@ -33,6 +34,10 @@ public sealed class FingerprintManagerWindow
         _count = new TextBlock { FontSize = 12, Foreground = B("BrushMuted"), Margin = new Thickness(0, 0, 0, 8) };
         _list = new StackPanel();
 
+        var importBtn = new Button { Content = "导入…", Style = (Style)Application.Current.Resources["PillButton"], Margin = new Thickness(0, 0, 6, 0) };
+        importBtn.Click += (_, _) => ImportFlow();
+        var exportBtn = new Button { Content = "导出…", Style = (Style)Application.Current.Resources["PillButton"], Margin = new Thickness(0, 0, 6, 0) };
+        exportBtn.Click += (_, _) => ExportFlow();
         var refBtn = new Button { Content = "刷新", Style = (Style)Application.Current.Resources["PillButton"], Margin = new Thickness(0, 0, 6, 0) };
         refBtn.Click += (_, _) => Reload();
         var closeBtn = new Button { Content = "关闭", Style = (Style)Application.Current.Resources["PillButton"] };
@@ -40,7 +45,7 @@ public sealed class FingerprintManagerWindow
 
         var head = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
         var btns = new StackPanel { Orientation = Orientation.Horizontal };
-        btns.Children.Add(refBtn); btns.Children.Add(closeBtn);
+        btns.Children.Add(importBtn); btns.Children.Add(exportBtn); btns.Children.Add(refBtn); btns.Children.Add(closeBtn);
         DockPanel.SetDock(btns, Dock.Right);
         head.Children.Add(btns);
         head.Children.Add(new TextBlock
@@ -58,10 +63,11 @@ public sealed class FingerprintManagerWindow
         root.Children.Add(_count);
         root.Children.Add(scroll);
 
+        // 标题栏多了两个按钮，默认宽略增，避免重叠
         _window = new Window
         {
             Title = "主机指纹管理", Owner = owner,
-            Width = 380, Height = 400, MinWidth = 320, MinHeight = 280,
+            Width = 460, Height = 400, MinWidth = 380, MinHeight = 280,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             WindowStyle = WindowStyle.ToolWindow,
             ResizeMode = ResizeMode.CanResizeWithGrip,
@@ -133,5 +139,53 @@ public sealed class FingerprintManagerWindow
         if (r != MessageBoxResult.OK) return;
         KnownHosts.Delete(e);
         Reload();
+    }
+
+    private void ExportFlow()
+    {
+        var dlg = new SaveFileDialog
+        {
+            FileName = _entries.Count == 0 ? "known_hosts.txt" : "known_hosts_backup.txt",
+            Filter = "文本文件 (*.txt)|*.txt|所有文件 (*.*)|*.*",
+            DefaultExt = ".txt",
+            AddExtension = true,
+            Title = "导出主机指纹",
+        };
+        if (dlg.ShowDialog(_window) != true) return;
+        try
+        {
+            var n = KnownHosts.Export(dlg.FileName);
+            MessageBox.Show(_window!, $"已导出 {n} 条指纹\n{dlg.FileName}", "导出完成",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(_window!, "导出失败: " + ex.Message, "PixShell",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ImportFlow()
+    {
+        var dlg = new OpenFileDialog
+        {
+            Filter = "文本文件 (*.txt)|*.txt|所有文件 (*.*)|*.*",
+            Title = "导入主机指纹",
+            CheckFileExists = true,
+        };
+        if (dlg.ShowDialog(_window) != true) return;
+        try
+        {
+            var r = KnownHosts.ImportMerging(dlg.FileName);
+            Reload();
+            MessageBox.Show(_window!,
+                $"新增 {r.Added} 条 · 跳过重复 {r.SkippedDuplicate} · 无效 {r.SkippedInvalid}",
+                "导入完成", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(_window!, "导入失败: " + ex.Message, "PixShell",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 }

@@ -24,7 +24,9 @@ namespace PixShell.Bridge;
 ///     绝不用 "+"/"*"/机器名——那样既会暴露到局域网，也需要管理员权限做 URL-ACL 预留）；
 ///   - 每个已接受的请求都再核实一次远端地址是否回环；
 ///   - 每个请求都要求 token（%APPDATA%\PixShell\agent_token，仅当前用户可读写）；
-///   - 不发任何 CORS 响应头，且只要请求带 Origin 头一律拒绝（挡住浏览器页面发起的 CSRF）；
+///   - 不发任何 CORS 响应头；跨站 Origin 一律拒绝。仅放行同源
+///     http://127.0.0.1:&lt;port&gt; / localhost，供本机 Web SSH 页 fetch API；
+///   - GET /webssh、/v1/app/webssh 提供浏览器 xterm 页；GET /web/* 提供静态资源；
 ///   - 请求体上限 8 MiB，超出返回 413；
 ///   - 绝不把 token 明文写进日志，只记录长度。
 /// </summary>
@@ -41,6 +43,9 @@ public sealed class AgentBridge
     public bool IsRunning { get; private set; }
     public int Port { get; private set; }
     public string TokenPath { get; }
+
+    /// <summary>当前鉴权 token（只给本机 UI 拼 Web SSH URL 用；绝不写日志）。</summary>
+    public string Token => _token;
 
     private HttpListener? _listener;
     private CancellationTokenSource? _cts;
@@ -224,10 +229,44 @@ public sealed class AgentBridge
                 return;
             }
 
-            // 无 CORS：只要带 Origin 头，一律拒绝（挡住浏览器页面发起的跨站请求）。
-            if (!string.IsNullOrEmpty(request.Headers["Origin"]))
+            // Origin 策略：默认拒绝跨站 Origin（无 CORS）。
+            // 仅放行同源 http://127.0.0.1:<port> / http://localhost:<port>，供本机 Web SSH 页 fetch API。
+            var origin = request.Headers["Origin"];
+            if (!string.IsNullOrEmpty(origin) && !IsSameOriginLoopback(origin, Port))
             {
                 await WriteJsonAsync(response, 403, new { ok = false, error = "origin not allowed" }).ConfigureAwait(false);
+                return;
+            }
+
+            var method = (request.HttpMethod ?? "GET").ToUpperInvariant();
+            var path = NormalizePath(request.Url?.AbsolutePath ?? "/");
+
+            // Web SSH 静态资源：xterm.js / css / addon，无需 token（只含公开前端库，无会话数据）。
+            if (method == "GET" && path.StartsWith("/web/", StringComparison.Ordinal))
+            {
+                await WriteStaticWebAsync(response, path["/web/".Length..]).ConfigureAwait(false);
+                return;
+            }
+
+            // Web SSH 页面本身也要求 token（query / header），与 API 同权；HTML 直接内嵌，不走 JSON 路由。
+            if (method == "GET" && (path == "/webssh" || path == "/v1/app/webssh"))
+            {
+                var gotPage = ExtractToken(request);
+                if (string.IsNullOrEmpty(gotPage) || !ConstantTimeEquals(gotPage, _token))
+                {
+                    // 仍返回 HTML 壳，由前端 gate 提示粘贴 token（也支持无 token 打开后手填）。
+                    // 若带了错误 token，明确 401 JSON，避免误以为页面坏了。
+                    if (!string.IsNullOrEmpty(gotPage))
+                    {
+                        await WriteJsonAsync(response, 401, new { ok = false, error = "unauthorized" }).ConfigureAwait(false);
+                        return;
+                    }
+                }
+                else
+                {
+                    MarkClientAuthenticated();
+                }
+                await WriteWebSshPageAsync(response).ConfigureAwait(false);
                 return;
             }
 
@@ -248,7 +287,6 @@ public sealed class AgentBridge
             }
             MarkClientAuthenticated(); // 鉴权通过才算"外部真正对接过"；401 绝不触发
 
-            var method = (request.HttpMethod ?? "GET").ToUpperInvariant();
             JsonElement? bodyObj = null;
             if (method is "POST" or "PUT" or "PATCH")
             {
@@ -270,7 +308,7 @@ public sealed class AgentBridge
             var breq = new BridgeRequest
             {
                 Method = method,
-                Path = NormalizePath(request.Url?.AbsolutePath ?? "/"),
+                Path = path,
                 Query = ParseQuery(request.Url?.Query),
                 Body = bodyObj,
             };
@@ -289,6 +327,14 @@ public sealed class AgentBridge
                 bresp = BridgeResponse.Fail(500, "internal error");
             }
 
+            // 路由层也可直接吐 HTML（/v1/app/webssh 备用路径若走到 Router）。
+            if (!string.IsNullOrEmpty(bresp.Html))
+            {
+                await WriteBytesAsync(response, bresp.Status, bresp.ContentType ?? "text/html; charset=utf-8",
+                    Encoding.UTF8.GetBytes(bresp.Html)).ConfigureAwait(false);
+                return;
+            }
+
             await WriteJsonAsync(response, bresp.Status, bresp.Json).ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -296,6 +342,100 @@ public sealed class AgentBridge
             Log.Warn($"桥请求处理失败: {ex.Message}", "bridge");
             try { response.Close(); } catch { /* 忽略 */ }
         }
+    }
+
+    /// <summary>仅允许本机回环且端口匹配的 Origin（Web SSH 页 fetch 会带 Origin）。</summary>
+    private static bool IsSameOriginLoopback(string origin, int port)
+    {
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var u)) return false;
+        if (!string.Equals(u.Scheme, "http", StringComparison.OrdinalIgnoreCase)) return false;
+        var host = u.Host;
+        if (!(host is "127.0.0.1" or "localhost" or "::1")) return false;
+        var p = u.IsDefaultPort ? 80 : u.Port;
+        return p == port;
+    }
+
+    /// <summary>web/ 目录：优先输出目录旁的 web\，再退回 AppBase。</summary>
+    private static string? ResolveWebRoot()
+    {
+        var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        var candidates = new[]
+        {
+            Path.Combine(baseDir, "web"),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "web")),
+        };
+        foreach (var c in candidates)
+        {
+            if (Directory.Exists(c)) return c;
+        }
+        return null;
+    }
+
+    private static async Task WriteWebSshPageAsync(HttpListenerResponse response)
+    {
+        var root = ResolveWebRoot();
+        string html;
+        if (root != null)
+        {
+            var path = Path.Combine(root, "webssh.html");
+            if (File.Exists(path))
+            {
+                html = await File.ReadAllTextAsync(path).ConfigureAwait(false);
+                await WriteBytesAsync(response, 200, "text/html; charset=utf-8", Encoding.UTF8.GetBytes(html)).ConfigureAwait(false);
+                return;
+            }
+        }
+        // 兜底：文件缺失时给最小提示页，避免 500 空响应。
+        html = "<!DOCTYPE html><meta charset=utf-8><title>PixShell Web SSH</title>" +
+               "<body style='background:#0e1116;color:#c9d1d9;font:14px sans-serif;padding:24px'>" +
+               "<h1>Web SSH</h1><p>缺少 web/webssh.html，请重新安装/构建 PixShell。</p></body>";
+        await WriteBytesAsync(response, 200, "text/html; charset=utf-8", Encoding.UTF8.GetBytes(html)).ConfigureAwait(false);
+    }
+
+    private static async Task WriteStaticWebAsync(HttpListenerResponse response, string relative)
+    {
+        // 防路径穿越：只允许纯文件名（xterm.js / xterm.css / addon-fit.js / webssh.html）
+        var name = relative.Replace('\\', '/');
+        if (name.Contains("..", StringComparison.Ordinal) || name.Contains('/') || string.IsNullOrWhiteSpace(name))
+        {
+            await WriteJsonAsync(response, 404, new { ok = false, error = "not found" }).ConfigureAwait(false);
+            return;
+        }
+        var root = ResolveWebRoot();
+        if (root == null)
+        {
+            await WriteJsonAsync(response, 404, new { ok = false, error = "web root missing" }).ConfigureAwait(false);
+            return;
+        }
+        var full = Path.Combine(root, name);
+        if (!File.Exists(full))
+        {
+            await WriteJsonAsync(response, 404, new { ok = false, error = "not found" }).ConfigureAwait(false);
+            return;
+        }
+        var ext = Path.GetExtension(full).ToLowerInvariant();
+        var ctype = ext switch
+        {
+            ".html" => "text/html; charset=utf-8",
+            ".js" => "application/javascript; charset=utf-8",
+            ".css" => "text/css; charset=utf-8",
+            ".map" => "application/json; charset=utf-8",
+            ".svg" => "image/svg+xml",
+            ".png" => "image/png",
+            ".ico" => "image/x-icon",
+            _ => "application/octet-stream",
+        };
+        var bytes = await File.ReadAllBytesAsync(full).ConfigureAwait(false);
+        await WriteBytesAsync(response, 200, ctype, bytes).ConfigureAwait(false);
+    }
+
+    /// <summary>拼 Web SSH 浏览器 URL（含 token + 可选 session）。</summary>
+    public string BuildWebSshUrl(int? session = null, string? hostId = null)
+    {
+        var q = new List<string> { "token=" + Uri.EscapeDataString(_token) };
+        if (session is >= 0) q.Add("session=" + session.Value);
+        if (!string.IsNullOrEmpty(hostId)) q.Add("host_id=" + Uri.EscapeDataString(hostId));
+        return $"http://127.0.0.1:{Port}/webssh?{string.Join("&", q)}";
     }
 
     /// <summary>边读边限制大小地读取请求体；返回 (是否可继续, 已读到的文本)。超限时已直接写回 413。</summary>
@@ -371,12 +511,18 @@ public sealed class AgentBridge
 
     private static async Task WriteJsonAsync(HttpListenerResponse response, int status, object json)
     {
+        var bodyBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(json));
+        await WriteBytesAsync(response, status, "application/json; charset=utf-8", bodyBytes).ConfigureAwait(false);
+    }
+
+    private static async Task WriteBytesAsync(HttpListenerResponse response, int status, string contentType, byte[] bodyBytes)
+    {
         try
         {
-            var bodyBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(json));
             response.StatusCode = status;
-            response.ContentType = "application/json; charset=utf-8";
+            response.ContentType = contentType;
             response.Headers["Cache-Control"] = "no-store";
+            // 同源 Web SSH 页不需要 CORS 头；跨站仍被 Origin 校验挡掉。
             response.ContentLength64 = bodyBytes.Length;
             await response.OutputStream.WriteAsync(bodyBytes).ConfigureAwait(false);
         }

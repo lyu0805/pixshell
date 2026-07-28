@@ -74,6 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     var proxyPanel: ProxyPanel!        // 代理服务器管理（菜单 选项 → 代理）
     var keyManager: KeyManager!        // 密钥管理（生成/复制公钥/用于此主机/删除）
     var fingerprintManager: FingerprintManager!  // 主机指纹（known_hosts 列表/删除）
+    var aiSshBridgeManager: AiSshBridgeManager!  // AI 工具 SSH 一键注册窗口
     let proxyStore = ProxyStore()
     var editingRemotePath: String = "" // 当前编辑的远端文件路径
     var backupEnabled: Set<String> = []

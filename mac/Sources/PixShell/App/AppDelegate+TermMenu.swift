@@ -67,6 +67,11 @@ extension AppDelegate {
     }
 
     @objc func termSelectAll() {
+        // 输入框聚焦时 ⌘A 必须全选文本，不能落到终端
+        if textEditingFocused() {
+            NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: self)
+            return
+        }
         guard sessions.indices.contains(current) else { return }
         sessions[current].termView.selectAll(self)
     }

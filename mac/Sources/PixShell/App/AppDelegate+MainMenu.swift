@@ -35,10 +35,12 @@ extension AppDelegate {
         fileMenu.addItem(mi("导出主机…", #selector(exportHosts)))
         fileItem.submenu = fileMenu; main.addItem(fileItem)
 
-        // 编辑（复制/粘贴要走终端）
+        // 编辑：输入框聚焦时走 NSTextField/NSTextView；否则复制/粘贴/全选走终端
         let editItem = NSMenuItem(); let editMenu = NSMenu(title: "编辑")
+        editMenu.addItem(mi("剪切", #selector(termCut), "x"))
         editMenu.addItem(mi("复制", #selector(termCopy), "c"))
         editMenu.addItem(mi("粘贴", #selector(termPaste), "v"))
+        editMenu.addItem(mi("全选", #selector(termSelectAll), "a"))
         editMenu.addItem(.separator())
         editMenu.addItem(mi("清屏", #selector(termClear), "k"))
         editItem.submenu = editMenu; main.addItem(editItem)
@@ -87,9 +89,21 @@ extension AppDelegate {
         sesMenu.addItem(mi("关闭当前标签", #selector(closeCurrentTab), "w"))
         sesItem.submenu = sesMenu; main.addItem(sesItem)
 
+        // 工具 / Web SSH / AI SSH 注册
+        let toolsItem = NSMenuItem(); let toolsMenu = NSMenu(title: "工具")
+        toolsMenu.addItem(mi("工具面板", #selector(openTools)))
+        toolsMenu.addItem(.separator())
+        toolsMenu.addItem(mi("Web SSH 网页终端…", #selector(openWebSSH)))
+        toolsMenu.addItem(.separator())
+        toolsMenu.addItem(mi("接入 AI 工具…", #selector(openAIIntegration)))
+        toolsMenu.addItem(mi("一键注册 AI 默认 SSH…", #selector(openAiSshBridge)))
+        toolsItem.submenu = toolsMenu; main.addItem(toolsItem)
+
         // 云端同步 / 帮助
         let helpItem = NSMenuItem(); let helpMenu = NSMenu(title: "帮助")
         helpMenu.addItem(mi("接入 AI 工具…", #selector(openAIIntegration)))
+        helpMenu.addItem(mi("一键注册 AI 默认 SSH…", #selector(openAiSshBridge)))
+        helpMenu.addItem(mi("Web SSH 网页终端…", #selector(openWebSSH)))
         helpMenu.addItem(.separator())
         helpMenu.addItem(mi("授权本地网络…", #selector(menuLocalNetworkAuth)))
         helpMenu.addItem(mi("打开本地网络设置", #selector(menuOpenLocalNetworkSettings)))
@@ -245,5 +259,33 @@ extension AppDelegate {
         AgentMCP.install()
         updateCliStatus()
         setStatus("已重新安装 CLI / MCP（端口 \(agentBridge?.port ?? 0)）")
+    }
+
+    /// 在默认浏览器打开本机 Web SSH 终端（xterm.js → 本地桥 screen/shell/stream）。
+    @objc func openWebSSH() {
+        if agentBridge == nil || agentBridge?.isRunning != true {
+            startAgentBridge()
+        }
+        guard let bridge = agentBridge else {
+            setStatus("本地桥未启动，无法打开 Web SSH")
+            return
+        }
+        // 等监听就绪（start 异步）；最多 ~1.5s
+        func tryOpen(attempt: Int) {
+            if bridge.isRunning, let url = bridge.webSSHURL(session: sessions.isEmpty ? nil : max(0, current)) {
+                NSWorkspace.shared.open(url)
+                setStatus("已在浏览器打开 Web SSH · 127.0.0.1:\(bridge.port)")
+                Log.info("打开 Web SSH \(url.absoluteString.replacingOccurrences(of: bridge.currentToken, with: "***"))", "bridge")
+                return
+            }
+            if attempt >= 6 {
+                setStatus("本地桥未就绪，稍后重试 Web SSH")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                tryOpen(attempt: attempt + 1)
+            }
+        }
+        tryOpen(attempt: 0)
     }
 }

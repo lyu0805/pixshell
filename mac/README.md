@@ -23,6 +23,7 @@ bash scripts/package-mac.sh debug   # 打包成可双击的 dist/PixShell.app
 - **SFTP 双栏**:本地(FileManager) | 远端(自研 SFTP v3 over swift-nio-ssh),列目录/进入/上传/下载/新建/删除。**上传+下载往返已真机自测通过**。
 - **命令板**:发送命令 + 快捷命令到当前会话。
 - **侧栏折叠**。
+- **Web SSH 网页终端**：本地桥 `GET /webssh`（或 `/v1/app/webssh`）提供浏览器 xterm.js 终端；菜单「工具 → Web SSH 网页终端…」打开 `http://127.0.0.1:8766/webssh?token=…`。轮询 `/v1/app/stream`、输入 `/v1/app/shell`，支持 `?session=` / `?host_id=`。
 
 ## 目录结构
 
@@ -34,6 +35,7 @@ Sources/PixShell/
   Store/Keychain.swift    # 密码 Keychain
   SSH/SSHSession.swift    # SSH 会话协议 + 凭据
   SSH/NIOSSHSession.swift # swift-nio-ssh PTY shell 实现
+  Bridge/AgentBridge.swift / BridgeRoutes.swift / WebSSHPage.swift  # 本地桥 + Web SSH 页
   SFTP/SFTPService.swift  # SFTP 服务协议 + 类型
   SFTP/SFTPProtocol.swift # SFTP v3 线协议编解码
   SFTP/NIOSFTPSession.swift # SFTP v3 实现(over swift-nio-ssh)

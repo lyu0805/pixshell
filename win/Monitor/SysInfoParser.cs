@@ -79,12 +79,13 @@ public static class SysInfoParser
         if (string.IsNullOrEmpty(raw)) return info;
         foreach (var rawLine in raw.Split('\n'))
         {
+            // Windows PowerShell / CRLF：Trim 去掉 \r，避免 key 带尾巴导致 switch 失配
             var line = rawLine.Trim();
             if (line.Length == 0) continue;
             var eq = line.IndexOf('=');
             if (eq < 0) continue;
-            var key = line[..eq];
-            var value = line[(eq + 1)..];
+            var key = line[..eq].Trim();
+            var value = line[(eq + 1)..].Trim();
             Apply(key, value, info);
         }
         return info;

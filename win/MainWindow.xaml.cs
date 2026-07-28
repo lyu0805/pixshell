@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -617,8 +618,25 @@ public partial class MainWindow : Window
         try
         {
             // /etc/os-release 的 ID 最准（ubuntu/debian/centos/alpine/openwrt…），退回 uname。
-            var raw = await session.ExecAsync(". /etc/os-release 2>/dev/null && printf '%s' \"$ID\" || uname -s 2>/dev/null");
-            var id = (raw ?? "").Trim().Split('\n').LastOrDefault()?.Trim().ToLowerInvariant() ?? "";
+            // Windows OpenSSH 默认 shell 可能是 cmd/powershell：POSIX 探测失败后再探。
+            var raw = await session.ExecAsync(
+                ". /etc/os-release 2>/dev/null && printf '%s\\n' \"$ID\" || uname -s 2>/dev/null || true");
+            var id = (raw ?? "").Trim().Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim().TrimEnd('\r').ToLowerInvariant())
+                .LastOrDefault(s => s.Length > 0) ?? "";
+            if (id.Length == 0 || id.Contains(' ') || id.Length > 32
+                || id.Contains("not recognized") || id.Contains("不是内部") || id.Contains("command not found"))
+            {
+                // Windows 回落：PowerShell / cmd
+                var winProbe = await session.ExecAsync(
+                    "powershell -NoProfile -Command \"if ($env:OS -eq 'Windows_NT') { 'windows' }\" 2>nul & cmd /c \"if defined OS if %OS%==Windows_NT echo windows\"");
+                var wp = (winProbe ?? "").Trim().Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(s => s.Trim().TrimEnd('\r').ToLowerInvariant())
+                    .FirstOrDefault(s => s is "windows" or "windows_nt") ?? "";
+                if (wp.Length > 0) id = "windows";
+                else return;
+            }
+            if (id is "windows_nt" or "win32" or "win64") id = "windows";
             if (id.Length == 0 || id.Length > 32 || id.Contains(' ')) return;
 
             var entry = _hosts.FirstOrDefault(h => h.Id == host.Id);
@@ -1093,11 +1111,148 @@ public partial class MainWindow : Window
 
     private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape && ToolsFlyout.IsOpen)
+        // Esc：优先关工具浮窗；命令框聚焦时清空并回终端（对齐 mac cancelOperation）
+        if (e.Key == Key.Escape)
         {
-            CloseToolsFlyout();
-            e.Handled = true;
+            if (ToolsFlyout.IsOpen)
+            {
+                CloseToolsFlyout();
+                e.Handled = true;
+                return;
+            }
+            if (CmdInput.IsKeyboardFocusWithin)
+            {
+                CmdInput.Text = "";
+                ActiveSession?.FocusTerminal();
+                e.Handled = true;
+                return;
+            }
         }
+
+        // Ctrl+A/X/C/V：输入框聚焦时走标准文本编辑，绝不能被终端/菜单劫持
+        // （对齐 mac termCut/termCopy/termPaste/termSelectAll + textEditingFocused）
+        var mods = Keyboard.Modifiers;
+        if ((mods & ModifierKeys.Control) == ModifierKeys.Control
+            && (mods & (ModifierKeys.Alt | ModifierKeys.Windows)) == 0)
+        {
+            var key = e.Key == Key.System ? e.SystemKey : e.Key;
+            if (key is Key.A or Key.X or Key.C or Key.V)
+            {
+                if (TryHandleTextEditShortcut(key))
+                {
+                    e.Handled = true;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>当前是否正在编辑文本：任意 TextBox / RichTextBox / 命令板 Editor（含弹窗）。</summary>
+    private bool TextEditingFocused()
+    {
+        var focused = Keyboard.FocusedElement as DependencyObject
+                      ?? FocusManager.GetFocusedElement(this) as DependencyObject;
+        for (DependencyObject? obj = focused; obj != null; obj = VisualTreeHelper.GetParent(obj))
+        {
+            // 不用 TextBoxBase 类型名（部分 WPF 目标下 CS0246）；显式认 TextBox / RichTextBox
+            if (obj is TextBox or System.Windows.Controls.RichTextBox) return true;
+        }
+        // 命令框 / 命令板显式兜底
+        if (CmdInput.IsKeyboardFocusWithin) return true;
+        if (Cmds.Visibility == Visibility.Visible
+            && (Cmds.IsKeyboardFocusWithin || Cmds.Editor.IsKeyboardFocusWithin || Cmds.Editor.IsFocused))
+            return true;
+        return false;
+    }
+
+    /// <summary>Ctrl+A/X/C/V 在输入框聚焦时：走 TextBox 标准编辑；返回 true 表示已处理。
+    /// 终端聚焦时返回 false，留给 WebView2/xterm 自己处理（或右键菜单路径）。</summary>
+    private bool TryHandleTextEditShortcut(Key key)
+    {
+        if (!TextEditingFocused()) return false;
+        var focused = Keyboard.FocusedElement;
+
+        // 1) 标准 TextBox（含 CmdInput / 命令板 Editor / 各弹窗输入框）
+        if (focused is TextBox tb)
+        {
+            switch (key)
+            {
+                case Key.A:
+                    tb.SelectAll();
+                    return true;
+                case Key.X:
+                    try { tb.Cut(); } catch { /* 只读/剪贴板占用 */ }
+                    return true;
+                case Key.C:
+                    try { tb.Copy(); } catch { }
+                    return true;
+                case Key.V:
+                    // 底栏单行 CmdInput：粘贴时压平换行（对齐 mac pasteIntoCommandBoxIfFocused）
+                    if (ReferenceEquals(tb, CmdInput))
+                    {
+                        PasteIntoCommandBoxIfFocused();
+                        return true;
+                    }
+                    try { tb.Paste(); } catch { }
+                    return true;
+            }
+        }
+
+        // 2) RichTextBox（内置编辑器）
+        if (focused is System.Windows.Controls.RichTextBox rtb)
+        {
+            switch (key)
+            {
+                case Key.A:
+                    rtb.SelectAll();
+                    return true;
+                case Key.X:
+                    try { rtb.Cut(); } catch { }
+                    return true;
+                case Key.C:
+                    try { rtb.Copy(); } catch { }
+                    return true;
+                case Key.V:
+                    try { rtb.Paste(); } catch { }
+                    return true;
+            }
+        }
+
+        // 3) 焦点在子元素上但属于命令板 Editor / CmdInput 树：用已有路由
+        if (key == Key.C) { _ = TermCopy(); return true; }
+        if (key == Key.V) { TermPaste(); return true; }
+        if (key == Key.A)
+        {
+            if (CmdInput.IsKeyboardFocusWithin) { CmdInput.SelectAll(); return true; }
+            if (Cmds.Visibility == Visibility.Visible && Cmds.Editor.IsKeyboardFocusWithin)
+            { Cmds.Editor.SelectAll(); return true; }
+        }
+        if (key == Key.X)
+        {
+            if (CmdInput.IsKeyboardFocusWithin)
+            {
+                try
+                {
+                    if (!string.IsNullOrEmpty(CmdInput.SelectedText))
+                    {
+                        Clipboard.SetText(CmdInput.SelectedText);
+                        var start = CmdInput.SelectionStart;
+                        var len = CmdInput.SelectionLength;
+                        var t = CmdInput.Text ?? "";
+                        CmdInput.Text = t.Substring(0, start) + t.Substring(start + len);
+                        CmdInput.CaretIndex = start;
+                    }
+                }
+                catch { }
+                return true;
+            }
+            if (Cmds.Visibility == Visibility.Visible && Cmds.Editor.IsKeyboardFocusWithin)
+            {
+                try { Cmds.Editor.Cut(); } catch { }
+                return true;
+            }
+        }
+        return true; // 文本编辑聚焦但没匹配到控件：吞掉，别漏进终端
     }
 
     private void MainWindow_Deactivated(object? sender, EventArgs e)
@@ -1469,11 +1624,40 @@ public partial class MainWindow : Window
         if (ActiveSession is not { Connected: true } session) { MessageBox.Show(this, "请先连接一个会话。", "系统信息"); return; }
         try { _sysInfoWin?.Close(); } catch { }
         var win = new UI.SysInfoWindow { Owner = this, Title = "系统信息 · " + (session.SourceHost?.Display ?? session.HostName) };
-        win.OnRefresh = () => IsActiveSession(session) ? session.ExecAsync(UI.SysInfoWindow.Command) : Task.FromResult("");
+        // 本机 / Windows 远端走 PowerShell；Linux/macOS 走多 OS POSIX 脚本（uname 分支）。
+        // OsId 未知时：先试 POSIX，若无 hostname= 关键行再回落 WindowsCommand（覆盖 Windows OpenSSH 默认 shell 非 sh 的情况）。
+        var isLocal = session.SourceHost?.IsLocal == true;
+        var osId = session.SourceHost?.OsId;
+        win.OnRefresh = async () =>
+        {
+            if (!IsActiveSession(session)) return "";
+            var cmd = UI.SysInfoWindow.CommandFor(isLocal, osId);
+            var text = await session.ExecAsync(cmd);
+            if (!isLocal
+                && !ReferenceEquals(cmd, UI.SysInfoWindow.WindowsCommand)
+                && cmd != UI.SysInfoWindow.WindowsCommand
+                && !LooksLikeSysInfoOutput(text))
+            {
+                var retry = await session.ExecAsync(UI.SysInfoWindow.WindowsCommand);
+                if (LooksLikeSysInfoOutput(retry)) text = retry;
+            }
+            return text ?? "";
+        };
         win.Closed += (_, _) => { if (ReferenceEquals(_sysInfoWin, win)) _sysInfoWin = null; };
         _sysInfoWin = win;
         win.Show();
         await win.Reload();
+    }
+
+    /// <summary>系统信息采集输出是否看起来有效（至少有 hostname= 行）。</summary>
+    private static bool LooksLikeSysInfoOutput(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        // 执行失败前缀（ExecAsync 异常时返回）
+        if (text.StartsWith("执行失败", StringComparison.Ordinal)) return false;
+        return text.Contains("hostname=", StringComparison.Ordinal)
+            || text.Contains("mem_total_mb=", StringComparison.Ordinal)
+            || text.Contains("cpu_model=", StringComparison.Ordinal);
     }
 
     // =====================================================================
@@ -1532,6 +1716,7 @@ public partial class MainWindow : Window
 
         // AI 对接：后端 AgentBridge / AgentCLI 已就绪，汉堡菜单提供一键入口
         var ai = new MenuItem { Header = "AI 对接" };
+        ai.Items.Add(Item("一键注册 AI 默认 SSH…", OpenAiBridgeWindow));
         ai.Items.Add(Item("接入 AI 工具…", OpenAIIntegration));
         ai.Items.Add(new Separator());
         ai.Items.Add(Item("复制 CLI 用法", CopyCLIUsage));
@@ -1541,6 +1726,9 @@ public partial class MainWindow : Window
         ai.Items.Add(Item("打开 CLI 脚本目录", OpenCLIBinDir));
         ai.Items.Add(Item("重新安装 CLI / MCP", ReinstallCLIBridge));
         menu.Items.Add(ai);
+
+        // Web SSH：本机浏览器打开桥上的 xterm 页（走 /v1/app/screen + /v1/app/shell）
+        menu.Items.Add(Item("Web SSH 网页终端…", OpenWebSshInBrowser));
 
         menu.Items.Add(new Separator());
         var help = new MenuItem { Header = "帮助" };
@@ -1608,6 +1796,33 @@ public partial class MainWindow : Window
         if (_agentBridge != null) Bridge.AgentCLI.Install(_agentBridge.Port);
         UpdateCliStatus();
         SetStatus($"已重新安装 CLI / MCP（端口 {_agentBridge?.Port ?? 0}）");
+    }
+
+    /// <summary>汉堡菜单「Web SSH 网页终端…」：默认浏览器打开 http://127.0.0.1:8766/webssh?token=…&amp;session=…</summary>
+    private void OpenWebSshInBrowser()
+    {
+        if (_agentBridge == null || !_agentBridge.IsRunning) StartAgentBridge();
+        if (_agentBridge == null || !_agentBridge.IsRunning)
+        {
+            MessageBox.Show(this,
+                "本地桥未启动（端口可能被占用）。Web SSH 依赖 127.0.0.1 桥接服务。",
+                "Web SSH", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        int? sid = null;
+        if (Sessions.SelectedIndex >= 0) sid = Sessions.SelectedIndex;
+        var url = _agentBridge.BuildWebSshUrl(sid);
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            SetStatus("已在浏览器打开 Web SSH");
+            Log.Info($"打开 Web SSH 浏览器页 session={sid?.ToString() ?? "-"}", "bridge");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "无法打开浏览器：" + ex.Message, "Web SSH",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private static MenuItem Item(string header, Action action)
@@ -1923,6 +2138,7 @@ public partial class MainWindow : Window
 
     private UI.KeyManagerWindow? _keyManager;
     private UI.FingerprintManagerWindow? _fingerprintManager;
+    private UI.AiBridgeWindow? _aiBridgeWindow;
 
     /// <summary>密钥管理（菜单 文件 → 密钥管理…）。「用于此主机」会把私钥路径写回当前会话的主机。</summary>
     private void OpenKeyManager()
@@ -1951,6 +2167,20 @@ public partial class MainWindow : Window
         _fingerprintManager ??= new UI.FingerprintManagerWindow();
         Log.Info("打开主机指纹管理", "ui");
         _fingerprintManager.Show(this);
+    }
+
+    /// <summary>一键注册 AI 默认 SSH…：写 %APPDATA%\PixShell\bin\ssh.cmd + 用户 PATH，并探测本机 AI 工具。</summary>
+    private void OpenAiBridgeWindow()
+    {
+        // 注册依赖 AgentCLI 脚本与桥端口；桥没起就先拉一把（失败也仍可用 DefaultPort 写脚本）。
+        if (_agentBridge == null || !_agentBridge.IsRunning) StartAgentBridge();
+        _aiBridgeWindow ??= new UI.AiBridgeWindow
+        {
+            BridgePortProvider = () => _agentBridge?.IsRunning == true ? _agentBridge.Port : Bridge.AgentBridge.DefaultPort,
+            OnStatus = SetStatus,
+        };
+        Log.Info("打开 AI 工具 SSH 桥接窗口", "ui");
+        _aiBridgeWindow.Show(this);
     }
 
     /// <summary>「接入 AI 工具」：把 MCP / CLI 两种接法摆出来，一键复制。

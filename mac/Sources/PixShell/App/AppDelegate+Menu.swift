@@ -151,10 +151,16 @@ extension AppDelegate {
     @objc func menuKeyMgr() { openKeyManager() }
     /// 汉堡菜单「主机指纹管理…」。
     @objc func menuFingerprintMgr() { openFingerprintManager() }
-    // 复制/粘贴：优先跟当前焦点走。命令板/命令框聚焦时 ⌘V 必须进输入框，
-    // 绝不能因为菜单项 target=self 就把剪贴板硬塞进终端（用户 P0：粘贴命令却进终端）。
+    // 剪切/复制/粘贴/全选：输入框（任意 NSTextField / NSTextView / field editor）聚焦时
+    // 必须走系统文本动作；绝不能因菜单 target=self 把内容硬塞进终端。
+    // Esc 取消：命令框走 cancelOperation → 回终端（见 AppDelegate+CommandBox）；其它输入框走 field editor 默认 cancel。
+    @objc func termCut() {
+        // 终端无剪切语义；仅输入框聚焦时转发系统 cut
+        guard textEditingFocused() else { return }
+        NSApp.sendAction(#selector(NSText.cut(_:)), to: nil, from: self)
+    }
     @objc func termCopy() {
-        if pasteTargetIsCommandBox() {
+        if textEditingFocused() {
             NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
             return
         }
@@ -162,7 +168,12 @@ extension AppDelegate {
         sessions[current].termView.copy(self)
     }
     @objc func termPaste() {
-        if pasteIntoCommandBoxIfFocused() { return }
+        if textEditingFocused() {
+            // 优先系统粘贴（覆盖选区、保留多行）；命令框单行再做换行压平兜底
+            if NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: self) { return }
+            _ = pasteIntoCommandBoxIfFocused()
+            return
+        }
         guard sessions.indices.contains(current) else { return }
         sessions[current].termView.paste(self)
     }
@@ -171,21 +182,41 @@ extension AppDelegate {
         sessions[current].termView.feed(byteArray: ArraySlice(Array("\u{1b}[2J\u{1b}[H".utf8)))
     }
 
+    /// 当前（主窗或 keyWindow）是否正在编辑文本：NSTextView / NSTextField / field editor。
+    /// 含命令板、命令框、SFTP 重命名、各弹窗输入框。
+    func textEditingFocused() -> Bool {
+        let candidates: [NSResponder?] = [
+            NSApp.keyWindow?.firstResponder,
+            window?.firstResponder,
+        ]
+        for fr in candidates {
+            guard let fr else { continue }
+            // field editor / 多行编辑器
+            if fr is NSTextView { return true }
+            if fr is NSTextField { return true }
+        }
+        // 命令板 / 命令框显式判定（field editor 有时挂在 window 上）
+        return pasteTargetIsCommandBox()
+    }
+
     /// 当前第一响应者是否是命令板编辑器 / 底栏命令框（含其内部 field editor）。
     private func pasteTargetIsCommandBox() -> Bool {
-        guard let fr = window.firstResponder else { return false }
-        if let ed = cmdPanel?.editor {
-            if fr === ed { return true }
-            // NSTextField / NSTextView 编辑时 firstResponder 经常是内部 field editor
-            if let tv = fr as? NSTextView, tv.delegate as AnyObject? === ed { return true }
-            if let v = fr as? NSView, v.isDescendant(of: ed) { return true }
-            if let scroll = ed.enclosingScrollView, let v = fr as? NSView, v.isDescendant(of: scroll) { return true }
-        }
-        if let input = cmdInput {
-            if fr === input { return true }
-            if let v = fr as? NSView, v.isDescendant(of: input) { return true }
-            // field editor 属于 window，用 currentEditor 判断
-            if let fe = input.currentEditor(), fr === fe { return true }
+        let wins: [NSWindow?] = [window, NSApp.keyWindow]
+        for w in wins {
+            guard let w, let fr = w.firstResponder else { continue }
+            if let ed = cmdPanel?.editor {
+                if fr === ed { return true }
+                // NSTextField / NSTextView 编辑时 firstResponder 经常是内部 field editor
+                if let tv = fr as? NSTextView, tv.delegate as AnyObject? === ed { return true }
+                if let v = fr as? NSView, v.isDescendant(of: ed) { return true }
+                if let scroll = ed.enclosingScrollView, let v = fr as? NSView, v.isDescendant(of: scroll) { return true }
+            }
+            if let input = cmdInput {
+                if fr === input { return true }
+                if let v = fr as? NSView, v.isDescendant(of: input) { return true }
+                // field editor 属于 window，用 currentEditor 判断
+                if let fe = input.currentEditor(), fr === fe { return true }
+            }
         }
         return false
     }

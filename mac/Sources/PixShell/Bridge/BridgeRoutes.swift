@@ -41,11 +41,23 @@ struct BridgeRequest {
 
 struct BridgeResponse {
     var status: Int
-    var json: [String: Any]
+    /// JSON 响应体（与 rawBody 二选一；JSON API 走这个）。
+    var json: [String: Any]?
+    /// 原始响应体（HTML 等非 JSON 内容）；优先于 json。
+    var rawBody: Data?
+    var contentType: String
 
-    static func ok(_ json: [String: Any]) -> BridgeResponse { BridgeResponse(status: 200, json: json) }
+    static func ok(_ json: [String: Any]) -> BridgeResponse {
+        BridgeResponse(status: 200, json: json, rawBody: nil, contentType: "application/json; charset=utf-8")
+    }
     static func fail(_ status: Int, _ error: String) -> BridgeResponse {
-        BridgeResponse(status: status, json: ["ok": false, "error": error])
+        BridgeResponse(status: status, json: ["ok": false, "error": error], rawBody: nil, contentType: "application/json; charset=utf-8")
+    }
+    static func html(_ html: String, status: Int = 200) -> BridgeResponse {
+        BridgeResponse(status: status, json: nil, rawBody: Data(html.utf8), contentType: "text/html; charset=utf-8")
+    }
+    static func raw(status: Int, body: Data, contentType: String) -> BridgeResponse {
+        BridgeResponse(status: status, json: nil, rawBody: body, contentType: contentType)
     }
 }
 
@@ -80,6 +92,10 @@ enum BridgeRouter {
         }
 
         switch (p, method) {
+        // Web SSH：浏览器内 xterm 终端页（token / session / host_id 走 query）。
+        case ("/webssh", "GET"), ("/v1/app/webssh", "GET"):
+            completion(.html(WebSSHPage.html()))
+
         case ("/v1/app/hosts", "GET"), ("/v1/app/host-list", "GET"):
             let hosts = host.bridgeHosts()
             if let gid = req.query["group-id"] ?? req.query["group_id"] ?? req.query["g"], !gid.isEmpty {
@@ -103,7 +119,7 @@ enum BridgeRouter {
                 case .success(let dict):
                     var out = dict
                     out["ok"] = true
-                    completion(BridgeResponse(status: 200, json: out))
+                    completion(.ok(out))
                 case .failure(let err):
                     completion(.fail(400, describeError(err)))
                 }
@@ -157,22 +173,11 @@ enum BridgeRouter {
 
         case ("/v1/app/screen", _), ("/v1/app/read", _):
             guard method == "GET" || method == "POST" else { completion(.fail(405, "use GET/POST")); return }
-            guard let sid = sessionField(req.body, req.query) else {
-                completion(.fail(400, "会话不存在或 id 不唯一"))
-                return
-            }
-            guard validSession(host, sid) else {
-                Log.warn("screen 指定的会话不存在 session=\(sid)（共 \(host.bridgeSessions().count) 个）", "bridge")
-                completion(.fail(404, "会话 \(sid) 不存在（当前共 \(host.bridgeSessions().count) 个，用 /v1/app/sessions 查）"))
-                return
-            }
-            let linesRaw = req.query["lines"] ?? req.query["n"] ?? stringField(req.body, ["lines", "n"])
-            let n = linesRaw.flatMap { Int($0) } ?? 200
-            let text = host.bridgeScreen(session: sid, lines: n)
-            let lines = text.components(separatedBy: "\n")
-            completion(.ok([
-                "ok": true, "sessionId": sid, "text": text, "lines": lines, "totalLines": lines.count,
-            ]))
+            respondScreen(req: req, host: host, completion: completion)
+
+        // Web SSH / 外部订阅：与 screen 同语义；额外回 cursor（内容指纹）方便客户端跳过无变化轮询。
+        case ("/v1/app/stream", "GET"), ("/v1/app/stream", "POST"):
+            respondScreen(req: req, host: host, completion: completion, includeCursor: true)
 
         case ("/v1/app/sftp/list", _):
             guard method == "GET" || method == "POST" else { completion(.fail(405, "use GET/POST")); return }
@@ -229,6 +234,41 @@ enum BridgeRouter {
         default:
             completion(.fail(404, "not found"))
         }
+    }
+
+    // MARK: - screen / stream
+
+    /// 读终端最近输出；`includeCursor` 时附加内容指纹，供 Web SSH 轮询跳过无变化帧。
+    private static func respondScreen(
+        req: BridgeRequest,
+        host: BridgeHost,
+        completion: @escaping (BridgeResponse) -> Void,
+        includeCursor: Bool = false
+    ) {
+        guard let sid = sessionField(req.body, req.query) else {
+            completion(.fail(400, "会话不存在或 id 不唯一"))
+            return
+        }
+        guard validSession(host, sid) else {
+            Log.warn("screen 指定的会话不存在 session=\(sid)（共 \(host.bridgeSessions().count) 个）", "bridge")
+            completion(.fail(404, "会话 \(sid) 不存在（当前共 \(host.bridgeSessions().count) 个，用 /v1/app/sessions 查）"))
+            return
+        }
+        let linesRaw = req.query["lines"] ?? req.query["n"] ?? stringField(req.body, ["lines", "n"])
+        let n = linesRaw.flatMap { Int($0) } ?? 200
+        let text = host.bridgeScreen(session: sid, lines: n)
+        let lines = text.components(separatedBy: "\n")
+        var out: [String: Any] = [
+            "ok": true, "sessionId": sid, "text": text, "lines": lines, "totalLines": lines.count,
+        ]
+        if includeCursor {
+            // 简单稳定指纹：长度 + 末尾若干字节 hash，避免整屏重推。
+            var hasher = Hasher()
+            hasher.combine(text.utf8.count)
+            hasher.combine(text.suffix(512))
+            out["cursor"] = String(hasher.finalize())
+        }
+        completion(.ok(out))
     }
 
     // MARK: - 小工具

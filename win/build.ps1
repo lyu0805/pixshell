@@ -62,6 +62,7 @@ function Invoke-Dotnet {
 function Test-SourceAssets {
     $required = @(
         'web\terminal.html',
+        'web\webssh.html',
         'web\xterm.js',
         'web\xterm.css',
         'web\addon-fit.js'
@@ -79,6 +80,7 @@ function Test-PublishOutput($publishDir) {
     $required = @(
         'PixShell.exe',
         'web\terminal.html',
+        'web\webssh.html',
         'web\xterm.js',
         'web\xterm.css',
         'web\addon-fit.js'

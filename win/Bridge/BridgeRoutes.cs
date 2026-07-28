@@ -52,8 +52,13 @@ public sealed class BridgeResponse
 {
     public int Status;
     public object Json = new();
+    /// <summary>非空时 AgentBridge 以 HTML/文本直接回写（Web SSH 页）；优先于 Json。</summary>
+    public string? Html;
+    public string? ContentType;
     public static BridgeResponse Ok(object json) => new() { Status = 200, Json = json };
     public static BridgeResponse Fail(int status, string error) => new() { Status = status, Json = new { ok = false, error } };
+    public static BridgeResponse HtmlOk(string html, string contentType = "text/html; charset=utf-8") =>
+        new() { Status = 200, Html = html, ContentType = contentType, Json = new { ok = true } };
 }
 
 /// <summary>
@@ -127,6 +132,13 @@ public static class BridgeRouter
                 case "/v1/app/sftp/upload":
                     if (method != "POST") return BridgeResponse.Fail(405, "use POST");
                     return await RouteSftpUpload(req, host).ConfigureAwait(false);
+
+                // Web SSH：HTML 主路径在 AgentBridge 直接处理（含无 token 打开 gate）；
+                // 这里保留别名，鉴权通过后也可由路由层吐同一页。
+                case "/webssh":
+                case "/v1/app/webssh":
+                    if (method != "GET") return BridgeResponse.Fail(405, "use GET");
+                    return RouteWebSshPage();
 
                 default:
                     return BridgeResponse.Fail(404, "not found");
@@ -277,6 +289,33 @@ public static class BridgeRouter
         {
             return BridgeResponse.Fail(400, ex.Message);
         }
+    }
+
+    /// <summary>Web SSH 终端页：读 web/webssh.html；缺失时返回占位 HTML。</summary>
+    private static BridgeResponse RouteWebSshPage()
+    {
+        try
+        {
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            var candidates = new[]
+            {
+                Path.Combine(baseDir, "web", "webssh.html"),
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "web", "webssh.html")),
+            };
+            foreach (var p in candidates)
+            {
+                if (!File.Exists(p)) continue;
+                return BridgeResponse.HtmlOk(File.ReadAllText(p));
+            }
+        }
+        catch (Exception ex)
+        {
+            return BridgeResponse.Fail(500, "webssh page: " + ex.Message);
+        }
+        return BridgeResponse.HtmlOk(
+            "<!DOCTYPE html><meta charset=utf-8><title>PixShell Web SSH</title>" +
+            "<body style='background:#0e1116;color:#c9d1d9;font:14px sans-serif;padding:24px'>" +
+            "<h1>Web SSH</h1><p>缺少 web/webssh.html。</p></body>");
     }
 
     // =====================================================================

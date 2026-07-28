@@ -11,7 +11,8 @@ import Security
 ///   - 只绑定 127.0.0.1，绝不监听 0.0.0.0 / 局域网网卡；
 ///   - 每个已接受的连接都再核实一次远端地址是否回环；
 ///   - 每个请求都要求 token（`~/Library/Application Support/PixShell/agent_token`，0600）；
-///   - 不发任何 CORS 响应头，且只要请求带 `Origin` 头一律拒绝（挡住浏览器页面发起的 CSRF）；
+///   - 不发任何 CORS 响应头；带 `Origin` 时仅放行本机回环同源（`http://127.0.0.1:port` /
+///     `http://localhost:port`），其它 Origin 一律 403（挡住跨站 CSRF，同时允许 Web SSH 页）；
 ///   - 请求体上限 8 MiB，超出返回 413；
 ///   - 绝不把 token 明文写进日志，只记录长度。
 final class AgentBridge {
@@ -112,6 +113,23 @@ final class AgentBridge {
             self.token = AgentBridge.ensureToken(at: self.tokenPath)
             Log.info("agent_token 已重置（长度 \(self.token.count)）", "bridge")
         }
+    }
+
+    /// 当前 token（只读快照）。菜单打开 Web SSH 时拼进 `?token=`；绝不写日志。
+    var currentToken: String { token }
+
+    /// 拼 Web SSH 浏览器 URL（本机回环 + 当前 token + 可选 session）。
+    func webSSHURL(session: Int? = nil, hostId: String? = nil) -> URL? {
+        var c = URLComponents()
+        c.scheme = "http"
+        c.host = "127.0.0.1"
+        c.port = port
+        c.path = "/webssh"
+        var items: [URLQueryItem] = [URLQueryItem(name: "token", value: token)]
+        if let session { items.append(URLQueryItem(name: "session", value: String(session))) }
+        if let hostId, !hostId.isEmpty { items.append(URLQueryItem(name: "host_id", value: hostId)) }
+        c.queryItems = items
+        return c.url
     }
 
     // MARK: - Lifecycle
@@ -363,8 +381,8 @@ private final class BridgeConnection {
     }
 
     private func dispatch() {
-        // 无 CORS：只要带 Origin 头，一律拒绝（挡住浏览器页面发起的跨站请求）。
-        if headers["origin"] != nil {
+        // Origin：无 CORS 头。跨站 Origin 一律拒绝；仅放行本机回环（Web SSH 页自己的 fetch）。
+        if let origin = headers["origin"], !BridgeConnection.isLoopbackOrigin(origin) {
             respond(.fail(403, "origin not allowed"))
             return
         }
@@ -400,6 +418,24 @@ private final class BridgeConnection {
         }
     }
 
+    /// 严格同源匹配（带端口）；`portHint` 非 nil 时要求端口一致。
+    private static func isAllowedOrigin(_ origin: String, portHint: Int?) -> Bool {
+        guard let comps = URLComponents(string: origin),
+              let host = comps.host?.lowercased(),
+              comps.scheme?.lowercased() == "http" else { return false }
+        guard host == "127.0.0.1" || host == "localhost" || host == "[::1]" || host == "::1" else { return false }
+        if let portHint {
+            let p = comps.port ?? 80
+            return p == portHint
+        }
+        return true
+    }
+
+    /// 是否本机回环 Origin（任意端口）——Web SSH 页从 8766 打开时 Origin 就是 `http://127.0.0.1:8766`。
+    private static func isLoopbackOrigin(_ origin: String) -> Bool {
+        isAllowedOrigin(origin, portHint: nil)
+    }
+
     private func extractToken() -> String {
         if let auth = headers["authorization"] {
             let lowered = auth.lowercased()
@@ -426,19 +462,27 @@ private final class BridgeConnection {
         guard !responded else { return }
         responded = true
 
-        var bodyData: Data
-        do {
-            bodyData = try JSONSerialization.data(withJSONObject: response.json, options: [])
-        } catch {
-            Log.warn("响应序列化失败: \(error)", "bridge")
-            bodyData = Data("{\"ok\":false,\"error\":\"internal error\"}".utf8)
+        let bodyData: Data
+        if let raw = response.rawBody {
+            bodyData = raw
+        } else if let json = response.json {
+            do {
+                bodyData = try JSONSerialization.data(withJSONObject: json, options: [])
+            } catch {
+                Log.warn("响应序列化失败: \(error)", "bridge")
+                bodyData = Data("{\"ok\":false,\"error\":\"internal error\"}".utf8)
+            }
+        } else {
+            bodyData = Data()
         }
 
+        let ct = response.contentType.isEmpty ? "application/json; charset=utf-8" : response.contentType
         let statusLine = "HTTP/1.1 \(response.status) \(BridgeConnection.reason(for: response.status))\r\n"
         let head = statusLine
-            + "Content-Type: application/json; charset=utf-8\r\n"
+            + "Content-Type: \(ct)\r\n"
             + "Content-Length: \(bodyData.count)\r\n"
             + "Cache-Control: no-store\r\n"
+            + "X-Content-Type-Options: nosniff\r\n"
             + "Connection: close\r\n"
             + "\r\n"
 

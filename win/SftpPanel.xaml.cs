@@ -33,6 +33,8 @@ public partial class SftpPanel : UserControl
         public bool IsLink { get; set; }
         public long Size { get; set; }
         public DateTime Mtime { get; set; }
+        /// <summary>POSIX 低 9 位权限（对齐 mac SFTPEntry.perms）；未知时 0 → 弹窗回落 0755。</summary>
+        public uint Perms { get; set; }
         public string Icon => IsDir ? "📁" : (IsLink ? "🔗" : "📄");
         public string SizeText => IsDir ? "" : HumanSize(Size);
         public string TypeText => IsDir ? "目录" : (IsLink ? "链接" : "文件");
@@ -57,6 +59,30 @@ public partial class SftpPanel : UserControl
     /// <summary>用户在 SFTP 里主动进目录（双击/树点击/上级）→ 命令框据此反向 cd 终端。
     /// 注意：命令框驱动的 <see cref="Navigate"/> 不会触发这个事件，否则会来回死循环。</summary>
     public event Action<string>? OnUserNavigate;
+
+    /// <summary>打包传输开关（默认开，%APPDATA%\PixShell\sftp_pack_transfer.json，对齐 mac UserDefaults pixshell.sftp.packTransfer）。</summary>
+    private static readonly string PackTransferPath = Path.Combine(HostStore.AppDir, "sftp_pack_transfer.json");
+    private bool _packTransferEnabled = LoadPackTransferPref();
+    public bool PackTransferEnabled
+    {
+        get => _packTransferEnabled;
+        set
+        {
+            _packTransferEnabled = value;
+            try { File.WriteAllText(PackTransferPath, value ? "true" : "false"); } catch { /* 静默 */ }
+        }
+    }
+    private static bool LoadPackTransferPref()
+    {
+        try
+        {
+            if (!File.Exists(PackTransferPath)) return true; // 默认开
+            var t = File.ReadAllText(PackTransferPath).Trim().ToLowerInvariant();
+            if (t is "false" or "0" or "off") return false;
+            return true;
+        }
+        catch { return true; }
+    }
 
     /// <summary>当前远端目录（命令框 cd 同步用，对齐 mac currentRemotePath）。</summary>
     public string CurrentRemotePath => _remoteDir;
@@ -89,6 +115,7 @@ public partial class SftpPanel : UserControl
     /// 本来只有远端就回到只有远端，本来是远端+本地就回到远端+本地。</summary>
     private bool? _localHiddenBeforeChat;
     private UI.AgentChatView? _chat;
+    private UI.ChmodWindow? _chmodWindow;
 
     /// <summary>是否正处于对话模式（宿主据此决定按钮态）。</summary>
     public bool IsChatMode => _chatMode;
@@ -229,7 +256,15 @@ public partial class SftpPanel : UserControl
                 rows = listing
                     .OrderByDescending(f => f.IsDirectory)
                     .ThenBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
-                    .Select(f => new FsRow { Name = f.Name, IsDir = f.IsDirectory, IsLink = f.IsSymbolicLink, Size = f.Length, Mtime = f.LastWriteTime })
+                    .Select(f => new FsRow
+                    {
+                        Name = f.Name,
+                        IsDir = f.IsDirectory,
+                        IsLink = f.IsSymbolicLink,
+                        Size = f.Length,
+                        Mtime = f.LastWriteTime,
+                        Perms = ReadPerms(f),
+                    })
                     .ToList();
             }
             catch (Exception ex) { err = ex.Message; }
@@ -395,38 +430,60 @@ public partial class SftpPanel : UserControl
         UploadItems(paths);
     }
 
-    /// <summary>上传一组本地路径（拖拽/选择共用）。文件/目录均可。</summary>
+    /// <summary>上传一组本地路径（拖拽/选择共用）。文件/目录均可。
+    /// 打包开 + 多项/目录/≥8MB → tar；否则逐项直传（目录跳过并提示，对齐 mac）。</summary>
     public void UploadItems(List<string> paths)
     {
         if (_sftp is not { IsConnected: true } sftp || paths.Count == 0) return;
-        bool singleIsDir = paths.Count == 1 && Directory.Exists(paths[0]);
-        long singleSize = 0;
-        if (paths.Count == 1 && !singleIsDir)
+        bool autoNeed = paths.Count > 1 || paths.Any(p =>
         {
-            try { singleSize = new FileInfo(paths[0]).Length; } catch { }
+            if (Directory.Exists(p)) return true;
+            try { return new FileInfo(p).Length >= SftpTransfer.PackThreshold; } catch { return false; }
+        });
+        // 打包传输关：全部直传；开：多项/目录/大文件走 tar
+        var needPack = PackTransferEnabled && autoNeed;
+        if (!needPack)
+        {
+            UploadDirect(paths, sftp);
+            return;
         }
-        if (!SftpTransfer.ShouldPack(paths.Count, singleIsDir, singleSize))
+        if (ExecRunner == null) { StatusLabel.Text = "需要 SSH 会话才能打包上传"; return; }
+        _ = UploadItemsPackedAsync(paths);
+    }
+
+    /// <summary>关闭打包时：逐项直传上传（目录跳过并提示）。</summary>
+    private void UploadDirect(List<string> paths, SftpClient sftp)
+    {
+        var skippedDirs = 0;
+        var uploaded = 0;
+        foreach (var one in paths)
         {
-            var one = paths[0];
+            if (Directory.Exists(one))
+            {
+                skippedDirs++;
+                continue;
+            }
+            if (!File.Exists(one)) continue;
             try
             {
                 var remote = JoinRemote(_remoteDir, Path.GetFileName(one));
                 using var fs = File.OpenRead(one);
                 StatusLabel.Text = $"上传 {Path.GetFileName(one)} …";
-                Log.Info($"上传 {one} → {remote}", "sftp");
+                Log.Info($"直传上传 {one} → {remote}", "sftp");
                 sftp.UploadFile(fs, remote, true);
-                StatusLabel.Text = "上传完成";
-                LoadRemoteDetail(_remoteDir);
+                uploaded++;
             }
             catch (Exception ex)
             {
                 Log.Error($"上传失败 {one}: {ex.Message}", "sftp");
                 StatusLabel.Text = "上传失败: " + ex.Message;
+                return;
             }
-            return;
         }
-        if (ExecRunner == null) { StatusLabel.Text = "需要 SSH 会话才能打包上传"; return; }
-        _ = UploadItemsPackedAsync(paths);
+        StatusLabel.Text = skippedDirs > 0
+            ? $"直传完成（{skippedDirs} 个目录已跳过，请开启「打包传输」）"
+            : (uploaded > 0 ? "上传完成" : "无可上传文件");
+        if (uploaded > 0) LoadRemoteDetail(_remoteDir);
     }
 
     private async Task UploadItemsPackedAsync(List<string> paths)
@@ -460,43 +517,63 @@ public partial class SftpPanel : UserControl
         LoadRemoteDetail(_remoteDir);
     }
 
-    /// <summary>下载：单个小文件直传；多选 / 目录 / ≥8MB 走远端打包（对齐 mac native-102）。</summary>
+    /// <summary>下载：打包开且（多选/目录/≥8MB）走远端 tar；否则逐项直传（对齐 mac）。</summary>
     public void Download()
     {
-        if (_sftp is not { IsConnected: true }) { StatusLabel.Text = "请先连接远端"; return; }
+        if (_sftp is not { IsConnected: true } sftp) { StatusLabel.Text = "请先连接远端"; return; }
         var rows = TargetRemoteRows();
         if (rows.Count == 0) { StatusLabel.Text = "请选择远端文件"; return; }
         var destDir = _localHidden
             ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "\\Downloads"
             : _localDir;
 
-        if (!SftpTransfer.ShouldPack(rows.Count, rows[0].IsDir, rows[0].Size))
+        var needPack = PackTransferEnabled && SftpTransfer.ShouldPack(rows.Count, rows[0].IsDir, rows[0].Size);
+        if (!needPack)
         {
-            var r = rows[0];
+            DownloadDirect(rows, destDir, sftp);
+            return;
+        }
+        if (ExecRunner == null) { StatusLabel.Text = "需要 SSH 会话才能打包下载"; return; }
+        _ = PackedDownloadAsync(rows, destDir);
+    }
+
+    /// <summary>关闭打包时：逐项直传下载（目录跳过并提示）。</summary>
+    private void DownloadDirect(List<FsRow> rows, string destDir, SftpClient sftp)
+    {
+        var skippedDirs = 0;
+        var downloaded = 0;
+        try { Directory.CreateDirectory(destDir); } catch { /* 目标目录创建失败后面再报 */ }
+        foreach (var r in rows)
+        {
+            if (r.IsDir)
+            {
+                skippedDirs++;
+                continue;
+            }
             Guid? task = null;
             try
             {
-                Directory.CreateDirectory(destDir);
                 var local = Path.Combine(destDir, r.Name);
                 using var fs = File.Create(local);
                 StatusLabel.Text = $"下载 {r.Name} …";
-                Log.Info($"下载 {JoinRemote(_remoteDir, r.Name)} → {local}", "sftp");
-                task = DownloadTasks.Start(r.Name, local);   // 工具浮窗的下载任务列表里可见
-                _sftp.DownloadFile(JoinRemote(_remoteDir, r.Name), fs);
+                Log.Info($"直传下载 {JoinRemote(_remoteDir, r.Name)} → {local}", "sftp");
+                task = DownloadTasks.Start(r.Name, local);
+                sftp.DownloadFile(JoinRemote(_remoteDir, r.Name), fs);
                 DownloadTasks.Finish(task.Value, ok: true);
-                StatusLabel.Text = "下载完成: " + local;
-                if (!_localHidden) LoadLocal(_localDir);
+                downloaded++;
             }
             catch (Exception ex)
             {
                 Log.Error($"下载失败 {r.Name}: {ex.Message}", "sftp");
                 if (task.HasValue) DownloadTasks.Finish(task.Value, ok: false, detail: ex.Message);
                 StatusLabel.Text = "下载失败: " + ex.Message;
+                return;
             }
-            return;
         }
-        if (ExecRunner == null) { StatusLabel.Text = "需要 SSH 会话才能打包下载"; return; }
-        _ = PackedDownloadAsync(rows, destDir);
+        StatusLabel.Text = skippedDirs > 0
+            ? $"直传完成（{skippedDirs} 个目录已跳过，请开启「打包传输」）"
+            : (downloaded > 0 ? $"下载完成: {destDir}" : "无可下载文件");
+        if (downloaded > 0 && !_localHidden) LoadLocal(_localDir);
     }
 
     /// <summary>远端打包 → 下载 → 本地解压 → 两端清理。</summary>
@@ -703,9 +780,91 @@ public partial class SftpPanel : UserControl
     private void CtxMkdir_Click(object sender, RoutedEventArgs e) => Mkdir();
     private void CtxRename_Click(object sender, RoutedEventArgs e) => Rename();
     private void CtxDelete_Click(object sender, RoutedEventArgs e) => Delete();
+    private void CtxChmod_Click(object sender, RoutedEventArgs e) => CtxChmod();
     private void CtxCopyPath_Click(object sender, RoutedEventArgs e) => CopyPath();
     private void CtxInsertToCommand_Click(object sender, RoutedEventArgs e) => InsertToCommand();
     private void CtxRefresh_Click(object sender, RoutedEventArgs e) => Refresh();
+
+    /// <summary>右键「文件权限…」：对齐 mac ctxChmod → ChmodWindow。</summary>
+    private void CtxChmod()
+    {
+        if (_sftp is not { IsConnected: true })
+        {
+            StatusLabel.Text = "请先连接远端";
+            return;
+        }
+        var rows = TargetRemoteRows();
+        if (rows.Count == 0)
+        {
+            StatusLabel.Text = "先选远端文件";
+            return;
+        }
+        var paths = rows.Select(r => JoinRemote(_remoteDir, r.Name)).ToList();
+        // 多项时以第一项权限为初值（勾选可再改）；未知回落 0755
+        var mode = rows[0].Perms != 0 ? rows[0].Perms : 0x1EDu; // 0755
+        _chmodWindow ??= new UI.ChmodWindow();
+        var owner = Window.GetWindow(this);
+        _chmodWindow.Show(
+            owner,
+            paths,
+            mode,
+            ExecRunner,
+            msg =>
+            {
+                StatusLabel.Text = msg;
+                LoadRemoteDetail(_remoteDir);
+            });
+    }
+
+    /// <summary>从 SSH.NET 列表项取 POSIX 低 9 位；取不到返回 0（调用方回落 0755）。</summary>
+    private static uint ReadPerms(ISftpFile f)
+    {
+        try
+        {
+            // SSH.NET 2024：SftpFile.Attributes 带 Owner/Group/Others CanRead|Write|Execute
+            if (f is SftpFile sf && sf.Attributes != null)
+            {
+                var a = sf.Attributes;
+                uint m = 0;
+                if (a.OwnerCanRead) m |= 0x100;      // 0400
+                if (a.OwnerCanWrite) m |= 0x80;      // 0200
+                if (a.OwnerCanExecute) m |= 0x40;    // 0100
+                if (a.GroupCanRead) m |= 0x20;       // 0040
+                if (a.GroupCanWrite) m |= 0x10;      // 0020
+                if (a.GroupCanExecute) m |= 0x8;     // 0010
+                if (a.OthersCanRead) m |= 0x4;       // 0004
+                if (a.OthersCanWrite) m |= 0x2;      // 0002
+                if (a.OthersCanExecute) m |= 0x1;    // 0001
+                return m;
+            }
+        }
+        catch { /* 属性缺失/不支持时忽略 */ }
+        return 0;
+    }
+
+    /// <summary>右键「✓ 打包传输」：切换开关并持久化（对齐 mac ctxTogglePackTransfer）。</summary>
+    private void CtxTogglePackTransfer_Click(object sender, RoutedEventArgs e)
+    {
+        PackTransferEnabled = !PackTransferEnabled;
+        RefreshPackTransferMenuHeader();
+        StatusLabel.Text = PackTransferEnabled ? "已开启打包传输" : "已关闭打包传输（直传）";
+        Log.Info("打包传输 → " + (PackTransferEnabled ? "开" : "关"), "sftp");
+    }
+
+    private void RefreshPackTransferMenuHeader()
+    {
+        if (CtxPackTransferItem != null)
+            CtxPackTransferItem.Header = PackTransferEnabled ? "✓ 打包传输" : "打包传输";
+        // IsCheckable 勾选态也同步（双保险，暗色主题下 ✓ 前缀更直观）
+        if (CtxPackTransferItem != null)
+        {
+            CtxPackTransferItem.IsCheckable = true;
+            CtxPackTransferItem.IsChecked = PackTransferEnabled;
+        }
+    }
+
+    private void RemoteList_ContextMenuOpening(object sender, ContextMenuEventArgs e) =>
+        RefreshPackTransferMenuHeader();
 
     /// <summary>拖文件到面板上传（对齐 mac draggingEntered/performDragOperation，暂不支持拖目录）。</summary>
     private void Panel_DragEnter(object sender, DragEventArgs e)

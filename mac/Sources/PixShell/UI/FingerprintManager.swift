@@ -11,7 +11,8 @@ final class FingerprintManager: NSWindowController {
     var onClose: (() -> Void)?
 
     init() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 400),
+        // 标题栏多了「导入…/导出…」，默认宽略增，避免与标题重叠
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 400),
                          styleMask: [.titled, .closable, .fullSizeContentView, .resizable],
                          backing: .buffered, defer: false)
         w.title = "主机指纹管理"
@@ -22,7 +23,7 @@ final class FingerprintManager: NSWindowController {
         w.isOpaque = false
         w.hasShadow = true
         w.isReleasedWhenClosed = false
-        w.minSize = NSSize(width: 320, height: 280)
+        w.minSize = NSSize(width: 380, height: 280)
         w.standardWindowButton(.closeButton)?.isHidden = true
         w.standardWindowButton(.miniaturizeButton)?.isHidden = true
         w.standardWindowButton(.zoomButton)?.isHidden = true
@@ -60,9 +61,11 @@ final class FingerprintManager: NSWindowController {
 
         let title = NSTextField(labelWithString: "主机指纹管理")
         title.font = Theme.ui(15, .semibold); title.textColor = Theme.text
+        let importBtn = PillButton("导入…", style: .secondary, hPad: 10, target: self, action: #selector(importAction))
+        let exportBtn = PillButton("导出…", style: .secondary, hPad: 10, target: self, action: #selector(exportAction))
         let refBtn = PillButton("刷新", style: .secondary, hPad: 10, target: self, action: #selector(reloadAction))
         let closeBtn = PillButton("关闭", style: .secondary, hPad: 10, target: self, action: #selector(hideAction))
-        let rightBtns = NSStackView(views: [refBtn, closeBtn]); rightBtns.spacing = 6
+        let rightBtns = NSStackView(views: [importBtn, exportBtn, refBtn, closeBtn]); rightBtns.spacing = 6
         let head = NSStackView(views: [title, NSView(), rightBtns]); head.spacing = 12; head.alignment = .centerY
         head.translatesAutoresizingMaskIntoConstraints = false
 
@@ -163,6 +166,53 @@ final class FingerprintManager: NSWindowController {
 
     @objc private func hideAction() { hide() }
     @objc private func reloadAction() { reload() }
+
+    @objc private func exportAction() {
+        let p = NSSavePanel()
+        p.nameFieldStringValue = entries.isEmpty ? "known_hosts.txt" : "known_hosts_backup.txt"
+        p.allowedContentTypes = [.plainText]
+        p.canCreateDirectories = true
+        p.isExtensionHidden = false
+        p.title = "导出主机指纹"
+        p.message = "将 ~/.ssh/known_hosts 导出为文本文件"
+        guard p.runModal() == .OK, let url = p.url else { return }
+        do {
+            let n = try KnownHosts.export(to: url)
+            let a = NSAlert.pix(); a.messageText = "导出完成"
+            a.informativeText = "已导出 \(n) 条指纹\n\(url.path)"
+            a.addButton(withTitle: "好")
+            a.runModal()
+        } catch {
+            let a = NSAlert.pix(); a.messageText = "导出失败"
+            a.informativeText = error.localizedDescription
+            a.addButton(withTitle: "好")
+            a.runModal()
+        }
+    }
+
+    @objc private func importAction() {
+        let p = NSOpenPanel()
+        p.canChooseFiles = true
+        p.canChooseDirectories = false
+        p.allowsMultipleSelection = false
+        // 不限类型：known_hosts 常无扩展名
+        p.title = "导入主机指纹"
+        p.message = "选择 known_hosts 格式文本文件，新条目将合并进 ~/.ssh/known_hosts"
+        guard p.runModal() == .OK, let url = p.url else { return }
+        do {
+            let r = try KnownHosts.importMerging(from: url)
+            reload()
+            let a = NSAlert.pix(); a.messageText = "导入完成"
+            a.informativeText = "新增 \(r.added) 条 · 跳过重复 \(r.skippedDuplicate) · 无效 \(r.skippedInvalid)"
+            a.addButton(withTitle: "好")
+            a.runModal()
+        } catch {
+            let a = NSAlert.pix(); a.messageText = "导入失败"
+            a.informativeText = error.localizedDescription
+            a.addButton(withTitle: "好")
+            a.runModal()
+        }
+    }
 
     @objc private func deleteEntry(_ b: NSButton) {
         guard let e = entry(b) else { return }

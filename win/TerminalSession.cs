@@ -1268,6 +1268,13 @@ public sealed class TerminalSession : IDisposable
         catch { /* 页面销毁/导航中忽略 */ }
     }
 
+    /// <summary>把键盘焦点交回终端（命令框 Esc / 发送后等场景，对齐 mac 回终端）。</summary>
+    public void FocusTerminal()
+    {
+        try { View.Focus(); } catch { /* ignore */ }
+        FocusWhenReady();
+    }
+
     private static string JsonEncode(string s)
     {
         var sb = new StringBuilder(s.Length + 8);

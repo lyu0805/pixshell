@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PixShell Web SSH</title>
+<link rel="stylesheet" href="/web/xterm.css">
+<style>
+  :root {
+    --bg: #0e1116;
+    --bg2: #161b22;
+    --bg3: #1c2330;
+    --ink: #c9d1d9;
+    --muted: #8b949e;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+  }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  #bar {
+    flex: 0 0 auto;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 12px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    min-height: 44px;
+  }
+  #bar .brand {
+    font-weight: 600; letter-spacing: 0.02em; color: var(--ink);
+    margin-right: 4px; white-space: nowrap;
+  }
+  #bar .brand span { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+  select, button, input {
+    background: var(--bg3); color: var(--ink);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 10px; font-size: 12px; outline: none;
+  }
+  select { max-width: min(42vw, 320px); }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); color: #fff; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  button.primary:hover { background: #388bfd; }
+  #status {
+    margin-left: auto; font-size: 12px; color: var(--muted);
+    display: flex; align-items: center; gap: 6px; white-space: nowrap;
+  }
+  #status .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--warn);
+    box-shadow: 0 0 0 2px rgba(210,153,34,0.15);
+  }
+  #status.ok .dot { background: var(--ok); box-shadow: 0 0 0 2px rgba(63,185,80,0.15); }
+  #status.err .dot { background: var(--err); box-shadow: 0 0 0 2px rgba(248,81,73,0.15); }
+  #term-wrap {
+    flex: 1 1 auto; position: relative; min-height: 0;
+    background: #0b0e12;
+  }
+  #terminal {
+    position: absolute; inset: 0; padding: 4px 6px 8px;
+  }
+  .xterm, .xterm-viewport, .xterm-screen { background-color: transparent !important; }
+  .xterm-viewport::-webkit-scrollbar { width: 10px; }
+  .xterm-viewport::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.18); border-radius: 5px;
+  }
+  #gate {
+    position: absolute; inset: 0; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(14,17,22,0.92); z-index: 5;
+  }
+  #gate.show { display: flex; }
+  #gate .card {
+    width: min(420px, 92vw);
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+  }
+  #gate h1 { font-size: 16px; margin: 0 0 8px; }
+  #gate p { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  #gate input { width: 100%; margin-bottom: 12px; font-family: var(--mono); }
+  #gate .row { display: flex; gap: 8px; justify-content: flex-end; }
+  #toast {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    background: var(--bg3); border: 1px solid var(--border); color: var(--ink);
+    padding: 8px 14px; border-radius: 8px; font-size: 12px;
+    opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 9;
+  }
+  #toast.show { opacity: 1; }
+  @media (max-width: 640px) {
+    #status span.label { display: none; }
+    select { max-width: 40vw; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="bar">
+    <div class="brand">PixShell <span>Web SSH</span></div>
+    <select id="sessionSel" title="会话"></select>
+    <button id="btnRefresh" type="button" title="刷新会话列表">刷新</button>
+    <button id="btnConnect" type="button" title="连接已保存主机">连接主机…</button>
+    <button id="btnClear" type="button" title="清屏">清屏</button>
+    <div id="status"><span class="dot"></span><span class="label">未连接</span></div>
+  </div>
+  <div id="term-wrap">
+    <div id="terminal"></div>
+    <div id="gate">
+      <div class="card">
+        <h1>需要本地桥 Token</h1>
+        <p>本页只绑定 127.0.0.1，且每个 API 都要 token（与 CLI 相同，来自 %APPDATA%\PixShell\agent_token）。请从 PixShell 菜单「Web SSH 网页终端…」打开，或手动粘贴 token。</p>
+        <input id="tokenInput" type="password" placeholder="粘贴 agent token" autocomplete="off" spellcheck="false">
+        <div class="row">
+          <button id="btnToken" class="primary" type="button">进入终端</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script src="/web/xterm.js"></script>
+<script src="/web/addon-fit.js"></script>
+<script>
+(function () {
+  const params = new URLSearchParams(location.search);
+  let token = (params.get('token') || localStorage.getItem('pixshell_webssh_token') || '').trim();
+  let session = params.get('session') ?? params.get('s') ?? '';
+  const hostId = params.get('host_id') || params.get('hostId') || params.get('id') || '';
+  const POLL_MS = 180;
+  const LINES = 400;
+
+  const elStatus = document.getElementById('status');
+  const elSel = document.getElementById('sessionSel');
+  const elGate = document.getElementById('gate');
+  const elToast = document.getElementById('toast');
+  const elToken = document.getElementById('tokenInput');
+
+  const term = new Terminal({
+    cursorBlink: true,
+    cursorStyle: 'block',
+    fontSize: 14,
+    fontFamily: 'ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace',
+    scrollback: 5000,
+    theme: {
+      background: '#0b0e12',
+      foreground: '#c9d1d9',
+      cursor: '#58a6ff',
+      selectionBackground: 'rgba(88,166,255,0.35)',
+      black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+      blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39c5cf', white: '#b1bac4',
+      brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364',
+      brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
+      brightCyan: '#56d4dd', brightWhite: '#f0f6fc'
+    }
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById('terminal'));
+  try { fit.fit(); } catch (_) {}
+
+  let lastText = '';
+  let pollTimer = null;
+  let busy = false;
+  let writing = false;
+  let alive = false;
+
+  function toast(msg) {
+    elToast.textContent = msg;
+    elToast.classList.add('show');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => elToast.classList.remove('show'), 2200);
+  }
+
+  function setStatus(kind, text) {
+    elStatus.classList.remove('ok', 'err');
+    if (kind === 'ok') elStatus.classList.add('ok');
+    if (kind === 'err') elStatus.classList.add('err');
+    elStatus.querySelector('.label').textContent = text;
+  }
+
+  function apiUrl(path, extra) {
+    const u = new URL(path, location.origin);
+    if (token) u.searchParams.set('token', token);
+    if (extra) {
+      Object.keys(extra).forEach(k => {
+        if (extra[k] != null && extra[k] !== '') u.searchParams.set(k, extra[k]);
+      });
+    }
+    return u.toString();
+  }
+
+  async function api(method, path, body, extraQuery) {
+    const opts = {
+      method,
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'X-PixShell-Token': token
+      },
+      cache: 'no-store'
+    };
+    if (body != null) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(apiUrl(path, extraQuery), opts);
+    let json = null;
+    try { json = await res.json(); } catch (_) { json = null; }
+    if (!res.ok) {
+      const err = (json && (json.error || json.message)) || ('HTTP ' + res.status);
+      const e = new Error(err);
+      e.status = res.status;
+      e.json = json;
+      throw e;
+    }
+    return json;
+  }
+
+  function ensureToken() {
+    if (token && token.length >= 8) {
+      elGate.classList.remove('show');
+      try { localStorage.setItem('pixshell_webssh_token', token); } catch (_) {}
+      return true;
+    }
+    elGate.classList.add('show');
+    setStatus('err', '需要 token');
+    return false;
+  }
+
+  async function refreshSessions() {
+    const data = await api('GET', '/v1/app/sessions');
+    const list = (data && data.sessions) || [];
+    const prev = String(session);
+    elSel.innerHTML = '';
+    if (!list.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '（无会话 — 请先在桌面端连接，或点「连接主机」）';
+      elSel.appendChild(opt);
+      session = '';
+      return list;
+    }
+    list.forEach((s, i) => {
+      const id = (s.session != null ? s.session : i);
+      const opt = document.createElement('option');
+      opt.value = String(id);
+      const mark = s.active ? '● ' : (s.connected ? '○ ' : '✗ ');
+      const title = s.title || s.host || ('session ' + id);
+      const user = s.username ? (s.username + '@') : '';
+      const host = s.host || '';
+      opt.textContent = mark + id + ' · ' + title + (host ? (' · ' + user + host) : '');
+      elSel.appendChild(opt);
+    });
+    const ids = list.map((s, i) => String(s.session != null ? s.session : i));
+    if (prev && ids.includes(prev)) {
+      elSel.value = prev;
+      session = prev;
+    } else {
+      const active = list.find(s => s.active);
+      const pick = active ? (active.session != null ? active.session : list.indexOf(active)) : (list[0].session != null ? list[0].session : 0);
+      session = String(pick);
+      elSel.value = session;
+    }
+    return list;
+  }
+
+  async function connectHost(id) {
+    if (!id) return;
+    setStatus('', '连接中…');
+    const data = await api('POST', '/v1/app/hosts/connect', { host_id: id });
+    if (data && data.session != null) {
+      session = String(data.session);
+      await refreshSessions();
+      lastText = '';
+      term.reset();
+      toast('已连接会话 ' + session);
+      setStatus('ok', '会话 ' + session);
+    }
+  }
+
+  function applyScreen(text) {
+    const t = text == null ? '' : String(text);
+    if (t === lastText) return;
+    writing = true;
+    try {
+      if (!lastText) {
+        term.reset();
+        term.write(t);
+      } else if (t.startsWith(lastText)) {
+        term.write(t.slice(lastText.length));
+      } else {
+        // 缓冲被截断/清屏/全量重绘：找最长公共前缀，前缀后整体重写
+        let i = 0;
+        const n = Math.min(lastText.length, t.length);
+        while (i < n && lastText.charCodeAt(i) === t.charCodeAt(i)) i++;
+        // 公共前缀太短就整屏重置，避免错误 diff 污染画面
+        if (i < Math.min(24, lastText.length / 4)) {
+          term.reset();
+          term.write(t);
+        } else {
+          // 无法可靠回退 xterm 内容时，整屏重写更稳
+          term.reset();
+          term.write(t);
+        }
+      }
+      lastText = t;
+    } finally {
+      writing = false;
+    }
+  }
+
+  async function pollOnce() {
+    if (!token || session === '' || session == null || busy) return;
+    busy = true;
+    try {
+      const data = await api('GET', '/v1/app/screen', null, { session: session, lines: String(LINES) });
+      applyScreen(data && data.text);
+      alive = true;
+      setStatus('ok', '会话 ' + session + ' · 实时');
+    } catch (e) {
+      alive = false;
+      if (e.status === 401) {
+        token = '';
+        ensureToken();
+        setStatus('err', '鉴权失败');
+      } else if (e.status === 404 || e.status === 400) {
+        setStatus('err', e.message || '会话无效');
+      } else {
+        setStatus('err', e.message || '轮询失败');
+      }
+    } finally {
+      busy = false;
+    }
+  }
+
+  function startPoll() {
+    stopPoll();
+    pollTimer = setInterval(pollOnce, POLL_MS);
+    pollOnce();
+  }
+  function stopPoll() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  async function sendText(text) {
+    if (!token || session === '' || session == null) return;
+    try {
+      await api('POST', '/v1/app/shell', {
+        session: Number(session),
+        text: text,
+        newline: false
+      });
+      // 尽快拉回回显
+      setTimeout(pollOnce, 30);
+      setTimeout(pollOnce, 120);
+    } catch (e) {
+      toast('发送失败: ' + (e.message || e));
+      setStatus('err', e.message || '发送失败');
+    }
+  }
+
+  term.onData(data => {
+    if (writing) return;
+    sendText(data);
+  });
+
+  window.addEventListener('resize', () => {
+    try { fit.fit(); } catch (_) {}
+  });
+
+  elSel.addEventListener('change', () => {
+    session = elSel.value;
+    lastText = '';
+    term.reset();
+    pollOnce();
+  });
+  document.getElementById('btnRefresh').addEventListener('click', async () => {
+    try {
+      await refreshSessions();
+      toast('会话列表已刷新');
+      pollOnce();
+    } catch (e) { toast(e.message || String(e)); }
+  });
+  document.getElementById('btnClear').addEventListener('click', () => {
+    lastText = '';
+    term.reset();
+  });
+  document.getElementById('btnConnect').addEventListener('click', async () => {
+    try {
+      const data = await api('GET', '/v1/app/hosts');
+      const hosts = (data && data.hosts) || [];
+      if (!hosts.length) { toast('没有已保存主机'); return; }
+      const lines = hosts.map((h, i) =>
+        (i + 1) + '. ' + (h.name || h.host || h.id) +
+        (h.username || h.host ? ('  (' + (h.username || '') + '@' + (h.host || '') + ')') : '') +
+        '  [' + h.id + ']'
+      ).join('\n');
+      const pick = prompt('输入序号连接已保存主机（需桌面端已存密码/私钥）:\n\n' + lines, '1');
+      if (!pick) return;
+      const n = parseInt(pick, 10);
+      let id = pick.trim();
+      if (!Number.isNaN(n) && n >= 1 && n <= hosts.length) id = hosts[n - 1].id;
+      else {
+        const hit = hosts.find(h => h.id === id || h.name === id || h.host === id);
+        if (hit) id = hit.id;
+      }
+      await connectHost(id);
+      startPoll();
+    } catch (e) { toast(e.message || String(e)); }
+  });
+  document.getElementById('btnToken').addEventListener('click', async () => {
+    token = (elToken.value || '').trim();
+    if (!ensureToken()) return;
+    try {
+      await boot();
+    } catch (e) {
+      toast(e.message || String(e));
+      setStatus('err', e.message || '启动失败');
+    }
+  });
+  elToken.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter') document.getElementById('btnToken').click();
+  });
+
+  async function boot() {
+    if (!ensureToken()) return;
+    setStatus('', '初始化…');
+    if (hostId) {
+      try { await connectHost(hostId); }
+      catch (e) { toast('host_id 连接失败: ' + (e.message || e)); }
+    }
+    await refreshSessions();
+    if (session === '' || session == null) {
+      setStatus('err', '无可用会话');
+      term.writeln('\r\n\x1b[33m没有打开的 SSH 会话。\x1b[0m');
+      term.writeln('请在 PixShell 桌面端先连接主机，或点右上角「连接主机…」。\r\n');
+    } else {
+      setStatus('ok', '会话 ' + session);
+      term.focus();
+    }
+    startPoll();
+    try { fit.fit(); } catch (_) {}
+  }
+
+  // 初始
+  if (token) boot().catch(e => {
+    setStatus('err', e.message || '启动失败');
+    if (e.status === 401) {
+      token = '';
+      ensureToken();
+    }
+  });
+  else ensureToken();
+})();
+</script>
+</body>
+</html>

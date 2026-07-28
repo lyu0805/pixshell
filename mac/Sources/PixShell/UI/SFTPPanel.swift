@@ -13,7 +13,7 @@ final class SFTPNode {
 /// 布局：[← 路径 …… 刷新 下载 上传 隐藏本地] / [本地(可隐藏) | 远端目录树 | 远端明细(文件名/大小/类型/修改时间)]。
 /// 双击目录进入；图标区分目录(黄folder)/文件/链接。
 final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
-                      NSOutlineViewDataSource, NSOutlineViewDelegate {
+                      NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     // 本地
     private var localPath: URL
     private var localEntries: [URL] = []
@@ -32,10 +32,20 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
     var onOpenFile: ((String, String) -> Void)?   // 双击文件 → (远端路径, 文本内容) 交给编辑器
     var onUserNavigate: ((String) -> Void)?       // 用户在 SFTP 里进目录 → 可反向 cd 终端
     var onInsertToCommand: ((String) -> Void)?    // 右键「插入命令框」
-    /// 远端执行命令（打包传输需要，宿主注入当前会话的 ssh.exec）
+    /// 远端执行命令（打包传输 / chmod 需要，宿主注入当前会话的 ssh.exec）
     var execRunner: ((String, @escaping (String) -> Void) -> Void)?
     /// 按 proxyId 取代理配置（宿主注入），保证 SFTP 与 SSH 走同一条链路
     var proxyProvider: ((String) -> ProxyConfig?)?
+    /// 打包传输开关（默认开，UserDefaults 持久化）
+    private static let packKey = "pixshell.sftp.packTransfer"
+    var packTransferEnabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: Self.packKey) == nil { return true }
+            return UserDefaults.standard.bool(forKey: Self.packKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: Self.packKey) }
+    }
+    private lazy var chmodWindow = ChmodWindow()
 
     /// 当前远端目录（命令框 cd 同步用）
     var currentRemotePath: String { remotePath }
@@ -352,29 +362,66 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
         t.menu = makeContextMenu(remote: t === remoteTable)
     }
 
-    // MARK: 右键菜单（打开/下载/上传/重命名/新建目录/删除/复制路径/插入命令框）
+    // MARK: 右键菜单（打开/下载/上传/重命名/新建目录/删除/复制路径/插入命令框/打包传输/文件权限）
     private func makeContextMenu(remote: Bool) -> NSMenu {
         let m = NSMenu()
-        func add(_ t: String, _ a: Selector) { let i = NSMenuItem(title: t, action: a, keyEquivalent: ""); i.target = self; m.addItem(i) }
+        m.delegate = self
+        func add(_ t: String, _ a: Selector) -> NSMenuItem {
+            let i = NSMenuItem(title: t, action: a, keyEquivalent: ""); i.target = self; m.addItem(i); return i
+        }
         if remote {
-            add("打开 / 进入", #selector(ctxOpen))
-            add("下载", #selector(download))
+            _ = add("打开 / 进入", #selector(ctxOpen))
+            _ = add("下载", #selector(download))
             m.addItem(.separator())
-            add("上传到此目录…", #selector(upload))
-            add("新建目录…", #selector(mkdir))
-            add("重命名…", #selector(ctxRename))
-            add("删除", #selector(ctxDelete))
+            _ = add("上传到此目录…", #selector(upload))
+            _ = add("新建目录…", #selector(mkdir))
+            _ = add("重命名…", #selector(ctxRename))
+            _ = add("删除", #selector(ctxDelete))
             m.addItem(.separator())
-            add("复制路径", #selector(ctxCopyPath))
-            add("插入命令框", #selector(ctxInsertToCommand))
+            let pack = add("打包传输", #selector(ctxTogglePackTransfer))
+            pack.tag = 9001
+            _ = add("文件权限…", #selector(ctxChmod))
             m.addItem(.separator())
-            add("刷新", #selector(refresh))
+            _ = add("复制路径", #selector(ctxCopyPath))
+            _ = add("插入命令框", #selector(ctxInsertToCommand))
+            m.addItem(.separator())
+            _ = add("刷新", #selector(refresh))
         } else {
-            add("上传", #selector(upload))
-            add("复制路径", #selector(ctxCopyPath))
-            add("刷新", #selector(refresh))
+            _ = add("上传", #selector(upload))
+            let pack = add("打包传输", #selector(ctxTogglePackTransfer))
+            pack.tag = 9001
+            m.addItem(.separator())
+            _ = add("复制路径", #selector(ctxCopyPath))
+            _ = add("刷新", #selector(refresh))
         }
         return m
+    }
+
+    @objc private func ctxTogglePackTransfer() {
+        packTransferEnabled.toggle()
+        statusLabel.stringValue = packTransferEnabled ? "已开启打包传输" : "已关闭打包传输（直传）"
+        Log.info("打包传输 → \(packTransferEnabled ? "开" : "关")", "sftp")
+    }
+
+    // 右键菜单打开前：刷新「✓ 打包传输」勾选态
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        for item in menu.items where item.tag == 9001 || item.action == #selector(ctxTogglePackTransfer) {
+            item.state = packTransferEnabled ? .on : .off
+            item.title = packTransferEnabled ? "✓ 打包传输" : "打包传输"
+        }
+    }
+
+    @objc private func ctxChmod() {
+        let items = targetRemoteEntries()
+        guard !items.isEmpty else { statusLabel.stringValue = "先选远端文件"; return }
+        let paths = items.map { join(remotePath, $0.name) }
+        // 多项时以第一项权限为初值（勾选可再改）
+        let mode = items.first?.perms ?? 0o755
+        chmodWindow.onDone = { [weak self] msg in
+            self?.statusLabel.stringValue = msg
+            self?.reloadRemote()
+        }
+        chmodWindow.show(paths: paths, mode: mode, execRunner: execRunner)
     }
 
     /// 右键/选中的远端条目（优先 clickedRow，其次多选）
@@ -623,24 +670,17 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
     /// 上传一组本地项（拖拽/选择共用）
     func uploadItems(_ urls: [URL]) {
         guard let sftp = sftp, !urls.isEmpty else { return }
-        let needPack = urls.count > 1 || urls.contains { u in
+        let autoNeed = urls.count > 1 || urls.contains { u in
             var isDir: ObjCBool = false
             FileManager.default.fileExists(atPath: u.path, isDirectory: &isDir)
             if isDir.boolValue { return true }
             let sz = (try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             return UInt64(sz) >= SFTPTransfer.packThreshold
         }
-        if !needPack, let u = urls.first {
-            statusLabel.stringValue = "上传 \(u.lastPathComponent) …"
-            Log.info("上传 \(u.path) → \(join(remotePath, u.lastPathComponent))", "sftp")
-            sftp.upload(local: u.path, remote: join(remotePath, u.lastPathComponent)) { [weak self] r in
-                switch r {
-                case .success: self?.statusLabel.stringValue = "上传完成"; self?.reloadRemote()
-                case .failure(let e):
-                    Log.error("上传失败 \(u.path): \(e)", "sftp")
-                    self?.statusLabel.stringValue = "上传失败: \(self?.msg(e) ?? "")"
-                }
-            }
+        // 打包传输关：全部直传；开：多项/目录/大文件走 tar
+        let needPack = packTransferEnabled && autoNeed
+        if !needPack {
+            uploadDirect(urls, sftp: sftp)
             return
         }
         guard let ssh = execRunner else { statusLabel.stringValue = "需要 SSH 会话才能打包上传"; return }
@@ -670,32 +710,95 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
             }
         }
     }
-    /// 下载：单个小文件直传；多选 / 目录 / ≥8MB 走远端 tar 打包（老仓库 native-102）
+    /// 下载：打包开关开且（多选/目录/≥8MB）走远端 tar；否则逐项直传
     @objc func download() {
         guard let sftp = sftp else { statusLabel.stringValue = "远端未连接"; return }
         let items = targetRemoteEntries()
         guard !items.isEmpty else { statusLabel.stringValue = "先选远端文件"; return }
         let destDir = localHidden ? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first! : localPath
 
-        if !SFTPTransfer.shouldPack(items), let e = items.first {
+        let needPack = packTransferEnabled && SFTPTransfer.shouldPack(items)
+        if !needPack {
+            downloadDirect(items, to: destDir, sftp: sftp)
+            return
+        }
+        packedDownload(items, to: destDir)
+    }
+
+    /// 关闭打包时：逐项直传上传（目录跳过并提示）
+    private func uploadDirect(_ urls: [URL], sftp: SFTPService) {
+        var left = urls.count
+        var skippedDirs = 0
+        for u in urls {
+            var isDir: ObjCBool = false
+            FileManager.default.fileExists(atPath: u.path, isDirectory: &isDir)
+            if isDir.boolValue {
+                skippedDirs += 1
+                left -= 1
+                if left == 0 {
+                    statusLabel.stringValue = skippedDirs > 0
+                        ? "直传完成（\(skippedDirs) 个目录已跳过，请开启「打包传输」）"
+                        : "上传完成"
+                    reloadRemote()
+                }
+                continue
+            }
+            statusLabel.stringValue = "上传 \(u.lastPathComponent) …"
+            Log.info("直传上传 \(u.path) → \(join(remotePath, u.lastPathComponent))", "sftp")
+            sftp.upload(local: u.path, remote: join(remotePath, u.lastPathComponent)) { [weak self] r in
+                if case .failure(let e) = r {
+                    Log.error("上传失败 \(u.path): \(e)", "sftp")
+                    self?.statusLabel.stringValue = "上传失败: \(self?.msg(e) ?? "")"
+                }
+                left -= 1
+                if left == 0 {
+                    self?.statusLabel.stringValue = skippedDirs > 0
+                        ? "直传完成（\(skippedDirs) 个目录已跳过，请开启「打包传输」）"
+                        : "上传完成"
+                    self?.reloadRemote()
+                }
+            }
+        }
+    }
+
+    /// 关闭打包时：逐项直传下载（目录跳过并提示）
+    private func downloadDirect(_ items: [SFTPEntry], to destDir: URL, sftp: SFTPService) {
+        var left = items.count
+        var skippedDirs = 0
+        for e in items {
+            if e.isDir {
+                skippedDirs += 1
+                left -= 1
+                if left == 0 {
+                    statusLabel.stringValue = skippedDirs > 0
+                        ? "直传完成（\(skippedDirs) 个目录已跳过，请开启「打包传输」）"
+                        : "下载完成"
+                    reloadLocal()
+                }
+                continue
+            }
             let local = destDir.appendingPathComponent(e.name).path
             statusLabel.stringValue = "下载 \(e.name) → \(destDir.lastPathComponent) …"
-            Log.info("下载 \(join(remotePath, e.name)) → \(local)", "sftp")
-            let task = DownloadTasks.shared.start(name: e.name, dest: local)   // 工具浮窗里可见
+            Log.info("直传下载 \(join(remotePath, e.name)) → \(local)", "sftp")
+            let task = DownloadTasks.shared.start(name: e.name, dest: local)
             sftp.download(remote: join(remotePath, e.name), local: local) { [weak self] r in
                 switch r {
                 case .success:
                     DownloadTasks.shared.finish(task, ok: true)
-                    self?.statusLabel.stringValue = "下载完成: \(local)"; self?.reloadLocal()
                 case .failure(let er):
                     Log.error("下载失败 \(local): \(er)", "sftp")
                     DownloadTasks.shared.finish(task, ok: false, detail: self?.msg(er) ?? "")
                     self?.statusLabel.stringValue = "下载失败: \(self?.msg(er) ?? "")"
                 }
+                left -= 1
+                if left == 0 {
+                    self?.statusLabel.stringValue = skippedDirs > 0
+                        ? "直传完成（\(skippedDirs) 个目录已跳过，请开启「打包传输」）"
+                        : "下载完成: \(destDir.path)"
+                    self?.reloadLocal()
+                }
             }
-            return
         }
-        packedDownload(items, to: destDir)
     }
 
     /// 远端打包 → 下载 → 本地解压 → 两端清理

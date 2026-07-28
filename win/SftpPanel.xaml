@@ -75,6 +75,7 @@
                        Foreground="{DynamicResource BrushMuted}" Margin="2,4,0,0"/>
             <ListView x:Name="RemoteList" MouseDoubleClick="RemoteList_DoubleClick"
                       SelectionMode="Extended" PreviewKeyDown="RemoteList_PreviewKeyDown"
+                      ContextMenuOpening="RemoteList_ContextMenuOpening"
                       Background="{DynamicResource BrushBg2}" BorderBrush="{DynamicResource BrushBorder}"
                       Foreground="{DynamicResource BrushText}">
                 <ListView.ItemContainerStyle>
@@ -92,6 +93,9 @@
                         <MenuItem Header="新建目录…" Click="CtxMkdir_Click"/>
                         <MenuItem Header="重命名…" Click="CtxRename_Click"/>
                         <MenuItem Header="删除" Click="CtxDelete_Click"/>
+                        <Separator/>
+                        <MenuItem x:Name="CtxPackTransferItem" Header="✓ 打包传输" Click="CtxTogglePackTransfer_Click"/>
+                        <MenuItem Header="文件权限…" Click="CtxChmod_Click"/>
                         <Separator/>
                         <MenuItem Header="复制路径" Click="CtxCopyPath_Click"/>
                         <MenuItem Header="插入命令框" Click="CtxInsertToCommand_Click"/>

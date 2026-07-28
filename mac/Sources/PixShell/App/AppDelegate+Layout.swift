@@ -210,6 +210,11 @@ extension AppDelegate {
         // 主机指纹管理（独立弹出窗口，对齐 KeyManager）
         fingerprintManager = FingerprintManager()
 
+        // AI 工具 SSH 桥接注册（独立弹出窗口，对齐 KeyManager）
+        aiSshBridgeManager = AiSshBridgeManager()
+        aiSshBridgeManager.bridgePortProvider = { [weak self] in self?.agentBridge?.port }
+        aiSshBridgeManager.onStatus = { [weak self] msg in self?.setStatus(msg) }
+
         // 工具面板（宫格图标）：主机下拉 + 工具 + 下载目录（对齐老仓库 #toolsPanel）
         toolsPanel = ToolsPanel(frame: .zero); toolsPanel.isHidden = true
         toolsPanel.sessionsProvider = { [weak self] in
@@ -931,6 +936,8 @@ extension AppDelegate {
         // AI 对接：后端 AgentBridge / AgentCLI / AgentMCP 已就绪，汉堡菜单提供一键入口
         m.addItem(sub("AI 对接", [
             ("接入 AI 工具…", #selector(openAIIntegration)),
+            ("一键注册 AI 默认 SSH…", #selector(openAiSshBridge)),
+            ("Web SSH 网页终端…", #selector(openWebSSH)),
             (nil, nil),
             ("复制 CLI 用法", #selector(copyCLIUsage)),
             ("复制 MCP 注册命令", #selector(copyMCPRegister)),
@@ -939,6 +946,7 @@ extension AppDelegate {
             ("打开 CLI 脚本目录", #selector(openCLIBinDir)),
             ("重新安装 CLI / MCP", #selector(reinstallCLIBridge)),
         ]))
+        m.addItem(item("在浏览器中打开 Web SSH", #selector(openWebSSH)))
         m.addItem(sub("云端同步", [
             ("备份选项配置…", #selector(openBackup)),
             (nil, nil),
@@ -952,6 +960,8 @@ extension AppDelegate {
         m.addItem(sub("帮助", [
             ("关于 PixShell", #selector(menuAbout)),
             ("接入 AI 工具…", #selector(openAIIntegration)),
+            ("一键注册 AI 默认 SSH…", #selector(openAiSshBridge)),
+            ("Web SSH 网页终端…", #selector(openWebSSH)),
             ("项目仓库", #selector(menuRepo)),
         ]))
         if let btn = menuBtn { m.popUp(positioning: nil, at: NSPoint(x: 0, y: btn.bounds.height + 4), in: btn) }
@@ -1056,5 +1066,13 @@ extension AppDelegate {
     @objc func openFingerprintManager() {
         Log.info("打开主机指纹管理", "ui")
         fingerprintManager.show()
+    }
+
+    /// 打开 AI 工具 SSH 桥接注册窗（汉堡 / 工具 → 一键注册 AI 默认 SSH…）
+    @objc func openAiSshBridge() {
+        Log.info("打开 AI 工具 SSH 桥接", "ui")
+        // 点开时顺手保证 CLI 在盘上，检测更准
+        if let port = agentBridge?.port { AgentCLI.install(port: port) }
+        aiSshBridgeManager.show()
     }
 }

@@ -79,6 +79,77 @@ public static class KnownHosts
         }
     }
 
+    /// <summary>导出 known_hosts 原文到目标文件。</summary>
+    public static int Export(string destPath)
+    {
+        var text = File.Exists(Path) ? File.ReadAllText(Path) : "";
+        var dir = System.IO.Path.GetDirectoryName(destPath);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        File.WriteAllText(destPath, text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        var count = List().Count;
+        Log.Info($"导出主机指纹 {count} 条 → {destPath}", "known_hosts");
+        return count;
+    }
+
+    public readonly record struct ImportResult(int Added, int SkippedDuplicate, int SkippedInvalid);
+
+    /// <summary>
+    /// 从 known_hosts 格式文本合并：跳过空行/注释，按 trim 后整行去重，追加新行。
+    /// </summary>
+    public static ImportResult ImportMerging(string sourcePath)
+    {
+        var incoming = File.ReadAllText(sourcePath);
+        return ImportMergingText(incoming, System.IO.Path.GetFileName(sourcePath));
+    }
+
+    public static ImportResult ImportMergingText(string text, string source = "text")
+    {
+        var existingText = File.Exists(Path) ? File.ReadAllText(Path) : "";
+        var existingLines = existingText.Split('\n').ToList();
+        var existingKeys = new HashSet<string>(
+            existingLines
+                .Select(l => l.Trim())
+                .Where(l => l.Length > 0 && !l.StartsWith('#')));
+
+        var added = 0;
+        var skippedDuplicate = 0;
+        var skippedInvalid = 0;
+
+        foreach (var raw in text.Split('\n'))
+        {
+            var trimmed = raw.Trim();
+            if (trimmed.Length == 0 || trimmed.StartsWith('#')) continue;
+            if (Parse(trimmed) == null)
+            {
+                skippedInvalid++;
+                continue;
+            }
+            if (existingKeys.Contains(trimmed))
+            {
+                skippedDuplicate++;
+                continue;
+            }
+            while (existingLines.Count > 0 && string.IsNullOrWhiteSpace(existingLines[^1]))
+                existingLines.RemoveAt(existingLines.Count - 1);
+            existingLines.Add(trimmed);
+            existingKeys.Add(trimmed);
+            added++;
+        }
+
+        if (added > 0)
+        {
+            var body = string.Join("\n", existingLines);
+            if (body.Length > 0 && !body.EndsWith("\n", StringComparison.Ordinal))
+                body += "\n";
+            var dir = System.IO.Path.GetDirectoryName(Path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(Path, body, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
+
+        Log.Info($"导入主机指纹 {source}：新增 {added} / 重复 {skippedDuplicate} / 无效 {skippedInvalid}", "known_hosts");
+        return new ImportResult(added, skippedDuplicate, skippedInvalid);
+    }
+
     private static Entry? Parse(string line)
     {
         var tokens = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).ToList();

@@ -51,6 +51,75 @@ enum KnownHosts {
         }
     }
 
+    /// 导出 known_hosts 原文到目标文件（空文件也写出空内容）。
+    @discardableResult
+    static func export(to url: URL) throws -> Int {
+        let text = (try? String(contentsOf: path, encoding: .utf8)) ?? ""
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        let count = list().count
+        Log.info("导出主机指纹 \(count) 条 → \(url.path)", "known_hosts")
+        return count
+    }
+
+    /// 从 known_hosts 格式文本合并：跳过空行/注释，按 trim 后整行去重，追加新行。
+    /// - Returns: (added, skippedDuplicate, skippedInvalid)
+    @discardableResult
+    static func importMerging(from url: URL) throws -> (added: Int, skippedDuplicate: Int, skippedInvalid: Int) {
+        let incoming = try String(contentsOf: url, encoding: .utf8)
+        return try importMerging(text: incoming, source: url.lastPathComponent)
+    }
+
+    @discardableResult
+    static func importMerging(text: String, source: String = "text") throws -> (added: Int, skippedDuplicate: Int, skippedInvalid: Int) {
+        let fm = FileManager.default
+        let existingText = (try? String(contentsOf: path, encoding: .utf8)) ?? ""
+        var existingLines = existingText
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        var existingKeys = Set(
+            existingLines
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        )
+
+        var added = 0
+        var skippedDuplicate = 0
+        var skippedInvalid = 0
+
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw)
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            guard parse(trimmed) != nil else {
+                skippedInvalid += 1
+                continue
+            }
+            if existingKeys.contains(trimmed) {
+                skippedDuplicate += 1
+                continue
+            }
+            // 保持文件末尾换行习惯：先去掉尾部空行再追加
+            while existingLines.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+                existingLines.removeLast()
+            }
+            existingLines.append(trimmed)
+            existingKeys.insert(trimmed)
+            added += 1
+        }
+
+        if added > 0 {
+            var body = existingLines.joined(separator: "\n")
+            if !body.isEmpty && !body.hasSuffix("\n") { body += "\n" }
+            let dir = path.deletingLastPathComponent()
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try body.write(to: path, atomically: true, encoding: .utf8)
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+        }
+
+        Log.info("导入主机指纹 \(source)：新增 \(added) / 重复 \(skippedDuplicate) / 无效 \(skippedInvalid)", "known_hosts")
+        return (added, skippedDuplicate, skippedInvalid)
+    }
+
     // MARK: - parse
 
     private static func parse(_ line: String) -> Entry? {
