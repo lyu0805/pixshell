@@ -198,6 +198,7 @@ public partial class MainWindow : Window
                 title.Contains("连接", StringComparison.Ordinal) ||
                 title.Contains("工具", StringComparison.Ordinal) ||
                 title.Contains("密钥", StringComparison.Ordinal) ||
+                title.Contains("指纹", StringComparison.Ordinal) ||
                 title.Contains("代理", StringComparison.Ordinal) ||
                 title.Contains("设置", StringComparison.Ordinal))
                 continue;
@@ -1490,6 +1491,7 @@ public partial class MainWindow : Window
         file.Items.Add(Item("重新连接", MenuReconnect));
         file.Items.Add(new Separator());
         file.Items.Add(Item("密钥管理…", OpenKeyManager));
+        file.Items.Add(Item("主机指纹管理…", OpenFingerprintManager));
         file.Items.Add(new Separator());
         file.Items.Add(Item("导入主机…", ImportHosts));
         file.Items.Add(Item("导出主机…", ExportHosts));
@@ -1513,6 +1515,7 @@ public partial class MainWindow : Window
 
         menu.Items.Add(new Separator());
         menu.Items.Add(Item("密钥管理器", OpenKeyManager));   // 对齐 mac 顶层 menuKeyMgr（原先误接到自定义加速）
+        menu.Items.Add(Item("主机指纹管理…", OpenFingerprintManager));
 
         var cloud = new MenuItem { Header = "云端同步" };
         cloud.Items.Add(Item("备份选项配置…", OpenBackupWindow));
@@ -1919,6 +1922,7 @@ public partial class MainWindow : Window
     }
 
     private UI.KeyManagerWindow? _keyManager;
+    private UI.FingerprintManagerWindow? _fingerprintManager;
 
     /// <summary>密钥管理（菜单 文件 → 密钥管理…）。「用于此主机」会把私钥路径写回当前会话的主机。</summary>
     private void OpenKeyManager()
@@ -1939,6 +1943,14 @@ public partial class MainWindow : Window
         };
         Log.Info("打开密钥管理", "ui");
         _keyManager.Show(this);
+    }
+
+    /// <summary>主机指纹管理（汉堡 / 文件 → 主机指纹管理…）。</summary>
+    private void OpenFingerprintManager()
+    {
+        _fingerprintManager ??= new UI.FingerprintManagerWindow();
+        Log.Info("打开主机指纹管理", "ui");
+        _fingerprintManager.Show(this);
     }
 
     /// <summary>「接入 AI 工具」：把 MCP / CLI 两种接法摆出来，一键复制。

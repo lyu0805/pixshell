@@ -110,6 +110,11 @@ extension AppDelegate {
     /// 保证重连走的是同一套代理/私钥/覆盖层逻辑。
     /// 握手失败是不是"两边没有共同算法"（而不是密码不对）。
     /// nio-ssh 谈崩时抛的是 keyExchange/unsupported 一类错误；命中就该回落到系统 ssh。
+    ///
+    /// **关键坑（OpenWrt / Dropbear）**：服务端只给 `chacha20-poly1305` + `aes*-ctr`，
+    /// 而 swift-nio-ssh 只实现 AES-GCM → 协商在 shell 打开前直接断 TCP，错误经常只是
+    /// 裸 `End of file` / channel inactive，**没有** keyExchange 字样。若把这类 EOF 当认证失败，
+    /// 会清掉钥匙串密码且永不回落系统 ssh —— mac 连不上、Windows(SSH.NET 算法全)却正常。
     static func looksLikeAlgorithmMismatch(_ error: Error?) -> Bool {
         guard let e = error else { return false }
         // 强类型优先（ErrorType 是 struct，用 == 而不是 enum switch）。
@@ -125,9 +130,13 @@ extension AppDelegate {
         }
         let s = "\(e) \(e.localizedDescription)".lowercased()
         for k in ["no matching", "keyexchange", "key exchange", "unsupported", "negotiat",
-                  "algorithm", "nosuitable", "no common", "unknownpublickey", "invalidhostkey"] {
+                  "algorithm", "nosuitable", "no common", "unknownpublickey", "invalidhostkey",
+                  // 裸 EOF / 通道半关闭：Dropbear↔NIO 无共同 cipher 时的典型表象
+                  "end of file", "nio.channel", "input/output error"] {
             if s.contains(k) { return true }
         }
+        // IOError.End of file 的 description 有时就是 "End of file"
+        if s.trimmingCharacters(in: .whitespacesAndNewlines) == "end of file" { return true }
         return false
     }
 
@@ -198,12 +207,15 @@ extension AppDelegate {
 
     static func classifyClose(_ error: Error?) -> SSHCloseClass {
         guard let error = error else { return .clean }
+        // 算法/协议协商（含 Dropbear 无 AES-GCM 导致的裸 EOF）必须优先于 auth，
+        // 否则会清密码且跳过 OpenSSH 回落。
         if looksLikeAlgorithmMismatch(error) { return .algorithm }
         // 认证关键字优先于笼统网络，保证错密仍弹重试。
         if looksLikeAuthFailure(error) { return .auth }
         if looksLikeNetworkFailure(error) { return .network }
-        // 未知错误且 shell 从未打开：保守当认证（保留错密弹重试）；网络关键字已尽量覆盖 P0-1。
-        return .auth
+        // 未知错误且 shell 从未打开：保守当算法协商失败先回落一次系统 ssh
+        // （比误清密码更安全；已回落过仍失败时由调用方按 auth 处理）。
+        return .algorithm
     }
 
     func startSSH(for sess: TermSession, password: String, forceOpenSSH: Bool = false) {
@@ -219,6 +231,7 @@ extension AppDelegate {
             old.close()
         }
         // 复位一次性状态：这是一条全新的连接，别把上一条的"曾经连上过/已处理关闭"带过来。
+        // 注意：triedOpenSSHFallback 故意不复位——同一次会话生命周期内只回落一次。
         sess.connected = false
         sess.shellOpened = false
         sess.closeHandled = false
@@ -232,8 +245,12 @@ extension AppDelegate {
         let creds = SSHCredentials(host: host.host, port: host.port, username: host.username,
                                    password: password, keyPath: host.keyPath.isEmpty ? nil : host.keyPath,
                                    proxy: proxy)
-        // 默认走内置实现；只有被判定为算法协商失败后重试时才用系统 ssh（零回归的关键）。
-        let s: SSHSession = forceOpenSSH ? OpenSSHSession() : NIOSSHSession()
+        // 默认仍走 NIO（局域网体感更好）；OpenWrt/Dropbear 等无 AES-GCM 设备在
+        // shell 打开前会以 EOF/协商失败关闭，classifyClose → .algorithm 后自动回落系统 ssh。
+        // forceOpenSSH / 已回落标记时直接 OpenSSH，避免二次 NIO 空转。
+        let useOpenSSH = forceOpenSSH || sess.triedOpenSSHFallback
+        let s: SSHSession = useOpenSSH ? OpenSSHSession() : NIOSSHSession()
+        Log.info("SSH 引擎=\(useOpenSSH ? "OpenSSH" : "NIO") \(host.subtitle)", "ssh")
         s.delegate = self; sess.ssh = s
         s.connectAndOpenShell(creds, term: "xterm-256color", cols: t.cols, rows: t.rows)
     }
@@ -662,21 +679,45 @@ extension AppDelegate {
             let kind = Self.classifyClose(error)
             switch kind {
             case .algorithm:
-                // 内置实现算法太窄：不是密码问题，别动钥匙串、别弹密码框，回落系统 OpenSSH 一次。
+                // 内置实现算法太窄（含 Dropbear 无 AES-GCM 的裸 EOF）：不是密码问题，
+                // 别动钥匙串、别弹密码框，回落系统 OpenSSH 一次。
                 if !sess.triedOpenSSHFallback {
                     sess.triedOpenSSHFallback = true
-                    Log.warn("算法协商失败（\(error?.localizedDescription ?? "未知")），改用系统 ssh 重连 \(sess.host.subtitle)", "ssh")
-                    let pw = sess.password ?? ""
+                    Log.warn("算法/协议协商失败（\(error?.localizedDescription ?? "未知")），改用系统 ssh 重连 \(sess.host.subtitle)", "ssh")
+                    let pw = sess.password ?? Keychain.password(for: sess.host.id) ?? ""
                     DispatchQueue.main.async { [weak self] in
                         guard let self = self else { return }
                         self.startSSH(for: sess, password: pw, forceOpenSSH: true)
                     }
                     return
                 }
-                // 已经回落过仍算法向失败（极少）：只报错，不动钥匙串。
-                Log.warn("系统 ssh 回落后仍失败 \(sess.host.subtitle): \(error?.localizedDescription ?? "未知")", "ssh")
-                t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：算法/协议不兼容。\u{1b}[0m\r\n")
-                connectOverlay?.fail("协议不兼容")
+                // 已经回落过仍失败：再按认证/网络细分，避免永远卡在「协议不兼容」。
+                if Self.looksLikeAuthFailure(error) {
+                    Log.warn("系统 ssh 回落后认证失败 \(sess.host.subtitle): \(error?.localizedDescription ?? "未知")", "ssh")
+                    Keychain.delete(sess.host.id)
+                    t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：认证被拒。\u{1b}[0m\r\n")
+                    connectOverlay?.fail("认证失败")
+                    if sess.host.keyPath.isEmpty { promptRetryPassword(for: sess.host) }
+                } else if Self.looksLikeNetworkFailure(error) || LocalNetworkAuth.looksLikeLocalNetworkBlock(error) {
+                    let detail = LocalNetworkAuth.looksLikeLocalNetworkBlock(error)
+                        ? "无法到达主机（本地网络未授权）。点「一键打开授权设置」允许 PixShell，再点「立即重连」。"
+                        : (error?.localizedDescription ?? "网络不可达")
+                    Log.warn("系统 ssh 回落后网络失败 \(sess.host.subtitle): \(detail)（保留钥匙串）", "session")
+                    t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：\(detail)\u{1b}[0m\r\n")
+                    connectOverlay?.fail("网络失败")
+                    if LocalNetworkAuth.looksLikeLocalNetworkBlock(error) {
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self = self else { return }
+                            LocalNetworkAuth.presentGrantHelp(from: self.window) { [weak self] in
+                                self?.menuReconnect()
+                            }
+                        }
+                    }
+                } else {
+                    Log.warn("系统 ssh 回落后仍失败 \(sess.host.subtitle): \(error?.localizedDescription ?? "未知")", "ssh")
+                    t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：算法/协议不兼容（系统 ssh 亦失败）。\u{1b}[0m\r\n")
+                    connectOverlay?.fail("协议不兼容")
+                }
             case .network:
                 // P0：网络/超时/DNS/代理失败 —— 保留 Keychain，禁止当认证失败清密码。
                 let noRoute = LocalNetworkAuth.looksLikeLocalNetworkBlock(error)

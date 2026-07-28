@@ -207,6 +207,9 @@ extension AppDelegate {
             self.quickConnect?.reload(); self.connMgr?.reload()
         }
 
+        // 主机指纹管理（独立弹出窗口，对齐 KeyManager）
+        fingerprintManager = FingerprintManager()
+
         // 工具面板（宫格图标）：主机下拉 + 工具 + 下载目录（对齐老仓库 #toolsPanel）
         toolsPanel = ToolsPanel(frame: .zero); toolsPanel.isHidden = true
         toolsPanel.sessionsProvider = { [weak self] in
@@ -924,6 +927,7 @@ extension AppDelegate {
         ]))
         m.addItem(.separator())
         m.addItem(item("密钥管理器", #selector(menuKeyMgr)))
+        m.addItem(item("主机指纹管理…", #selector(menuFingerprintMgr)))
         // AI 对接：后端 AgentBridge / AgentCLI / AgentMCP 已就绪，汉堡菜单提供一键入口
         m.addItem(sub("AI 对接", [
             ("接入 AI 工具…", #selector(openAIIntegration)),
@@ -1046,5 +1050,11 @@ extension AppDelegate {
     @objc func openKeyManager() {
         Log.info("打开密钥管理", "ui")
         keyManager.show()
+    }
+
+    /// 打开主机指纹管理（汉堡 / 文件 → 主机指纹管理…）
+    @objc func openFingerprintManager() {
+        Log.info("打开主机指纹管理", "ui")
+        fingerprintManager.show()
     }
 }

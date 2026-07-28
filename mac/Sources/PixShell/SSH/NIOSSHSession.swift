@@ -9,6 +9,13 @@ import CryptoKit
 /// → createChannel 建 session 子通道 → 发 PseudoTerminalRequest + ShellRequest
 /// → SSHChannelData 收发字节。所有 delegate 回调切主线程。
 /// 认证：优先私钥（Host.keyPath 配置且能解析成功时），失败/未配置则回退密码——见 SSHUserAuthDelegate。
+///
+/// **算法能力（库硬限制，应用层无法再扩）**：
+/// - 加密：`aes256-gcm@openssh.com` / `aes128-gcm@openssh.com`（`Constants.bundledTransportProtectionSchemes`）
+/// - KEX：curve25519-sha256(+@libssh.org) / ecdh-sha2-nistp{256,384,521}
+/// - HostKey：ssh-ed25519 / ecdsa-sha2-nistp{256,384,521}（**无 RSA/DSS/DH-group**）
+/// 老设备（RSA host key + aes-ctr + dh-group*）会在 shell 打开前协商失败，由上层回落到
+/// `OpenSSHSession`（系统 `/usr/bin/ssh` 最大兼容参数）。
 public final class NIOSSHSession: SSHSession {
     public weak var delegate: SSHSessionDelegate?
 
@@ -24,9 +31,12 @@ public final class NIOSSHSession: SSHSession {
         self.group = group
 
         let authDelegate = SSHUserAuthDelegate(username: creds.username, password: creds.password, keyPath: creds.keyPath)
+        // 显式挂上库内全部 transport protection（当前仅 AES-GCM 两档）。
+        // KEX / HostKey 列表由 NIOSSH 内部写死，无法在 ClientConfiguration 再扩。
         let clientConfig = SSHClientConfiguration(
             userAuthDelegate: authDelegate,
-            serverAuthDelegate: AcceptAllHostKeysDelegate()
+            serverAuthDelegate: AcceptAllHostKeysDelegate(),
+            transportProtectionSchemes: Constants.bundledTransportProtectionSchemes
         )
 
         // 代理：ssh-jump(跳板机) 本版本未实现真正的跳板逻辑——退化为直连，只记一条警告，
@@ -253,8 +263,29 @@ public final class NIOSSHSession: SSHSession {
         DispatchQueue.main.async { self.delegate?.sshSessionDidOpenShell(self) }
     }
     private func emitClose(_ error: Error?) {
-        if let e = error { Log.warn("连接关闭(异常): \(e)", "ssh") } else { Log.info("连接关闭", "ssh") }
-        DispatchQueue.main.async { self.delegate?.sshSession(self, didCloseWith: error) }
+        // Dropbear/OpenWrt 等无 AES-GCM 时，NIO 常在 shell 打开前以裸 EOF 断连。
+        // 包装成带 algorithm 语义的错误，方便上层 looksLikeAlgorithmMismatch 命中并回落 OpenSSH，
+        // 避免被当成认证失败清密码。
+        let out: Error?
+        if let e = error {
+            let s = "\(e) \(e.localizedDescription)".lowercased()
+            if s.contains("end of file") || s.trimmingCharacters(in: .whitespacesAndNewlines) == "end of file" {
+                out = NSError(
+                    domain: "PixShell.nio-ssh",
+                    code: 1001,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "SSH 算法协商失败（End of file）：对端可能仅支持 chacha20/aes-ctr，内置 NIO 仅 AES-GCM"]
+                )
+                Log.warn("连接关闭(异常→算法协商): \(e)", "ssh")
+            } else {
+                out = e
+                Log.warn("连接关闭(异常): \(e)", "ssh")
+            }
+        } else {
+            out = nil
+            Log.info("连接关闭", "ssh")
+        }
+        DispatchQueue.main.async { self.delegate?.sshSession(self, didCloseWith: out) }
     }
 }
 

@@ -184,7 +184,8 @@ enum BridgeRouter {
             host.bridgeSFTPList(session: sid, path: path) { result in
                 switch result {
                 case .success(let entries):
-                    completion(.ok(["ok": true, "path": path, "entries": entries]))
+                    // entries = 历史字段；items = 任务验收/新 CLI 约定，两者同内容。
+                    completion(.ok(["ok": true, "path": path, "entries": entries, "items": entries]))
                 case .failure(let err):
                     completion(.fail(400, describeError(err)))
                 }

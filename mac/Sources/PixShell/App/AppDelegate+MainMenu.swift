@@ -26,6 +26,7 @@ extension AppDelegate {
         fileMenu.addItem(mi("新建连接…", #selector(addHost), "n"))
         fileMenu.addItem(mi("快速连接", #selector(newQuickTab), "t"))
         fileMenu.addItem(mi("密钥管理…", #selector(openKeyManager), "k"))
+        fileMenu.addItem(mi("主机指纹管理…", #selector(openFingerprintManager)))
         fileMenu.addItem(.separator())
         fileMenu.addItem(mi("断开", #selector(menuDisconnect)))
         fileMenu.addItem(mi("重新连接", #selector(menuReconnect), "r"))

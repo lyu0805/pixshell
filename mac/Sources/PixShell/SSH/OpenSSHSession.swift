@@ -127,20 +127,37 @@ public final class OpenSSHSession: SSHSession {
     private static func buildArguments(_ c: SSHCredentials, term: String) -> [String] {
         var a: [String] = []
         a += ["-tt"]                                        // 强制分配 tty（我们本来就跑在 pty 里）
+        a += baseSSHOptions(c, batchIfKeyOnly: true)
+        a += ["\(c.username)@\(c.host)"]
+        return a
+    }
+
+    /// 非交互回落（SFTP / exec）共用的基础 ssh 选项：端口、兼容算法、认证、代理。
+    /// 不含目标 `user@host`、也不含 `-tt`（SFTP 二进制通道绝不能分配 tty）。
+    static func baseSSHOptions(_ c: SSHCredentials, batchIfKeyOnly: Bool) -> [String] {
+        var a: [String] = []
         a += ["-p", String(c.port)]
-        a += ["-o", "StrictHostKeyChecking=accept-new"]     // 首次连接自动记 known_hosts，但变更仍会拦
-        a += ["-o", "NumberOfPasswordPrompts=1"]            // 别反复追问，失败就干净退出
+        a += ["-o", "StrictHostKeyChecking=accept-new"]
+        a += ["-o", "NumberOfPasswordPrompts=1"]
         a += ["-o", "ServerAliveInterval=30"]
+        a += compatibilityOptions()
+
         if let kp = c.keyPath, !kp.isEmpty {
             a += ["-i", (kp as NSString).expandingTildeInPath]
-            a += ["-o", "IdentitiesOnly=yes"]               // 指定了私钥就只用它，别把 agent 里的全试一遍
-            // 仅 key 时：不要再回落到密码交互（除非同时给了 password 走 ASKPASS）。
+            a += ["-o", "IdentitiesOnly=yes"]
             if c.password == nil || c.password?.isEmpty == true {
                 a += ["-o", "PreferredAuthentications=publickey"]
-                a += ["-o", "BatchMode=yes"]                // 无密码 key-only：失败立刻退，不假连
+                if batchIfKeyOnly {
+                    a += ["-o", "BatchMode=yes"]
+                }
             }
+        } else if let pw = c.password, !pw.isEmpty {
+            // 纯密码：禁止再扫 ~/.ssh / agent。Dropbear/OpenWrt 对无用 publickey 尝试很敏感。
+            a += ["-o", "PreferredAuthentications=password,keyboard-interactive"]
+            a += ["-o", "PubkeyAuthentication=no"]
+            a += ["-o", "IdentitiesOnly=yes"]
+            a += ["-o", "IdentityAgent=none"]
         }
-        // 代理：SOCKS/HTTP 交给 ssh 自己的 ProxyCommand（用 nc），跳板机用 ProxyJump。
         if let p = c.proxy {
             switch p.type {
             case .socks5, .socks4:
@@ -151,24 +168,51 @@ public final class OpenSSHSession: SSHSession {
                 a += ["-J", "\(p.username.isEmpty ? "" : p.username + "@")\(p.host):\(p.port)"]
             }
         }
-        a += ["\(c.username)@\(c.host)"]
         return a
     }
 
+    /// 回落路径的最大算法兼容参数（交互 shell / 监控 exec / SFTP 共用）。
+    static func compatibilityOptions() -> [String] {
+        // 最大算法兼容：新算法优先，同时显式放开老 Dropbear / OpenWrt / CentOS7 / 网络设备常用的旧套件。
+        // 用绝对列表而不是仅 `+`，避免本机 ssh_config 把旧算法整类关掉后回落仍握不上手。
+        [
+            // blowfish-cbc/cast128-cbc 已从现代 OpenSSH 编译列表移除；写进绝对列表会让整条 Ciphers 失效。
+            "-o", "Ciphers=chacha20-poly1305@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr,aes128-gcm@openssh.com,aes256-gcm@openssh.com,3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc",
+            "-o", "KexAlgorithms=sntrup761x25519-sha512@openssh.com,sntrup761x25519-sha512,curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group-exchange-sha256,diffie-hellman-group14-sha256,diffie-hellman-group16-sha512,diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1,diffie-hellman-group1-sha1",
+            "-o", "HostKeyAlgorithms=ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256,ssh-rsa,ssh-dss",
+            "-o", "PubkeyAcceptedAlgorithms=ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256,ssh-rsa,ssh-dss",
+            // 老 OpenSSH 仍认 PubkeyAcceptedKeyTypes；与上面并列无害。
+            "-o", "PubkeyAcceptedKeyTypes=ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256,ssh-rsa,ssh-dss",
+            "-o", "MACs=hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha2-256,hmac-sha2-512,hmac-sha1",
+        ]
+    }
+
     /// 写一次性 ASKPASS 脚本 + 0600 密文文件。返回路径；失败返回 nil（退回终端交互）。
-    private static func installAskPass(password: String) -> (script: String, secret: String)? {
+    ///
+    /// 注意：OpenSSH 要求 `SSH_ASKPASS` 指向**可执行**文件；仅靠 `setAttributes` 在部分
+    /// 临时目录/拷贝场景下会丢 +x，这里用 `chmod` 再强制一次，并校验 `access(X_OK)`。
+    static func installAskPass(password: String) -> (script: String, secret: String)? {
         let base = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("pixshell-askpass-\(UUID().uuidString)", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            // 目录本身也要可进（0755）；secret 仅 owner 读。
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: base.path)
             let secret = base.appendingPathComponent("secret")
             let script = base.appendingPathComponent("askpass.sh")
             try password.data(using: .utf8)?.write(to: secret, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: secret.path)
-            // 脚本只 cat 密文文件；不把密码写进脚本正文。
-            let sh = "#!/bin/sh\nexec cat '\(secret.path)'\n"
+            _ = chmod(secret.path, 0o600)
+            // 脚本只 cat 密文文件；不把密码写进脚本正文。用 /bin/cat 绝对路径，避免 PATH 空。
+            let sh = "#!/bin/sh\nexec /bin/cat '\(secret.path)'\n"
             try sh.write(to: script, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+            _ = chmod(script.path, 0o700)
+            guard access(script.path, X_OK) == 0 else {
+                Log.warn("ASKPASS 脚本不可执行：\(script.path)", "ssh")
+                try? FileManager.default.removeItem(at: base)
+                return nil
+            }
             return (script.path, secret.path)
         } catch {
             Log.warn("ASKPASS 准备失败：\(error.localizedDescription)", "ssh")
@@ -219,6 +263,20 @@ public final class OpenSSHSession: SSHSession {
         }
         guard !shellOpenedEmitted, !closed else { return }
         let text = String(bytes: chunk, encoding: .utf8)?.lowercased() ?? ""
+
+        // 自动探测系统 ssh / Dropbear 的密码提示框，自动将已有的密码投递进 pty 通道
+        if text.contains("password:") || text.contains("'s password") || text.contains("passphrase") {
+            sawAuthPrompt = true
+            if let pw = creds?.password, !pw.isEmpty {
+                Log.info("在 pty 捕获到密码提示符，自动投递密码至 OpenSSH 伪终端", "ssh")
+                let passData = Array((pw + "\n").utf8)
+                send(passData)
+                pendingOpenWorkItem?.cancel()
+                pendingOpenWorkItem = nil
+                return
+            }
+        }
+
         // 明确失败输出：等 watchExit 带错误码，绝不假 open。
         if text.contains("permission denied")
             || text.contains("authentication failed")
@@ -229,17 +287,6 @@ public final class OpenSSHSession: SSHSession {
             || text.contains("operation timed out")
             || text.contains("connection timed out")
             || text.contains("host key verification failed") {
-            pendingOpenWorkItem?.cancel()
-            pendingOpenWorkItem = nil
-            return
-        }
-        // 还在问密码 / 主机确认：先别 open。
-        if text.contains("password:")
-            || text.contains("passphrase")
-            || text.contains("'s password")
-            || text.contains("(yes/no")
-            || text.contains("are you sure you want to continue connecting") {
-            sawAuthPrompt = true
             pendingOpenWorkItem?.cancel()
             pendingOpenWorkItem = nil
             return
@@ -281,13 +328,9 @@ public final class OpenSSHSession: SSHSession {
     public func exec(_ command: String, completion: @escaping (String) -> Void) {
         guard let c = creds else { DispatchQueue.main.async { completion("") }; return }
         DispatchQueue.global(qos: .utility).async {
-            var args = ["-p", String(c.port),
-                        "-o", "BatchMode=yes",
-                        "-o", "StrictHostKeyChecking=accept-new",
-                        "-o", "ConnectTimeout=10"]
-            if let kp = c.keyPath, !kp.isEmpty {
-                args += ["-i", (kp as NSString).expandingTildeInPath, "-o", "IdentitiesOnly=yes"]
-            }
+            // 与交互/SFTP 回落同一套算法+认证参数；有密码时用 ASKPASS（不再死守 BatchMode 空返回）。
+            var args = Self.baseSSHOptions(c, batchIfKeyOnly: true)
+            args += ["-o", "ConnectTimeout=10", "-T"]
             args += ["\(c.username)@\(c.host)", command]
 
             let p = Process()
@@ -297,7 +340,6 @@ public final class OpenSSHSession: SSHSession {
             p.standardOutput = pipe
             p.standardError = FileHandle.nullDevice
             p.standardInput = FileHandle.nullDevice
-            // 监控 exec 也可带 ASKPASS（BatchMode 下 publickey 优先；有密码时允许密码回退）
             var env = ProcessInfo.processInfo.environment
             var secretPath: String?
             var scriptPath: String?
@@ -307,8 +349,7 @@ public final class OpenSSHSession: SSHSession {
                 env["SSH_ASKPASS"] = ask.script
                 env["SSH_ASKPASS_REQUIRE"] = "force"
                 env["DISPLAY"] = ":"
-                // BatchMode 会禁密码；有密码时去掉 BatchMode 的严格限制——但监控通道更稳妥保持 key/agent。
-                // 这里保留 BatchMode：exec 仅在 key/agent 可用时采监控，失败返回空。
+                env["SSH_ASKPASS_PROMPT"] = "none"
             }
             p.environment = env
             var text = ""

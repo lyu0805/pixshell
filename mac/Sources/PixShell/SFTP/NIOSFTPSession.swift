@@ -36,9 +36,12 @@ public final class NIOSFTPSession: SFTPService {
         let authDelegate = SSHUserAuthDelegate(username: creds.username,
                                                password: creds.password,
                                                keyPath: creds.keyPath)
+        // 与 NIOSSHSession 一致：显式挂库内 transport（当前仅 AES-GCM）。
+        // Dropbear/OpenWrt 无 GCM 时会在握手期失败，由 SFTPPanel 回落 OpenSSHSFTPSession。
         let clientConfig = SSHClientConfiguration(
             userAuthDelegate: authDelegate,
-            serverAuthDelegate: SFTPAcceptAllHostKeysDelegate()
+            serverAuthDelegate: SFTPAcceptAllHostKeysDelegate(),
+            transportProtectionSchemes: Constants.bundledTransportProtectionSchemes
         )
 
         let bootstrap = ClientBootstrap(group: group)

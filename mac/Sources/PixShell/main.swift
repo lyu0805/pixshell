@@ -73,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     var editorWindow: NSWindow?        // 编辑器独立窗口（可拖出主窗）      // 内置文本编辑器（SFTP 双击文件打开）
     var proxyPanel: ProxyPanel!        // 代理服务器管理（菜单 选项 → 代理）
     var keyManager: KeyManager!        // 密钥管理（生成/复制公钥/用于此主机/删除）
+    var fingerprintManager: FingerprintManager!  // 主机指纹（known_hosts 列表/删除）
     let proxyStore = ProxyStore()
     var editingRemotePath: String = "" // 当前编辑的远端文件路径
     var backupEnabled: Set<String> = []

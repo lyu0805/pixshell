@@ -97,38 +97,112 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
     required init?(coder: NSCoder) { fatalError() }
 
     // MARK: 连接
+    /// 连接世代：快速重连/回落时作废旧 completion，避免 NIO 失败回调冲掉已成功的 OpenSSH 会话。
+    private var connectGeneration: UInt64 = 0
+    /// 是否已完成握手（list/download 等可立即用）；连接中时 bridge 会等 ready 回调。
+    private var sftpReady = false
+    private var connectWaiters: [(Result<Void, Error>) -> Void] = []
+
     func connectIfNeeded(host: Host, password: String?) {
-        if connectedHostId == host.id, sftp != nil { return }
+        if connectedHostId == host.id, sftp != nil, sftpReady { return }
+        // 同主机正在连：复用，不打断
+        if connectedHostId == host.id, sftp != nil, !sftpReady { return }
+        beginConnect(host: host, password: password)
+    }
+
+    /// 强制按当前凭据重连（切换会话密码后用）。
+    func reconnect(host: Host, password: String?) {
+        beginConnect(host: host, password: password)
+    }
+
+    private func beginConnect(host: Host, password: String?) {
         sftp?.close()
+        sftp = nil
+        sftpReady = false
         connectedHostId = host.id
+        connectGeneration &+= 1
+        let gen = connectGeneration
         onPathChange?("连接中…")
         statusLabel.stringValue = "SFTP 连接 \(host.subtitle) …"
-        let s = NIOSFTPSession(); sftp = s
-        // 带上私钥与代理，保证 SFTP 与 SSH 走同一套凭据（只配私钥的主机也能连）
         let creds = SSHCredentials(host: host.host, port: host.port, username: host.username,
                                    password: password,
                                    keyPath: host.keyPath.isEmpty ? nil : host.keyPath,
                                    proxy: proxyProvider?(host.proxyId))
-        s.connect(creds) { [weak self] result in
-            guard let self = self else { return }
+        // 先试 NIO（零进程、快）；算法/子系统失败再回落系统 OpenSSH。
+        let primary = NIOSFTPSession()
+        sftp = primary
+        primary.connect(creds) { [weak self] result in
+            guard let self = self, gen == self.connectGeneration else { return }
             switch result {
             case .success:
-                self.statusLabel.stringValue = "SFTP 已连接"
-                s.home { r in
-                    if case .success(let h) = r { self.remotePath = h }
-                    self.rebuildTree()
-                    self.reloadRemote()
-                    self.runSelfTestIfNeeded()
-                }
+                self.markConnected(primary, label: "NIO")
             case .failure(let e):
-                self.onPathChange?("远端未连接")
-                self.statusLabel.stringValue = "SFTP 失败: \(self.msg(e))"
+                Log.warn("NIO SFTP 失败，回落 OpenSSH：\(e.localizedDescription)", "sftp")
+                self.statusLabel.stringValue = "SFTP 回落系统 ssh…"
+                let fallback = OpenSSHSFTPSession()
+                self.sftp = fallback
+                fallback.connect(creds) { [weak self] r2 in
+                    guard let self = self, gen == self.connectGeneration else { return }
+                    switch r2 {
+                    case .success:
+                        self.markConnected(fallback, label: "OpenSSH")
+                    case .failure(let e2):
+                        self.sftp?.close(); self.sftp = nil
+                        self.sftpReady = false
+                        self.onPathChange?("远端未连接")
+                        self.statusLabel.stringValue = "SFTP 失败: \(self.msg(e2))"
+                        Log.error("SFTP 双路径均失败 NIO=\(e.localizedDescription) OpenSSH=\(e2.localizedDescription)", "sftp")
+                        self.finishWaiters(.failure(e2))
+                    }
+                }
             }
         }
     }
 
+    private func markConnected(_ session: SFTPService, label: String) {
+        sftpReady = true
+        statusLabel.stringValue = "SFTP 已连接 (\(label))"
+        Log.info("SFTP 已连接 backend=\(label)", "sftp")
+        finishWaiters(.success(()))
+        session.home { [weak self] r in
+            guard let self = self else { return }
+            if case .success(let h) = r { self.remotePath = h }
+            self.rebuildTree()
+            self.reloadRemote()
+            self.runSelfTestIfNeeded()
+        }
+    }
+
+    private func finishWaiters(_ result: Result<Void, Error>) {
+        let ws = connectWaiters
+        connectWaiters.removeAll()
+        for w in ws { w(result) }
+    }
+
+    /// 等当前 SFTP 握手完成（bridge 用，避免 connectIfNeeded 后立刻 list 撞 notConnected）。
+    func whenReady(_ done: @escaping (Result<Void, Error>) -> Void) {
+        if sftpReady, sftp != nil {
+            done(.success(())); return
+        }
+        if sftp == nil {
+            done(.failure(SFTPError.notConnected)); return
+        }
+        connectWaiters.append(done)
+        // 保险：30s 仍未就绪则失败，避免 bridge 永久挂起
+        let gen = connectGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self = self, gen == self.connectGeneration, !self.sftpReady else { return }
+            let pending = self.connectWaiters
+            self.connectWaiters.removeAll()
+            for w in pending { w(.failure(SFTPError.connectFailed("SFTP 连接超时"))) }
+        }
+    }
+
     func disconnect() {
+        connectGeneration &+= 1
         sftp?.close(); sftp = nil; connectedHostId = nil
+        sftpReady = false
+        finishWaiters(.failure(SFTPError.notConnected))
         remoteEntries = []; remoteTable.reloadData()
         treeRoot = SFTPNode(path: "/", name: "/"); remoteTree.reloadData()
         onPathChange?("远端未连接")
@@ -480,22 +554,33 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
 
     // MARK: 供本地桥调用（不动 UI，直接走当前 SFTP 连接）
     func listForBridge(_ path: String, done: @escaping (Result<[SFTPEntry], Error>) -> Void) {
-        guard let sftp = sftp else {
-            done(.failure(NSError(domain: "PixShell", code: 400,
-                userInfo: [NSLocalizedDescriptionKey: "SFTP 未连接"]))); return
+        whenReady { [weak self] ready in
+            guard let self = self else { return }
+            if case .failure(let e) = ready { done(.failure(e)); return }
+            guard let sftp = self.sftp else {
+                done(.failure(SFTPError.notConnected)); return
+            }
+            sftp.listDirectory(path.isEmpty ? self.remotePath : path) { done($0) }
         }
-        sftp.listDirectory(path.isEmpty ? remotePath : path) { done($0) }
     }
     func downloadForBridge(remote: String, local: String, done: @escaping (String?) -> Void) {
-        guard let sftp = sftp else { done("SFTP 未连接"); return }
-        sftp.download(remote: remote, local: local) { r in
-            if case .failure(let e) = r { done("\(e)") } else { done(nil) }
+        whenReady { [weak self] ready in
+            guard let self = self else { return }
+            if case .failure(let e) = ready { done(e.localizedDescription); return }
+            guard let sftp = self.sftp else { done("SFTP 未连接"); return }
+            sftp.download(remote: remote, local: local) { r in
+                if case .failure(let e) = r { done(e.localizedDescription) } else { done(nil) }
+            }
         }
     }
     func uploadForBridge(local: String, remote: String, done: @escaping (String?) -> Void) {
-        guard let sftp = sftp else { done("SFTP 未连接"); return }
-        sftp.upload(local: local, remote: remote) { r in
-            if case .failure(let e) = r { done("\(e)") } else { done(nil); self.reloadRemote() }
+        whenReady { [weak self] ready in
+            guard let self = self else { return }
+            if case .failure(let e) = ready { done(e.localizedDescription); return }
+            guard let sftp = self.sftp else { done("SFTP 未连接"); return }
+            sftp.upload(local: local, remote: remote) { r in
+                if case .failure(let e) = r { done(e.localizedDescription) } else { done(nil); self.reloadRemote() }
+            }
         }
     }
 

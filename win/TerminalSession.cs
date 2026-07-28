@@ -1091,6 +1091,7 @@ public sealed class TerminalSession : IDisposable
             proxy = null;
         }
 
+        ConnectionInfo info;
         if (proxy != null && !string.IsNullOrEmpty(proxy.Host))
         {
             var proxyType = proxy.Type switch
@@ -1102,12 +1103,97 @@ public sealed class TerminalSession : IDisposable
             };
             Log.Info($"经代理 {proxy.Type} {proxy.Host}:{proxy.Port} 连接 {host}:{port}", "proxy");
             // 局域网直连：15s 太长，握手/TCP 超时压到 5s；失败更快露出错误而不是干等。
-            return new ConnectionInfo(host, port, user, proxyType, proxy.Host, proxy.Port,
+            info = new ConnectionInfo(host, port, user, proxyType, proxy.Host, proxy.Port,
                 proxy.Username ?? "", proxy.Password ?? "", methods.ToArray())
             { Timeout = TimeSpan.FromSeconds(8) };
         }
+        else
+        {
+            info = new ConnectionInfo(host, port, user, methods.ToArray()) { Timeout = TimeSpan.FromSeconds(5) };
+        }
 
-        return new ConnectionInfo(host, port, user, methods.ToArray()) { Timeout = TimeSpan.FromSeconds(5) };
+        // SSH.NET 2024.2 默认已启用全部自带算法；这里只重排提议顺序，现代优先、旧设备兜底。
+        // 字典可改（Clear/Add），不能替换属性本身。
+        PreferCompatibleAlgorithms(info);
+        return info;
+    }
+
+    /// <summary>
+    /// 保留 SSH.NET 全部已注册算法，仅按兼容优先序重排客户端提议列表。
+    /// 库内已含：chacha/aes-ctr/aes-gcm/aes-cbc/3des、curve25519/ecdh/dh-group*、
+    /// ed25519/ecdsa/rsa-sha2/ssh-rsa/ssh-dss、hmac-sha2/sha1(+etm)。
+    /// 注意：blowfish-cbc / cast128-cbc 不在 SSH.NET 2024.2 实现内，无法凭空注册。
+    /// </summary>
+    private static void PreferCompatibleAlgorithms(ConnectionInfo info)
+    {
+        PreferOrder(info.Encryptions, new[]
+        {
+            "chacha20-poly1305@openssh.com",
+            "aes128-ctr", "aes192-ctr", "aes256-ctr",
+            "aes128-gcm@openssh.com", "aes256-gcm@openssh.com",
+            "3des-cbc",
+            "aes128-cbc", "aes192-cbc", "aes256-cbc",
+        });
+        PreferOrder(info.KeyExchangeAlgorithms, new[]
+        {
+            "curve25519-sha256",
+            "curve25519-sha256@libssh.org",
+            "ecdh-sha2-nistp256",
+            "ecdh-sha2-nistp384",
+            "ecdh-sha2-nistp521",
+            "diffie-hellman-group-exchange-sha256",
+            "diffie-hellman-group14-sha256",
+            "diffie-hellman-group16-sha512",
+            "diffie-hellman-group14-sha1",
+            "diffie-hellman-group-exchange-sha1",
+            "diffie-hellman-group1-sha1",
+        });
+        PreferOrder(info.HostKeyAlgorithms, new[]
+        {
+            "ssh-ed25519",
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp521",
+            "rsa-sha2-512",
+            "rsa-sha2-256",
+            "ssh-rsa",
+            "ssh-dss",
+            "ssh-ed25519-cert-v01@openssh.com",
+            "ecdsa-sha2-nistp256-cert-v01@openssh.com",
+            "ecdsa-sha2-nistp384-cert-v01@openssh.com",
+            "ecdsa-sha2-nistp521-cert-v01@openssh.com",
+            "rsa-sha2-512-cert-v01@openssh.com",
+            "rsa-sha2-256-cert-v01@openssh.com",
+            "ssh-rsa-cert-v01@openssh.com",
+            "ssh-dss-cert-v01@openssh.com",
+        });
+        PreferOrder(info.HmacAlgorithms, new[]
+        {
+            "hmac-sha2-256-etm@openssh.com",
+            "hmac-sha2-512-etm@openssh.com",
+            "hmac-sha2-256",
+            "hmac-sha2-512",
+            "hmac-sha1",
+            "hmac-sha1-etm@openssh.com",
+        });
+    }
+
+    /// <summary>按 preferred 顺序重建字典，未列出的算法追加在末尾（不丢库默认项）。</summary>
+    private static void PreferOrder<T>(IDictionary<string, T> map, IReadOnlyList<string> preferred)
+    {
+        if (map == null || map.Count == 0) return;
+        var remaining = new Dictionary<string, T>(map, StringComparer.Ordinal);
+        map.Clear();
+        foreach (var name in preferred)
+        {
+            if (remaining.TryGetValue(name, out var value))
+            {
+                map[name] = value;
+                remaining.Remove(name);
+            }
+        }
+        foreach (var kv in remaining)
+            map[kv.Key] = kv.Value;
     }
 
     private void ApplyResize(uint cols, uint rows)

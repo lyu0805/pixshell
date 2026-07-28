@@ -149,6 +149,8 @@ extension AppDelegate {
     /// 现在有 KeyManager 了（生成/复制公钥/用于此主机/删除），必须开它，
     /// 否则点「密钥管理器」弹出来的是连接管理器，名实不符。
     @objc func menuKeyMgr() { openKeyManager() }
+    /// 汉堡菜单「主机指纹管理…」。
+    @objc func menuFingerprintMgr() { openFingerprintManager() }
     // 复制/粘贴：优先跟当前焦点走。命令板/命令框聚焦时 ⌘V 必须进输入框，
     // 绝不能因为菜单项 target=self 就把剪贴板硬塞进终端（用户 P0：粘贴命令却进终端）。
     @objc func termCopy() {

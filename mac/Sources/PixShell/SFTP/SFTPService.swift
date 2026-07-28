@@ -16,7 +16,7 @@ public struct SFTPEntry: Sendable, Equatable {
 }
 
 /// SFTP 层错误。远端返回的 STATUS 非 OK 会被映射成 `.status`。
-public enum SFTPError: Error, Sendable {
+public enum SFTPError: Error, Sendable, LocalizedError {
     case notConnected                       // 尚未连接 / 通道已关闭
     case connectFailed(String)              // TCP / SSH 握手 / 子系统请求失败
     case status(code: UInt32, message: String)  // 远端 SSH_FXP_STATUS 非 OK
@@ -24,6 +24,18 @@ public enum SFTPError: Error, Sendable {
     case unsupportedResponse                // 收到与请求不匹配的响应类型
     case localFileError(String)             // 本地文件读写失败
     case unsupportedAuth                    // 凭据无法构造任何可用认证方式
+
+    public var errorDescription: String? {
+        switch self {
+        case .notConnected: return "SFTP 未连接"
+        case .connectFailed(let s): return "SFTP 连接失败: \(s)"
+        case .status(let code, let message): return message.isEmpty ? "SFTP 状态码 \(code)" : "SFTP \(message) (\(code))"
+        case .malformedPacket: return "SFTP 报文损坏"
+        case .unsupportedResponse: return "SFTP 响应类型不匹配"
+        case .localFileError(let s): return "本地文件错误: \(s)"
+        case .unsupportedAuth: return "SFTP 无可用认证方式"
+        }
+    }
 }
 
 /// SFTP 后端服务接口。所有方法异步执行，**completion 一律切回主线程**（供 UI 直接用）。

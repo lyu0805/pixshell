@@ -281,7 +281,8 @@ if command -v codesign >/dev/null 2>&1; then
   echo "---- codesign -dv (.app, may be unsigned) ----"
   codesign -dv --verbose=2 "$APP" 2>&1 | head -10 || true
   if [ "$sign_ok" = 1 ]; then
-    echo "codesign 完成 identity=$SIGN_ID（稳定身份可减少钥匙串反复授权）"
+    # 用 ${SIGN_ID:--} 避免 set -u 下 SIGN_ID 偶发未绑定（子 shell/回退路径）
+    echo "codesign 完成 identity=${SIGN_ID:--}（稳定身份可减少钥匙串反复授权）"
   else
     echo "警告: 部分签名失败" >&2
   fi
