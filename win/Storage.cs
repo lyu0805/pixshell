@@ -244,6 +244,8 @@ public static class CredentialStore
 public class UiPrefs
 {
     public double SidebarWidth { get; set; } = 240;
+    /// <summary>底部文件/命令坞高度（对齐 mac pixshell.bottomHeight）。</summary>
+    public double BottomHeight { get; set; } = 230;
 }
 
 public static class UiStore

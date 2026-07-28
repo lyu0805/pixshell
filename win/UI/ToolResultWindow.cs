@@ -57,12 +57,14 @@ public sealed class ToolResultWindow
 
         _window = new Window
         {
-
             Title = "工具",
             Width = 760, Height = 480, MinWidth = 520, MinHeight = 320,
             WindowStartupLocation = WindowStartupLocation.CenterScreen,
             Background = (Brush)Application.Current.Resources["BrushBg2"],
             Content = root,
+            // 独立 HWND，不会被主窗 WebView2 的 airspace 盖住；置顶一层避免被主窗抢前台。
+            Topmost = true,
+            ShowInTaskbar = false,
         };
         // 关掉只隐藏，下次复用同一个窗口（否则每次工具动作都新开一个窗）。
         _window.Closing += (_, e) => { e.Cancel = true; _window!.Hide(); };
@@ -72,8 +74,14 @@ public sealed class ToolResultWindow
     {
         EnsureWindow();
         _title!.Text = label;
+        if (Application.Current.MainWindow is Window owner && owner != _window)
+            _window!.Owner = owner;
         _window!.Show();
         _window.Activate();
+        // 短暂 Topmost 脉冲：确保从被 WebView2 抢焦点的主窗里弹出来一定在最前。
+        _window.Topmost = true;
+        _window.Topmost = false;
+        _window.Topmost = true;
     }
 
     public void ShowRunning(string label)

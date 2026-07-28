@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
@@ -28,19 +29,85 @@ namespace PixShell;
 /// </summary>
 public sealed class TerminalSession : IDisposable
 {
-    /// <summary>本会话独占的 WebView2 控件，放进对应 TabItem 的内容区。</summary>
-    public WebView2 View { get; } = new WebView2();
+    /// <summary>本会话独占的 WebView2 控件，放进对应 TabItem 的内容区。
+    /// DefaultBackgroundColor 跟配色方案走，避免页面未铺满时露出系统黑底（半截黑屏）。</summary>
+    public WebView2 View { get; } = CreateView();
 
-    /// <summary>tab 头显示的标题：默认主机名，收到远端 OSC 标题后跟随。</summary>
+    private static WebView2 CreateView()
+    {
+        var v = new WebView2
+        {
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
+            VerticalAlignment = System.Windows.VerticalAlignment.Stretch,
+            // 与 TermSchemes.pix-dark 默认底一致；ApplyTermScheme 会再改
+            DefaultBackgroundColor = HexToDrawingColor("#002945"),
+        };
+        v.SizeChanged += (_, _) =>
+        {
+            try
+            {
+                if (v.CoreWebView2 != null)
+                    _ = v.CoreWebView2.ExecuteScriptAsync(
+                        "try{window.pixFit&&window.pixFit()}catch(e){}");
+            }
+            catch { /* 未初始化完忽略 */ }
+        };
+        return v;
+    }
+
+    private static System.Drawing.Color HexToDrawingColor(string hex)
+    {
+        try
+        {
+            var s = (hex ?? "").Trim();
+            if (s.StartsWith("#")) s = s[1..];
+            if (s.Length < 6) return System.Drawing.Color.FromArgb(255, 0x00, 0x29, 0x45);
+            var n = Convert.ToInt32(s[..6], 16);
+            return System.Drawing.Color.FromArgb(255, (n >> 16) & 255, (n >> 8) & 255, n & 255);
+        }
+        catch
+        {
+            return System.Drawing.Color.FromArgb(255, 0x00, 0x29, 0x45);
+        }
+    }
+
+    /// <summary>
+    /// 远端 OSC 标题（shell 报的 <c>root@ubuntu24: ~</c>）。
+    /// 只给 tooltip / 独立窗标题用，**绝不**写到标签头。
+    /// </summary>
     public string Title { get; private set; }
+
+    /// <summary>
+    /// 标签栏显示名：用户在连接管理器设的名字（<see cref="HostEntry.Display"/>）。
+    /// 对齐 mac <c>TermSession.tabTitle</c> —— 远端 OSC 再怎么改也不许盖掉用户命名。
+    /// </summary>
+    public string TabTitle
+    {
+        get
+        {
+            var name = SourceHost?.Display?.Trim();
+            if (!string.IsNullOrEmpty(name)) return name!;
+            // 兜底：无 SourceHost 时剥 user@ / : ~ 再显示，避免标签变成系统提示符
+            var t = Title ?? "";
+            var at = t.IndexOf('@');
+            if (at >= 0 && at + 1 < t.Length) t = t[(at + 1)..];
+            var colon = t.IndexOf(':');
+            if (colon >= 0) t = t[..colon];
+            t = t.Trim();
+            return string.IsNullOrEmpty(t) ? (Title ?? "会话") : t;
+        }
+    }
 
     public bool Connected => _connected;
 
-    /// <summary>标题变化（远端 OSC 标题）→ 通知 MainWindow 更新 tab 头。</summary>
+    /// <summary>远端 OSC 标题变化。标签头**不**订阅此事件（用 TabTitle）。</summary>
     public event Action<TerminalSession>? TitleChanged;
 
     /// <summary>状态变化 → 若为当前活动 tab，MainWindow 显示到状态栏。</summary>
     public event Action<TerminalSession, string>? StatusChanged;
+
+    /// <summary>连接状态变化（连上/断开）→ MainWindow 清 SFTP/系统信息等侧栏。</summary>
+    public event Action<TerminalSession, bool>? ConnectedChanged;
 
     private readonly string _htmlPath;
 
@@ -121,6 +188,36 @@ public sealed class TerminalSession : IDisposable
         _htmlPath = htmlPath;
     }
 
+    /// <summary>共享 WebView2 环境：固定 UserDataFolder，避免默认目录被多实例/僵尸进程锁死导致 0x800705B4 超时。</summary>
+    private static CoreWebView2Environment? _sharedEnv;
+    private static readonly SemaphoreSlim EnvLock = new(1, 1);
+
+    private static async Task<CoreWebView2Environment> GetSharedEnvironmentAsync()
+    {
+        if (_sharedEnv != null) return _sharedEnv;
+        await EnvLock.WaitAsync().ConfigureAwait(true);
+        try
+        {
+            if (_sharedEnv != null) return _sharedEnv;
+            // Roaming\PixShell\webview2 —— 与 HostStore 同根，可写、可清、不抢 exe 旁默认缓存
+            var dataDir = Path.Combine(HostStore.AppDir, "webview2");
+            Directory.CreateDirectory(dataDir);
+            // 多会话共用一个环境，UserDataFolder 唯一；每 tab 仍是独立 CoreWebView2Controller
+            var opts = new CoreWebView2EnvironmentOptions
+            {
+                // 关后台节流，避免最小化/后台时初始化拖死
+                AdditionalBrowserArguments = "--disable-features=CalculateNativeWinOcclusion,RendererCodeIntegrity",
+            };
+            _sharedEnv = await CoreWebView2Environment.CreateAsync(
+                browserExecutableFolder: null,
+                userDataFolder: dataDir,
+                options: opts).ConfigureAwait(true);
+            Log.Info($"WebView2 env ready: {dataDir}", "webview");
+            return _sharedEnv;
+        }
+        finally { EnvLock.Release(); }
+    }
+
     /// <summary>初始化 WebView2 并加载本地 xterm 页面（连接前调用一次）。
     /// 缺 terminal.html / Runtime 缺失 / 导航失败 / ready 超时都会抛异常，
     /// 由 MainWindow 回滚 tab 并展示明确失败，而不是成功动画+黑屏。</summary>
@@ -136,18 +233,53 @@ public sealed class TerminalSession : IDisposable
 
         try
         {
-            await View.EnsureCoreWebView2Async();
+            // 必须带 Environment：裸 EnsureCoreWebView2Async() 会抢 exe 旁默认 UserData，
+            // 多 tab / 残留 msedgewebview2 / 并发初始化 → ERROR_TIMEOUT 0x800705B4。
+            var env = await GetSharedEnvironmentAsync().ConfigureAwait(true);
+            // 给一次重试：僵尸锁/首次建 profile 偶发超时，清 lock 文件再来
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    var init = View.EnsureCoreWebView2Async(env);
+                    var winner = await Task.WhenAny(init, Task.Delay(25_000)).ConfigureAwait(true);
+                    if (winner != init)
+                        throw new TimeoutException("EnsureCoreWebView2Async 超过 25s（0x800705B4 同类超时）");
+                    await init.ConfigureAwait(true); // 传播真实异常
+                    break;
+                }
+                catch (Exception ex) when (attempt < 2 && IsWebView2InitTimeout(ex))
+                {
+                    Log.Warn($"WebView2 初始化超时，清 profile 锁后重试: {ex.Message}", "webview");
+                    TryClearWebView2Locks();
+                    await Task.Delay(400).ConfigureAwait(true);
+                }
+            }
         }
         catch (Exception ex)
         {
             throw new InvalidOperationException(
-                "WebView2 初始化失败（请安装 Microsoft Edge WebView2 Runtime）：" + ex.Message, ex);
+                "WebView2 初始化失败（请安装 Microsoft Edge WebView2 Runtime，或关掉残留的 msedgewebview2 后重试）：" + ex.Message, ex);
         }
 
+        View.CoreWebView2.WebMessageReceived -= OnWebMessageReceived;
         View.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
         // 关掉 WebView2 自带的浏览器右键菜单（刷新/查看源码等），改用下面的自绘终端右键菜单
         // （复制/粘贴/全选/清屏 + 设置背景，对齐 mac 版终端右键菜单）。
-        View.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+        // AreDefaultContextMenusEnabled=true 才能触发 ContextMenuRequested；
+        // 处理器里只清默认项并塞自定义项，Handled 保持 false 让 WebView2 自己弹原生菜单。
+        View.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
+        View.CoreWebView2.Settings.IsStatusBarEnabled = false;
+        View.CoreWebView2.Settings.AreBrowserAcceleratorKeysEnabled = false;
+        // 右键菜单配色跟随 App 主题（WebView2 原生菜单走 PreferredColorScheme）
+        try
+        {
+            View.CoreWebView2.Profile.PreferredColorScheme = ThemeManager.IsDark
+                ? CoreWebView2PreferredColorScheme.Dark
+                : CoreWebView2PreferredColorScheme.Light;
+        }
+        catch { /* 旧 runtime 无 Profile API 时忽略 */ }
+        View.CoreWebView2.ContextMenuRequested -= OnContextMenuRequested;
         View.CoreWebView2.ContextMenuRequested += OnContextMenuRequested;
 
         var navFailed = (string?)null;
@@ -171,9 +303,45 @@ public sealed class TerminalSession : IDisposable
             throw new InvalidOperationException(navFailed ?? "终端页面未能就绪。");
     }
 
+    private static bool IsWebView2InitTimeout(Exception ex)
+    {
+        for (var e = ex; e != null; e = e.InnerException!)
+        {
+            var m = e.Message ?? "";
+            if (m.Contains("0x800705B4", StringComparison.OrdinalIgnoreCase)) return true;
+            if (m.Contains("超时", StringComparison.Ordinal)) return true;
+            if (m.Contains("timed out", StringComparison.OrdinalIgnoreCase)) return true;
+            if (m.Contains("timeout", StringComparison.OrdinalIgnoreCase)) return true;
+            if (e is TimeoutException) return true;
+            if (e is OperationCanceledException) return true;
+        }
+        return false;
+    }
+
+    /// <summary>清 WebView2 profile 里常见的 lock/单例文件（不删整个缓存，避免每次冷启动）。</summary>
+    private static void TryClearWebView2Locks()
+    {
+        try
+        {
+            var dataDir = Path.Combine(HostStore.AppDir, "webview2");
+            if (!Directory.Exists(dataDir)) return;
+            foreach (var name in new[] { "lockfile", "SingletonLock", "SingletonCookie", "SingletonSocket" })
+            {
+                foreach (var f in Directory.EnumerateFiles(dataDir, name, SearchOption.AllDirectories))
+                {
+                    try { File.Delete(f); } catch { /* 占用中就跳过 */ }
+                }
+            }
+        }
+        catch { /* best-effort */ }
+    }
+
     // ---------------------------------------------------------------------
     // 终端右键菜单：复制/粘贴/全选/清屏 + 设置背景(12 预设+恢复默认)
     // 对齐 mac App/AppDelegate+TermMenu.swift。
+    //
+    // **必须**走 WebView2 原生 ContextMenuItem：WPF ContextMenu 弹在 WebView2 HWND
+    // 之上被 airspace 挡死，用户右键等于没反应（mac 截图那套菜单 Windows 上「不存在」的根因）。
     // ---------------------------------------------------------------------
 
     /// <summary>老仓库 TERM_BG_PRESETS（12 个预设，值 1:1 照搬 mac Self.termBgPresets）。</summary>
@@ -189,54 +357,80 @@ public sealed class TerminalSession : IDisposable
 
     private void OnContextMenuRequested(object? sender, CoreWebView2ContextMenuRequestedEventArgs e)
     {
-        e.Handled = true;
-        var menu = new System.Windows.Controls.ContextMenu { PlacementTarget = View };
-        void Add(string header, Action action)
+        // Handled 必须保持 false：WebView2 才会用我们改过的 MenuItems 弹出原生菜单。
+        // 设 true 等于自己负责画菜单——WPF Popup 又被 HWND airspace 挡死，右键等于没反应。
+        var env = View.CoreWebView2?.Environment;
+        if (env == null) return;
+
+        var items = e.MenuItems;
+        items.Clear();
+
+        void AddCmd(string label, Action action)
         {
-            var mi = new System.Windows.Controls.MenuItem { Header = header };
-            mi.Click += (_, _) => action();
-            menu.Items.Add(mi);
+            var mi = env.CreateContextMenuItem(label, null, CoreWebView2ContextMenuItemKind.Command);
+            mi.CustomItemSelected += (_, _) =>
+            {
+                // 回调在 WebView2 线程；切回 UI 线程再动剪贴板 / 终端
+                try { View.Dispatcher.BeginInvoke(action); } catch { /* disposed */ }
+            };
+            items.Add(mi);
         }
 
-        Add("复制", () => _ = CopySelectionToClipboardAsync());
-        Add("粘贴", PasteFromClipboard);
-        Add("全选", () => { try { _ = View.CoreWebView2?.ExecuteScriptAsync("term.selectAll();"); } catch { } });
-        menu.Items.Add(new System.Windows.Controls.Separator());
-        Add("清屏", ClearScreen);
-        menu.Items.Add(new System.Windows.Controls.Separator());
+        void AddSep()
+        {
+            items.Add(env.CreateContextMenuItem("", null, CoreWebView2ContextMenuItemKind.Separator));
+        }
 
-        var bgItem = new System.Windows.Controls.MenuItem { Header = "设置背景" };
+        AddCmd("复制", () => _ = CopySelectionToClipboardAsync());
+        AddCmd("粘贴", PasteFromClipboard);
+        AddCmd("全选", () => { try { _ = View.CoreWebView2?.ExecuteScriptAsync("term.selectAll();"); } catch { } });
+        AddSep();
+        AddCmd("清屏", ClearScreen);
+        AddSep();
+
+        // 设置背景 ▸ 子菜单（原生 submenu，不靠 WPF Popup）
+        var bgRoot = env.CreateContextMenuItem("设置背景", null, CoreWebView2ContextMenuItemKind.Submenu);
         var overrideHex = Terminal.TermBackgroundStore.Override;
         foreach (var p in TermBgPresets)
         {
             var isActive = string.Equals(p.Color, overrideHex, StringComparison.OrdinalIgnoreCase);
-            var mi = new System.Windows.Controls.MenuItem
-            {
-                Header = isActive ? p.Name + "  ✓" : p.Name,
-                FontWeight = isActive ? System.Windows.FontWeights.Bold : System.Windows.FontWeights.Normal,
-                Icon = new System.Windows.Shapes.Rectangle
-                {
-                    Width = 12, Height = 12,
-                    Fill = new System.Windows.Media.SolidColorBrush(
-                        (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(p.Color)!),
-                },
-            };
+            var label = isActive ? p.Name + "  ✓" : p.Name;
+            var mi = env.CreateContextMenuItem(label, null, CoreWebView2ContextMenuItemKind.Command);
             var color = p.Color;
-            mi.Click += (_, _) => { Log.Info($"终端背景 → {color}", "ui"); Terminal.TermBackgroundStore.Set(color); };
-            bgItem.Items.Add(mi);
+            mi.CustomItemSelected += (_, _) =>
+            {
+                try
+                {
+                    View.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        Log.Info($"终端背景 → {color}", "ui");
+                        Terminal.TermBackgroundStore.Set(color);
+                    }));
+                }
+                catch { }
+            };
+            bgRoot.Children.Add(mi);
         }
-        bgItem.Items.Add(new System.Windows.Controls.Separator());
-        var reset = new System.Windows.Controls.MenuItem { Header = "恢复配色默认" };
-        reset.Click += (_, _) => { Log.Info("终端背景 → 恢复配色默认", "ui"); Terminal.TermBackgroundStore.Reset(); };
-        bgItem.Items.Add(reset);
-        menu.Items.Add(bgItem);
+        bgRoot.Children.Add(env.CreateContextMenuItem("", null, CoreWebView2ContextMenuItemKind.Separator));
+        var reset = env.CreateContextMenuItem("恢复配色默认", null, CoreWebView2ContextMenuItemKind.Command);
+        reset.CustomItemSelected += (_, _) =>
+        {
+            try
+            {
+                View.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    Log.Info("终端背景 → 恢复配色默认", "ui");
+                    Terminal.TermBackgroundStore.Reset();
+                }));
+            }
+            catch { }
+        };
+        bgRoot.Children.Add(reset);
+        items.Add(bgRoot);
 
-        menu.Items.Add(new System.Windows.Controls.Separator());
-        Add("放大字号", () => { _ = View.CoreWebView2?.ExecuteScriptAsync("window.pixSetFontSize && window.pixSetFontSize((window.termFontSize || 14) + 1);"); });
-        Add("缩小字号", () => { _ = View.CoreWebView2?.ExecuteScriptAsync("window.pixSetFontSize && window.pixSetFontSize(Math.max(8, (window.termFontSize || 14) - 1));"); });
-
-        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
-        menu.IsOpen = true;
+        AddSep();
+        AddCmd("放大字号", () => { _ = View.CoreWebView2?.ExecuteScriptAsync("window.pixSetFontSize && window.pixSetFontSize((window.termFontSize || 14) + 1);"); });
+        AddCmd("缩小字号", () => { _ = View.CoreWebView2?.ExecuteScriptAsync("window.pixSetFontSize && window.pixSetFontSize(Math.max(8, (window.termFontSize || 14) - 1));"); });
     }
 
     private async Task CopySelectionToClipboardAsync()
@@ -264,6 +458,8 @@ public sealed class TerminalSession : IDisposable
     public async Task ConnectAsync(string host, int port, string user, string pass, string? keyPath = null, ProxyConfig? proxy = null)
     {
         if (_connected) Disconnect();
+        // 清掉首屏欢迎语 / 上一次会话残留，终端只留给远端真实输出
+        ClearScreen();
         _host = host; _port = port; _user = user; _pass = pass; _keyPath = keyPath; _proxy = proxy;   // 存凭据给 SFTP 复用
         Log.Info($"SSH 连接中 {user}@{host}:{port}", "ssh");
         SetStatus($"连接 {user}@{host}:{port} …");
@@ -279,7 +475,8 @@ public sealed class TerminalSession : IDisposable
         _connected = true;
         Log.Info($"SSH 握手完成，已连接 {user}@{host}:{port}", "ssh");
         SetStatus($"已连接 {user}@{host}");
-        SendToTerm("status", "connected");
+        // 不往终端写 [pixshell] connected —— 状态栏已有；终端只留远端 MOTD/提示符。
+        try { ConnectedChanged?.Invoke(this, true); } catch { }
         FocusWhenReady();
     }
 
@@ -287,7 +484,10 @@ public sealed class TerminalSession : IDisposable
     // try/finally：Connect/CreateShellStream 中途失败时释放 SshClient，避免句柄泄漏。
     private void Connect(string host, int port, string user, string pass, string? keyPath, ProxyConfig? proxy)
     {
-        var info = BuildConnectionInfo(host, port, user, pass, keyPath, proxy);
+        // 局域网 IP 直连时跳过 DNS/反向查找带来的数秒停顿：把主机名解析成 IP 再拨。
+        // 解析失败则原样回退（主机名仍可连，只是可能慢）。
+        var connectHost = ResolveFast(host);
+        var info = BuildConnectionInfo(connectHost, port, user, pass, keyPath, proxy);
 
         var ssh = new SshClient(info);
         try
@@ -365,7 +565,8 @@ public sealed class TerminalSession : IDisposable
                     _connected = false;
                     Log.Info($"SSH 连接关闭 {_user}@{_host}:{_port}", "ssh");
                     SetStatus("连接已关闭");
-                    SendToTerm("status", "session closed");
+                    // 不往终端写 [pixshell] session closed —— 状态栏已有。
+                    ConnectedChanged?.Invoke(this, false);
                 }
             }));
         }
@@ -512,14 +713,22 @@ public sealed class TerminalSession : IDisposable
     public void ApplyBackgroundOverride(string hex)
     {
         var scheme = _lastScheme ?? Terminal.TermSchemeStore.Current;
-        SendThemeWithBackground(scheme, hex);
+        // 空 hex = 恢复默认：强制用 scheme 原背景，并再 fit 一次
+        SendThemeWithBackground(scheme, string.IsNullOrEmpty(hex) ? null : hex);
+        try
+        {
+            _ = View.CoreWebView2?.ExecuteScriptAsync(
+                "try{if(window.term&&window.term.options){window.term.refresh(0,window.term.rows-1)}window.pixFit&&window.pixFit()}catch(e){}");
+        }
+        catch { /* ignore */ }
     }
 
     private void SendThemeWithBackground(TermScheme scheme, string? bgOverride)
     {
+        var bg = string.IsNullOrEmpty(bgOverride) ? scheme.Background : bgOverride;
         var theme = new
         {
-            background = string.IsNullOrEmpty(bgOverride) ? scheme.Background : bgOverride,
+            background = bg,
             foreground = scheme.Foreground,
             cursor = scheme.Cursor,
             // xterm.js 的 theme 字段不接受 null（会在内部解析颜色时报错），没有选区色时退回前景色。
@@ -531,7 +740,16 @@ public sealed class TerminalSession : IDisposable
         };
         var themeJson = JsonSerializer.Serialize(theme);
         _pendingSchemeJson = themeJson;
+        // WebView2 控件底色与 scheme 同步，fit 未铺满时不再露系统黑。
+        try
+        {
+            if (!string.IsNullOrEmpty(bg))
+                View.DefaultBackgroundColor = HexToDrawingColor(bg);
+        }
+        catch { /* 非法 hex 忽略 */ }
         SendRawToTerm("{\"t\":\"theme\",\"theme\":" + themeJson + "}");
+        // 强制再 fit 一次，消除半高/半截黑
+        try { _ = View.CoreWebView2?.ExecuteScriptAsync("try{window.pixFit&&window.pixFit()}catch(e){}"); } catch { }
     }
 
     /// <summary>取 xterm 当前选区文本（用于「复制」菜单项写入系统剪贴板）。</summary>
@@ -572,6 +790,37 @@ public sealed class TerminalSession : IDisposable
         if (path.StartsWith("~/") || path.StartsWith("~\\"))
             path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path[2..]);
         return Environment.ExpandEnvironmentVariables(path);
+    }
+
+    /// <summary>
+    /// 快路径解析：字面量 IP 直接返回；主机名用 DNS 解析，优先 IPv4，失败原样返回。
+    /// 目的是避免 SSH.NET 内部对主机名做额外反向/多栈解析导致局域网 3–4s 停顿。
+    /// </summary>
+    private static string ResolveFast(string host)
+    {
+        if (string.IsNullOrWhiteSpace(host)) return host;
+        if (System.Net.IPAddress.TryParse(host, out _)) return host;
+        try
+        {
+            var addrs = System.Net.Dns.GetHostAddresses(host);
+            var v4 = addrs.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+            if (v4 != null)
+            {
+                Log.Info($"DNS 快解析 {host} → {v4}", "ssh");
+                return v4.ToString();
+            }
+            var any = addrs.FirstOrDefault();
+            if (any != null)
+            {
+                Log.Info($"DNS 快解析 {host} → {any}", "ssh");
+                return any.ToString();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"DNS 快解析失败 {host}: {ex.Message}，回退原主机名", "ssh");
+        }
+        return host;
     }
 
     /// <summary>
@@ -644,12 +893,13 @@ public sealed class TerminalSession : IDisposable
                 _ => Renci.SshNet.ProxyTypes.None,
             };
             Log.Info($"经代理 {proxy.Type} {proxy.Host}:{proxy.Port} 连接 {host}:{port}", "proxy");
+            // 局域网直连：15s 太长，握手/TCP 超时压到 5s；失败更快露出错误而不是干等。
             return new ConnectionInfo(host, port, user, proxyType, proxy.Host, proxy.Port,
                 proxy.Username ?? "", proxy.Password ?? "", methods.ToArray())
-            { Timeout = TimeSpan.FromSeconds(15) };
+            { Timeout = TimeSpan.FromSeconds(8) };
         }
 
-        return new ConnectionInfo(host, port, user, methods.ToArray()) { Timeout = TimeSpan.FromSeconds(15) };
+        return new ConnectionInfo(host, port, user, methods.ToArray()) { Timeout = TimeSpan.FromSeconds(5) };
     }
 
     private void ApplyResize(uint cols, uint rows)
@@ -760,7 +1010,8 @@ public sealed class TerminalSession : IDisposable
     // ---------------------------------------------------------------------
     public void Disconnect()
     {
-        if (_connected) Log.Info($"主动断开 {_user}@{_host}:{_port}", "ssh");
+        var was = _connected;
+        if (was) Log.Info($"主动断开 {_user}@{_host}:{_port}", "ssh");
         _connected = false;
         try { _shell?.Dispose(); } catch { }
         try { _ssh?.Disconnect(); } catch { }
@@ -769,6 +1020,10 @@ public sealed class TerminalSession : IDisposable
         _ssh = null;
         _channel = null;
         _windowChange = null;
+        if (was)
+        {
+            try { ConnectedChanged?.Invoke(this, false); } catch { }
+        }
     }
 
     /// <summary>关闭 tab 时调用：断开 SSH 并释放 WebView2。</summary>

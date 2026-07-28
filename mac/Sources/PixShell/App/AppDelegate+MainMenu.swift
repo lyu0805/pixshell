@@ -90,6 +90,9 @@ extension AppDelegate {
         let helpItem = NSMenuItem(); let helpMenu = NSMenu(title: "帮助")
         helpMenu.addItem(mi("接入 AI 工具…", #selector(openAIIntegration)))
         helpMenu.addItem(.separator())
+        helpMenu.addItem(mi("授权本地网络…", #selector(menuLocalNetworkAuth)))
+        helpMenu.addItem(mi("打开本地网络设置", #selector(menuOpenLocalNetworkSettings)))
+        helpMenu.addItem(.separator())
         helpMenu.addItem(mi("备份选项配置…", #selector(openBackup)))
         helpMenu.addItem(.separator())
         helpMenu.addItem(mi("项目仓库", #selector(menuRepo)))
@@ -144,10 +147,24 @@ extension AppDelegate {
     /// 故意**不**替用户去改 Claude Desktop 的配置文件 —— 那是他自己的配置，
     /// 我们只给现成片段，改不改由他决定。
     @objc func openAIIntegration() {
+        // 点菜单时顺手确保 CLI/MCP 脚本在盘上（App 启动已装过，这里幂等）
+        if let port = agentBridge?.port { AgentCLI.install(port: port) }
+        AgentMCP.install()
         let a = NSAlert.pix()
         a.messageText = "接入 AI 工具"
+        let bridgeLine: String = {
+            if bridgeStatus.running {
+                let paired = bridgeStatus.clientIdle.map { $0 < 300 } ?? false
+                return paired
+                    ? "本地桥：已对接 · 127.0.0.1:\(bridgeStatus.port)"
+                    : "本地桥：已开启 · 127.0.0.1:\(bridgeStatus.port)（等外部 CLI/Agent）"
+            }
+            return "本地桥：未开启（点「重新安装 CLI / MCP」可再拉起）"
+        }()
         a.informativeText = """
-        PixShell 已经把自己开放给本机的 AI 工具了，两条路都在跑同一条**已连接的 SSH 会话**，        不会每条指令都重连。
+        PixShell 已经把自己开放给本机的 AI 工具了，两条路都在跑同一条**已连接的 SSH 会话**，不会每条指令都重连。
+
+        \(bridgeLine)
 
         ① MCP（推荐，桌面 AI 应用 / 支持 MCP 的客户端都吃这套）
            Claude Code CLI 注册：
@@ -177,5 +194,55 @@ extension AppDelegate {
             pb.clearContents(); pb.setString(AgentMCP.desktopConfigSnippet(), forType: .string)
             setStatus("已复制 Desktop MCP 配置")
         }
+    }
+
+    /// 汉堡「AI 对接」一键项：复制 CLI 用法说明（含路径，不含 token）。
+    @objc func copyCLIUsage() {
+        if let port = agentBridge?.port { AgentCLI.install(port: port) }
+        let text = AgentCLI.promptPreamble()
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        setStatus("已复制 CLI 用法")
+    }
+
+    @objc func copyMCPRegister() {
+        AgentMCP.install()
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(AgentMCP.claudeCodeCommand(), forType: .string)
+        setStatus("已复制 MCP 注册命令")
+    }
+
+    @objc func copyMCPDesktop() {
+        AgentMCP.install()
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(AgentMCP.desktopConfigSnippet(), forType: .string)
+        setStatus("已复制 Desktop MCP 配置")
+    }
+
+    /// 帮助菜单：再触发一次本地网络授权弹窗（系统级，不能静默写 TCC）。
+    @objc func menuLocalNetworkAuth() {
+        LocalNetworkAuth.presentGrantHelp(from: window)
+    }
+
+    @objc func menuOpenLocalNetworkSettings() {
+        _ = LocalNetworkAuth.openSystemSettings()
+        setStatus("已打开系统设置 · 本地网络")
+    }
+
+    @objc func openCLIBinDir() {
+        if let port = agentBridge?.port { AgentCLI.install(port: port) }
+        AgentMCP.install()
+        NSWorkspace.shared.open(AgentCLI.binDir)
+        setStatus("已打开 \(AgentCLI.binDir.path)")
+    }
+
+    @objc func reinstallCLIBridge() {
+        if agentBridge == nil || agentBridge?.isRunning != true {
+            startAgentBridge()
+        }
+        if let port = agentBridge?.port { AgentCLI.install(port: port) }
+        AgentMCP.install()
+        updateCliStatus()
+        setStatus("已重新安装 CLI / MCP（端口 \(agentBridge?.port ?? 0)）")
     }
 }

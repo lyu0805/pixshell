@@ -14,7 +14,7 @@ namespace PixShell;
 ///
 /// **切换语义（别改回轮播）**：设置里的四选一是"选定当前主题"；选中浅色系的任意一套
 /// （浅色/水墨/复古）会同时把它记为 <see cref="LightKind"/> = 这台机器的"浅色"是哪一套。
-/// 顶栏主题按钮此后只在 **深色 ⇄ LightKind** 两态之间切，不再挨个轮一遍（用户明确要求）。
+/// 顶栏主题按钮此后只在 **深色 ⇄ LightKind** 两态之间切，不再挨个轮一遍。
 ///
 /// 持久化：<c>theme.json</c>（照 TermSchemeStore 的写法放在 HostStore.AppDir）。
 /// 之前 Windows 端主题**完全没持久化**，每次启动都回到深色，顺带修掉。
@@ -34,15 +34,15 @@ public static class ThemeManager
     private sealed class Saved
     {
         public string Theme { get; set; } = "ink";
-        public string LightKind { get; set; } = "light";
+        public string LightKind { get; set; } = "ink";
     }
 
     private static string FilePath => Path.Combine(HostStore.AppDir, "theme.json");
 
     public static Kind Current { get; private set; } = Kind.Ink;
 
-    /// <summary>用户选定的「浅色」是哪一套（浅色/水墨/复古），深色不算。</summary>
-    public static Kind LightKind { get; private set; } = Kind.Light;
+    /// <summary>用户选定的「浅色」是哪一套（浅色/水墨/复古），深色不算。默认水墨。</summary>
+    public static Kind LightKind { get; private set; } = Kind.Ink;
 
     /// <summary>是否深底主题。水墨/复古都算浅底，既有按 IsDark 分支的代码不用改。</summary>
     public static bool IsDark => Current == Kind.Dark;
@@ -53,14 +53,19 @@ public static class ThemeManager
     public static string Display(Kind k) => Table.First(t => t.kind == k).display;
     public static Kind[] AllKinds => Table.Select(t => t.kind).ToArray();
 
-    /// <summary>启动时调用：读回上次的选择并真正把字典换上。</summary>
-    public static void Initialize(bool darkFallback = true)
+    /// <summary>启动时调用：读回上次的选择并真正把字典换上。
+    /// 无 theme.json / 字段损坏时固定回落水墨（产品默认主题）。
+    /// <paramref name="darkFallback"/> 保留签名兼容，已忽略——禁止再把首启推成深色。</summary>
+    public static void Initialize(bool darkFallback = false)
     {
+        _ = darkFallback; // 兼容旧调用；默认主题固定水墨
         var s = Load();
         LightKind = ParseLight(s?.LightKind);
-        Current = Parse(s?.Theme) ?? (darkFallback ? Kind.Dark : LightKind);
-        // App.xaml 默认静态合并的是深色；不是深色就得真的换一次字典。
-        if (Current != Kind.Dark) SwapDictionary(Current);
+        Current = Parse(s?.Theme) ?? Kind.Ink;
+        // App.xaml 静态合并的是水墨；当前不是水墨就得真的换一次字典。
+        if (Current != Kind.Ink) SwapDictionary(Current);
+        // 首启无配置时立刻落盘，避免下次再被别的路径写成 dark/light。
+        if (s == null) Save();
         ThemeChanged?.Invoke(IsDark);
     }
 
@@ -123,6 +128,6 @@ public static class ThemeManager
     private static Kind ParseLight(string? s)
     {
         var k = Parse(s);
-        return (k == null || k == Kind.Dark) ? Kind.Light : k.Value;   // 深色不能当"浅色"
+        return (k == null || k == Kind.Dark) ? Kind.Ink : k.Value;   // 深色不能当"浅色"；默认水墨
     }
 }

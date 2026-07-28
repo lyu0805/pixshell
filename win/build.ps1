@@ -8,7 +8,9 @@ param(
 
     [string]$Runtime = 'win-x64',
 
-    [switch]$SelfContained,
+    # Default self-contained: bundle .NET runtime.
+    # Pass -SelfContained:$false to use framework-dependent.
+    [bool]$SelfContained = $true,
 
     [string]$OutputDir = ''
 )
@@ -95,7 +97,13 @@ function Test-PublishOutput($publishDir) {
     }
 
     Write-Host '[OK] Publish output contains PixShell.exe, web assets, and WebView2Loader.dll.' -ForegroundColor Green
-    Write-Host '[INFO] WebView2 Evergreen Runtime is not bundled; target machines must have it installed.'
+    if ($SelfContained) {
+        Write-Host '[OK] Self-contained: .NET runtime is bundled with the publish output.' -ForegroundColor Green
+    } else {
+        Write-Host '[WARN] Framework-dependent publish: target needs .NET 9 Desktop Runtime.' -ForegroundColor Yellow
+    }
+    Write-Host '[INFO] WebView2 Evergreen Runtime is still NOT bundled (system component on Win10/11).'
+    Write-Host '       If missing: winget install Microsoft.EdgeWebView2Runtime'
 }
 
 if (-not (Test-Path -LiteralPath $project)) {

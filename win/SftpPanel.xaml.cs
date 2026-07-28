@@ -24,13 +24,15 @@ namespace PixShell;
 /// </summary>
 public partial class SftpPanel : UserControl
 {
+    // WPF {Binding Xxx} 只认属性，不认字段。Name 曾是 public 字段 → 图标能显示（Icon 是属性）
+    // 但文件名永远空白。全部改成属性，禁止再写字段。
     private sealed class FsRow
     {
-        public string Name = "";
-        public bool IsDir;
-        public bool IsLink;
-        public long Size;
-        public DateTime Mtime;
+        public string Name { get; set; } = "";
+        public bool IsDir { get; set; }
+        public bool IsLink { get; set; }
+        public long Size { get; set; }
+        public DateTime Mtime { get; set; }
         public string Icon => IsDir ? "📁" : (IsLink ? "🔗" : "📄");
         public string SizeText => IsDir ? "" : HumanSize(Size);
         public string TypeText => IsDir ? "目录" : (IsLink ? "链接" : "文件");
@@ -157,9 +159,20 @@ public partial class SftpPanel : UserControl
     private TreeViewItem MakeTreeItem(SftpNode node)
     {
         var header = new StackPanel { Orientation = Orientation.Horizontal };
-        header.Children.Add(new TextBlock { Text = "📁", Foreground = new SolidColorBrush(Color.FromRgb(0xE8, 0xBD, 0x4A)), Margin = new Thickness(0, 0, 5, 0) });
-        header.Children.Add(new TextBlock { Text = node.Name, Foreground = (Brush)Application.Current.Resources["BrushText"] });
+        header.Children.Add(new TextBlock
+        {
+            Text = "📁",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE8, 0xBD, 0x4A)),
+            Margin = new Thickness(0, 0, 5, 0),
+        });
+        // 必须 DynamicResource：静态 Resources[] 取到的是创建瞬间的 brush 引用，
+        // 主题切换后不跟色；暗色下若残留浅色主题 brush 会变成黑字压黑底。
+        var nameTb = new TextBlock { Text = node.Name };
+        nameTb.SetResourceReference(TextBlock.ForegroundProperty, "BrushText");
+        header.Children.Add(nameTb);
         var item = new TreeViewItem { Header = header, Tag = node };
+        // 强制整项前景也绑主题，防 TreeViewItem 模板/系统默认吃掉
+        item.SetResourceReference(Control.ForegroundProperty, "BrushText");
         item.Items.Add(new TextBlock { Text = "加载中…" }); // 占位子项，使展开箭头出现
         item.Expanded += TreeItem_Expanded;
         return item;

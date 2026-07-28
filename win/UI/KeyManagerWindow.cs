@@ -71,10 +71,12 @@ public sealed class KeyManagerWindow
 
         _window = new Window
         {
-
             Title = "密钥管理", Owner = owner,
-            Width = 620, Height = 520, MinWidth = 480, MinHeight = 320,
+            Width = 420, Height = 360, MinWidth = 320, MinHeight = 240,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            WindowStyle = WindowStyle.ToolWindow,
+            ResizeMode = ResizeMode.CanResizeWithGrip,
+            ShowInTaskbar = false,
             Background = B("BrushBg"),
             Content = root,
         };

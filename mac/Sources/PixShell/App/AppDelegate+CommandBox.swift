@@ -111,7 +111,7 @@ extension AppDelegate: NSTextFieldDelegate {
         return a.runModal() == .alertFirstButtonReturn ? tf.stringValue : nil
     }
 
-    /// cd 命令 → 同步 SFTP 目录 + 状态栏
+    /// 终端 cd → SFTP 同步（默认关闭；P0 要求 SFTP 与终端完全独立）
     func applyCdSync(for command: String) {
         guard syncDirWithSftp, CommandSync.shouldSyncCd(command), let sp = sftpPanel else { return }
         let next = CommandSync.applyCd(sp.currentRemotePath, command)
@@ -119,10 +119,20 @@ extension AppDelegate: NSTextFieldDelegate {
         setStatus("同步目录 \(next)")
     }
 
-    /// SFTP 里进目录 → 可选把 cd 写回终端（反向同步）
+    /// SFTP 进目录 → 终端 cd（P0 已默认禁用；保留函数避免旧调用点崩）
     func syncTerminalCd(to path: String) {
         guard syncDirWithSftp, sessions.indices.contains(current) else { return }
         sessions[current].ssh?.send(Array("cd '\(path.replacingOccurrences(of: "'", with: "'\\''"))'\r".utf8))
+    }
+
+    /// P1：SSH 断开/关标签 → 清 SFTP + 关系统信息，避免"连接关闭"后文件/系统信息还挂着
+    func clearSessionSidePanels() {
+        sftpPanel?.disconnect()
+        if let sp = sftpPanel, !sp.isHidden {
+            // 保持坞可见结构，但远端内容已清空（disconnect 已 reload 空表 + "远端未连接"）
+        }
+        sysInfo?.isHidden = true
+        stopMonitor()
     }
 
     // MARK: 历史弹出（命令栏「历史」按钮）

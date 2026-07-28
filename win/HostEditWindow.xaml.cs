@@ -23,6 +23,7 @@ public partial class HostEditWindow : Window
     public HostEditWindow(HostEntry? existing)
     {
         InitializeComponent();
+        SourceInitialized += (s, e) => PixShell.UI.WindowInterop.ApplyBackdrop(this, ThemeManager.IsDark);
         // 编辑已有主机则克隆，避免直接改动列表引用；新建则给一个空条目。
         Entry = existing == null
             ? new HostEntry()
@@ -46,9 +47,25 @@ public partial class HostEditWindow : Window
         PortBox.Text = Entry.Port.ToString();
         UserBox.Text = Entry.Username;
         GroupBox.Text = string.IsNullOrWhiteSpace(Entry.Group) ? "默认" : Entry.Group;
-        OsBox.Text = Entry.OsId;
+        var osSel = OsBox.Items.Cast<ComboBoxItem>().FirstOrDefault(i => string.Equals((string)i.Content, Entry.OsId, StringComparison.OrdinalIgnoreCase));
+        if (osSel != null)
+        {
+            OsBox.SelectedItem = osSel;
+        }
+        else if (!string.IsNullOrEmpty(Entry.OsId))
+        {
+            var newItem = new ComboBoxItem { Content = Entry.OsId };
+            OsBox.Items.Add(newItem);
+            OsBox.SelectedItem = newItem;
+        }
+        else
+        {
+            OsBox.SelectedIndex = 0;
+        }
+
         KeyPathBox.Text = Entry.KeyPath;
         Title = existing == null ? "新建主机" : "编辑主机";
+        Tag = "NoAutoResize";
 
         // 代理下拉：第一项固定"无"(id=空)，之后是 proxies.json 里的全部代理，按 Entry.ProxyId 预选。
         ProxyBox.Items.Add(new ComboBoxItem { Content = "无（直连）", Tag = "" });
@@ -56,6 +73,20 @@ public partial class HostEditWindow : Window
             ProxyBox.Items.Add(new ComboBoxItem { Content = $"{(string.IsNullOrEmpty(p.Name) ? p.Host : p.Name)} ({p.DisplayName})", Tag = p.Id });
         var sel = ProxyBox.Items.Cast<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == Entry.ProxyId);
         ProxyBox.SelectedItem = sel ?? ProxyBox.Items[0];
+    }
+
+    private void Card_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (e.ButtonState == System.Windows.Input.MouseButtonState.Pressed)
+        {
+            try { DragMove(); } catch { /* ignore */ }
+        }
+    }
+
+    private void OnCancel(object sender, RoutedEventArgs e)
+    {
+        DialogResult = false;
+        Close();
     }
 
     /// <summary>私钥文件选择：只选文件、显示隐藏文件（否则 %USERPROFILE%\.ssh 这类点开头目录默认不可见）。</summary>
@@ -99,7 +130,7 @@ public partial class HostEditWindow : Window
         Entry.Port = port;
         Entry.Username = user;
         Entry.Group = string.IsNullOrWhiteSpace(GroupBox.Text) ? "默认" : GroupBox.Text.Trim();
-        Entry.OsId = OsBox.Text.Trim();
+        Entry.OsId = (OsBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
         Entry.KeyPath = KeyPathBox.Text.Trim();
         Entry.ProxyId = (ProxyBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
         Entry.ConnectionType = TypeBox.SelectedIndex == 1 ? 200 : 100;

@@ -8,6 +8,8 @@ final class QuickConnect: NSView {
     private let grid = FlowGrid()
     private let subtitle = NSTextField(labelWithString: "")
     private let empty = NSTextField(labelWithString: "暂无历史记录 —— 点右上角 ＋ 新建连接，或打开连接管理器")
+    private let backBtn = IconButton(symbol: "chevron.left", tooltip: "返回当前会话",
+                                     size: NSSize(width: 30, height: 30), target: nil, action: nil)
 
     var hostsProvider: (() -> [Host])?          // 卡片来源（历史顺序）
     var hasPassword: ((Host) -> Bool)?          // 是否已存密码（决定绿色徽章）
@@ -15,6 +17,12 @@ final class QuickConnect: NSView {
     var onEdit: ((Host) -> Void)?
     var onNew: (() -> Void)?
     var onClear: (() -> Void)?
+    /// 有活动会话时点返回箭头 → 收起落地页回到终端
+    var onBack: (() -> Void)?
+    /// 是否显示返回箭头（打开连接后再点 ＋ 进入本页时为 true）
+    var showsBack: Bool = false {
+        didSet { backBtn.isHidden = !showsBack }
+    }
 
     override init(frame frameRect: NSRect) { super.init(frame: frameRect); build() }
     required init?(coder: NSCoder) { fatalError() }
@@ -35,7 +43,10 @@ final class QuickConnect: NSView {
             blur.trailingAnchor.constraint(equalTo: trailingAnchor)
         ])
 
-        // 头部：大标题 + 副标题竖排，右侧按钮主次分明（新建是主操作 → primary）
+        // 头部：可选返回箭头 + 大标题 + 副标题，右侧新建/清空
+        backBtn.target = self; backBtn.action = #selector(backAction)
+        backBtn.isHidden = true
+        backBtn.translatesAutoresizingMaskIntoConstraints = false
         title.font = Theme.ui(28, .bold); title.textColor = Theme.text
         title.translatesAutoresizingMaskIntoConstraints = false
         subtitle.font = Theme.ui(12); subtitle.textColor = Theme.muted
@@ -45,7 +56,7 @@ final class QuickConnect: NSView {
 
         let newBtn = PillButton("＋ 新建连接", style: .primary, hPad: 14, height: 30, target: self, action: #selector(newAction))
         let clearBtn = PillButton("清空历史", style: .ghost, hPad: 12, height: 30, target: self, action: #selector(clearAction))
-        let head = NSStackView(views: [titleCol, NSView(), newBtn, clearBtn])
+        let head = NSStackView(views: [backBtn, titleCol, NSView(), newBtn, clearBtn])
         head.spacing = 8; head.alignment = .centerY
         head.translatesAutoresizingMaskIntoConstraints = false
 
@@ -91,6 +102,7 @@ final class QuickConnect: NSView {
 
     @objc private func newAction() { onNew?() }
     @objc private func clearAction() { onClear?(); reload() }
+    @objc private func backAction() { onBack?() }
 
     func reload() {
         let hosts = hostsProvider?() ?? []

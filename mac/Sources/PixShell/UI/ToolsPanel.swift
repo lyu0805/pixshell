@@ -5,7 +5,7 @@ import AppKit
 /// **这是一个小浮窗，不是独立界面。** 老仓库 CSS：`width: min(360px, 92vw); padding: 12px;`
 /// 固定在顶栏下方靠右，点图标呼出、再点收起。内容以「下载任务」为主：
 ///   [主机下拉]
-///   [路由追踪][进程管理][网络监控][速度测试][自定义加速]
+///   [路由追踪][进程管理][网络监控][速度测试]
 ///   下载: <目录>  [选择目录][打开目录]
 ///   [下载任务列表]  ← 120pt，老仓库 .tools-dl-box
 /// 工具按钮的**输出不在浮窗里显示**（老仓库是开成中央标签页），走 ToolResultWindow 独立窗口。
@@ -62,7 +62,6 @@ final class ToolsPanel: NSView {
     var onExec: ((String, @escaping (String) -> Void) -> Void)?
     var onPickDownloadDir: (() -> Void)?
     var onOpenDownloadDir: (() -> Void)?
-    var onCustomAccel: (() -> Void)?
     var onClose: (() -> Void)?
 
     // 与老仓库 ssh-engine 相同的采集命令
@@ -167,12 +166,11 @@ final class ToolsPanel: NSView {
         hostPopup.target = self; hostPopup.action = #selector(hostChanged)
         hostPopup.font = Theme.ui(12)
 
-        // 工具 chips —— 360 宽放不下 5 个，按老仓库 flex-wrap 折两行
+        // 工具 chips（路由/进程/网络/测速）
         let row1 = NSStackView(views: [chip("路由追踪", #selector(toolRoute)),
                                        chip("进程管理", #selector(toolProcess)),
                                        chip("网络监控", #selector(toolNetwork))])
-        let row2 = NSStackView(views: [chip("速度测试", #selector(toolSpeed)),
-                                       chip("自定义加速", #selector(toolAccel)), NSView()])
+        let row2 = NSStackView(views: [chip("速度测试", #selector(toolSpeed)), NSView()])
         [row1, row2].forEach { $0.orientation = .horizontal; $0.spacing = 6; $0.alignment = .centerY }
         let chips = NSStackView(views: [row1, row2])
         chips.orientation = .vertical; chips.alignment = .leading; chips.spacing = 6
@@ -246,7 +244,6 @@ final class ToolsPanel: NSView {
     @objc private func hostChanged() { onSelectSession?(hostPopup.indexOfSelectedItem) }
     @objc private func pickDir() { onPickDownloadDir?() }
     @objc private func openDir() { onOpenDownloadDir?() }
-    @objc private func toolAccel() { onCustomAccel?() }
 
     /// 点浮窗以外的地方 → 收起（老仓库 closeFlyouts 同样行为）
     override func mouseDown(with event: NSEvent) {

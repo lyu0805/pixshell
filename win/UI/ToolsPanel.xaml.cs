@@ -10,12 +10,12 @@ using System.Windows.Media;
 namespace PixShell.UI;
 
 /// <summary>
-/// 工具面板（顶栏宫格图标 flyout）。远端命令与 mac UI/ToolsPanel.swift 完全一致，
-/// 保证两端"路由追踪/进程管理/网络监控/速度测试"行为对齐。
+/// 工具面板（顶栏宫格图标 flyout）。远端命令与 mac UI/ToolsPanel.swift 完全一致。
+/// 以独立 Owner 窗口展示，避免 WebView2 HwndHost airspace（禁止再藏终端 HWND）。
+/// 对齐 ToolResultWindow 模式：独立 HWND，终端永不隐藏。
 /// </summary>
 public partial class ToolsPanel : UserControl
 {
-    // 与 mac 版 1:1 一致的远端命令。
     public const string CmdProcess = "ps -eo pid,user,rss,pcpu,comm,args --sort=-pcpu 2>/dev/null | head -n 80 || ps w 2>/dev/null | head -n 80";
     public const string CmdNetwork = "ss -tulnpH 2>/dev/null || netstat -tulnp 2>/dev/null | tail -n +3";
     public static string CmdRoute(string host) =>
@@ -31,13 +31,11 @@ public partial class ToolsPanel : UserControl
     public Func<string, Task<string>>? OnExec { get; set; }
     public Action? OnPickDownloadDir { get; set; }
     public Action? OnOpenDownloadDir { get; set; }
-    public Action? OnCustomAccel { get; set; }
     public Action? OnClose { get; set; }
 
     private bool _suppressSelection;
-
-    /// <summary>工具输出的承载窗口（进程/网络/路由/测速）——不塞进 360px 浮窗里。</summary>
     private readonly ToolResultWindow _result = new();
+    private Window? _host;
 
     public ToolsPanel()
     {
@@ -45,20 +43,125 @@ public partial class ToolsPanel : UserControl
         DownloadTasks.Changed += ReloadDownloads;
     }
 
-    /// <summary>浮窗是否已显示（供顶栏图标做"再点一下收起"）。</summary>
-    public bool IsOpen => Visibility == Visibility.Visible;
+    /// <summary>浮窗是否已显示（看独立 host 窗口，不看 MainWindow 树里的 0×0 占位）。</summary>
+    public bool IsOpen => _host is { IsVisible: true };
+
+    /// <summary>
+    /// 确保有一个独立 Owner 窗口承载本控件。
+    /// 从 MainWindow 视觉树摘出后塞进 host，终端 WebView2 HWND 完全不受影响。
+    /// </summary>
+    private void EnsureHost()
+    {
+        if (_host != null) return;
+
+        // 从 MainWindow 树摘出（0×0 占位），再作为 Content 放进独立窗口。
+        if (Parent is Panel panel)
+            panel.Children.Remove(this);
+        else if (Parent is Decorator decorator)
+            decorator.Child = null;
+        else if (Parent is ContentControl cc)
+            cc.Content = null;
+
+        // 恢复正常尺寸（XAML 里 Width/Height=0 只是占位）
+        Width = double.NaN;
+        Height = double.NaN;
+        Visibility = Visibility.Visible;
+        IsHitTestVisible = true;
+
+        // 紧凑可缩放：默认 SizeToContent，用户可拖大；禁止被主窗 0.85 拉伸（UpdateChildWindowsSize 跳过 SizeToContent）。
+        _host = new Window
+        {
+            Title = "工具 / 下载",
+            Content = this,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            MinWidth = 200,
+            MinHeight = 160,
+            MaxWidth = 480,
+            MaxHeight = 520,
+            ResizeMode = ResizeMode.CanResizeWithGrip,
+            WindowStyle = WindowStyle.None,
+            AllowsTransparency = true,
+            ShowInTaskbar = false,
+            Topmost = true,
+            Background = Brushes.Transparent,
+            WindowStartupLocation = WindowStartupLocation.Manual,
+            Tag = "NoAutoResize",
+        };
+        // 用户开始拖缩放后改为 Manual，避免 SizeToContent 抢回尺寸
+        _host.SizeChanged += (_, _) =>
+        {
+            if (_host is { SizeToContent: not SizeToContent.Manual, ActualWidth: > 0 })
+            {
+                // 首次布局后保持紧凑；仅当用户明显拉大时切 Manual
+                if (_host.ActualWidth > 280 || _host.ActualHeight > 360)
+                {
+                    _host.SizeToContent = SizeToContent.Manual;
+                    if (Card != null)
+                    {
+                        Card.Width = double.NaN;
+                        Card.HorizontalAlignment = HorizontalAlignment.Stretch;
+                        Card.VerticalAlignment = VerticalAlignment.Stretch;
+                    }
+                }
+            }
+        };
+        // 关窗只 Hide，复用同一 host；不 Deactivated 自动关（文件夹选择器/结果窗会抢焦点导致闪关）。
+        _host.Closing += (_, e) =>
+        {
+            e.Cancel = true;
+            HideFlyout();
+        };
+        _host.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                HideFlyout();
+                e.Handled = true;
+            }
+        };
+    }
 
     public void Show()
     {
-        Visibility = Visibility.Visible;
+        EnsureHost();
         ReloadSessions();
         ReloadDownloads();
+
+        if (Application.Current.MainWindow is Window owner && owner != _host)
+        {
+            _host!.Owner = owner;
+            // 顶栏靠右：工具按钮附近
+            try
+            {
+                // 紧凑卡片 ~220 宽：贴顶栏工具按钮附近，不盖满半屏
+                double ox = owner.Left + owner.ActualWidth - 260;
+                double oy = owner.Top + 48;
+                if (ox < owner.Left + 12) ox = owner.Left + 12;
+                if (oy < owner.Top + 12) oy = owner.Top + 48;
+                _host.Left = ox;
+                _host.Top = oy;
+            }
+            catch
+            {
+                _host!.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+            }
+        }
+
+        _host!.Show();
+        _host.Activate();
         Focus();
     }
 
-    /// <summary>下载任务列表（浮窗主体内容）。</summary>
+    public void HideFlyout()
+    {
+        if (_host is { IsVisible: true })
+            _host.Hide();
+        OnClose?.Invoke();
+    }
+
     private void ReloadDownloads()
     {
+        if (DlList == null) return;
         DlList.Children.Clear();
         var tasks = DownloadTasks.Items;
         DlEmpty.Visibility = tasks.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -96,17 +199,32 @@ public partial class ToolsPanel : UserControl
         return row;
     }
 
-    public void SetDownloadPath(string p) => DlPathText.Text = p;
+    public void SetDownloadPath(string p)
+    {
+        if (DlPathText != null) DlPathText.Text = p;
+    }
 
     public void ReloadSessions()
     {
+        if (HostCombo == null) return;
         _suppressSelection = true;
         HostCombo.Items.Clear();
         var list = SessionsProvider?.Invoke() ?? new List<(string, bool)>();
-        if (list.Count == 0) { HostCombo.Items.Add("无活动会话"); HostCombo.IsEnabled = false; HostCombo.SelectedIndex = 0; _suppressSelection = false; return; }
+        if (list.Count == 0)
+        {
+            HostCombo.Items.Add("无活动会话");
+            HostCombo.IsEnabled = false;
+            HostCombo.SelectedIndex = 0;
+            _suppressSelection = false;
+            return;
+        }
         HostCombo.IsEnabled = true;
         int activeIdx = 0;
-        for (int i = 0; i < list.Count; i++) { HostCombo.Items.Add(list[i].title); if (list[i].active) activeIdx = i; }
+        for (int i = 0; i < list.Count; i++)
+        {
+            HostCombo.Items.Add(list[i].title);
+            if (list[i].active) activeIdx = i;
+        }
         HostCombo.SelectedIndex = activeIdx;
         _suppressSelection = false;
     }
@@ -117,10 +235,9 @@ public partial class ToolsPanel : UserControl
         OnSelectSession?.Invoke(HostCombo.SelectedIndex);
     }
 
-    private void Close_Click(object sender, RoutedEventArgs e) => OnClose?.Invoke();
+    private void Close_Click(object sender, RoutedEventArgs e) => HideFlyout();
     private void PickDir_Click(object sender, RoutedEventArgs e) => OnPickDownloadDir?.Invoke();
     private void OpenDir_Click(object sender, RoutedEventArgs e) => OnOpenDownloadDir?.Invoke();
-    private void Accel_Click(object sender, RoutedEventArgs e) => OnCustomAccel?.Invoke();
 
     private void Process_Click(object sender, RoutedEventArgs e) => Run("进程管理", CmdProcess);
     private void Network_Click(object sender, RoutedEventArgs e) => Run("网络监控", CmdNetwork);
@@ -135,7 +252,6 @@ public partial class ToolsPanel : UserControl
 
     private async void Run(string label, string cmd) => await RunAsync(label, cmd);
 
-    /// <summary>公开版本：供汉堡菜单「进程管理/网络监控」等外部触发复用（对齐 mac toolsPanelRun）。</summary>
     public async Task RunAsync(string label, string cmd)
     {
         if (OnExec == null) { _result.ShowText("未连接会话", label); return; }
@@ -144,17 +260,19 @@ public partial class ToolsPanel : UserControl
         _result.ShowText(string.IsNullOrEmpty(result) ? $"{label}: 无输出（远端可能缺少该命令）" : result, label);
     }
 
-    private void Root_MouseDown(object sender, MouseButtonEventArgs e) => OnClose?.Invoke();
-    private void Card_MouseDown(object sender, MouseButtonEventArgs e) => e.Handled = true; // 点卡片内部不关闭
-    private void Root_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Escape) OnClose?.Invoke(); }
+    private void Card_MouseDown(object sender, MouseButtonEventArgs e) => e.Handled = true;
+    private void Root_MouseDown(object sender, MouseButtonEventArgs e) => HideFlyout();
+    private void Root_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape) { HideFlyout(); e.Handled = true; }
+    }
 
     private static string? PromptText(string title, string message, string defaultValue)
     {
         var win = new Window
         {
-
-            Background = (System.Windows.Media.Brush)System.Windows.Application.Current.Resources["BrushBg"],
-            Foreground = (System.Windows.Media.Brush)System.Windows.Application.Current.Resources["BrushText"],
+            Background = (Brush)Application.Current.Resources["BrushBg"],
+            Foreground = (Brush)Application.Current.Resources["BrushText"],
             Title = title, Width = 320, Height = 150,
             WindowStartupLocation = WindowStartupLocation.CenterScreen,
             ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false

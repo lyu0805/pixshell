@@ -78,7 +78,7 @@ final class QuickCommandStore {
         return true
     }
 
-    /// 删除分组：里面的命令一并挪回「默认」，**不连带删命令**（删数据得用户明确点删除）。
+    /// 删除分组：里面的命令一并挪回「默认」，**不连带删命令**（需单独执行删除命令）。
     func removeGroup(_ name: String) {
         emptyGroups.removeAll { $0 == name }
         for i in commands.indices where (commands[i].group.isEmpty ? "默认" : commands[i].group) == name {

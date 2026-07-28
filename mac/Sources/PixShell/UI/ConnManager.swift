@@ -21,8 +21,9 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
     var onDuplicate: ((Host) -> Void)?                 // 右键「复制主机」
 
     init() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 580),
-                         styleMask: [.titled, .closable, .fullSizeContentView],
+        // 原 560×580 缩约 1/3 → 380×400；允许用户拖角缩放
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 400),
+                         styleMask: [.titled, .closable, .fullSizeContentView, .resizable],
                          backing: .buffered, defer: false)
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
@@ -31,10 +32,11 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
         w.isOpaque = false
         w.hasShadow = true
         w.isReleasedWhenClosed = false
+        w.minSize = NSSize(width: 300, height: 260)
         w.standardWindowButton(.closeButton)?.isHidden = true
         w.standardWindowButton(.miniaturizeButton)?.isHidden = true
         w.standardWindowButton(.zoomButton)?.isHidden = true
-        
+
         super.init(window: w)
         build()
     }
@@ -93,12 +95,15 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
         ])
         let searchRow = NSStackView(views: [countLabel, searchWrap]); searchRow.spacing = 10
         searchRow.translatesAutoresizingMaskIntoConstraints = false
-        searchWrap.widthAnchor.constraint(greaterThanOrEqualToConstant: 380).isActive = true
+        searchWrap.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+        searchWrap.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        // 列表
+        // 列表：高度跟窗口走（可缩放），不再钉死 440
         listStack.orientation = .vertical; listStack.alignment = .leading; listStack.spacing = 8
         listStack.translatesAutoresizingMaskIntoConstraints = false
         let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = false
+        scroll.scrollerStyle = .legacy
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(listStack); scroll.documentView = doc
@@ -115,7 +120,7 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
             scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
             scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
             scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
-            scroll.heightAnchor.constraint(equalToConstant: 440),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
             listStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 4),
             listStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 4),
@@ -208,7 +213,35 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
         let inner = NSStackView(views: [head]); inner.orientation = .vertical; inner.alignment = .leading; inner.spacing = 6
         inner.translatesAutoresizingMaskIntoConstraints = false
         if !collapsed.contains(name) {
-            for h in hosts { inner.addArrangedSubview(hostRow(h)) }
+            if hosts.count > 3 {
+                // ≥4 台就出分组内滚动条（常显 legacy），外层列表仍可滚
+                let hostsStack = NSStackView(); hostsStack.orientation = .vertical
+                hostsStack.alignment = .leading; hostsStack.spacing = 4
+                hostsStack.translatesAutoresizingMaskIntoConstraints = false
+                for h in hosts { hostsStack.addArrangedSubview(hostRow(h)) }
+                let hostScroll = NSScrollView()
+                hostScroll.drawsBackground = false
+                hostScroll.hasVerticalScroller = true
+                hostScroll.autohidesScrollers = false
+                hostScroll.scrollerStyle = .legacy
+                hostScroll.translatesAutoresizingMaskIntoConstraints = false
+                let hostDoc = FlippedView(); hostDoc.translatesAutoresizingMaskIntoConstraints = false
+                hostDoc.addSubview(hostsStack)
+                hostScroll.documentView = hostDoc
+                NSLayoutConstraint.activate([
+                    hostScroll.heightAnchor.constraint(equalToConstant: 140),
+                    hostDoc.widthAnchor.constraint(equalTo: hostScroll.contentView.widthAnchor),
+                    hostsStack.topAnchor.constraint(equalTo: hostDoc.topAnchor),
+                    hostsStack.leadingAnchor.constraint(equalTo: hostDoc.leadingAnchor),
+                    hostsStack.trailingAnchor.constraint(equalTo: hostDoc.trailingAnchor),
+                    hostsStack.bottomAnchor.constraint(equalTo: hostDoc.bottomAnchor),
+                    hostsStack.widthAnchor.constraint(equalTo: hostDoc.widthAnchor),
+                ])
+                inner.addArrangedSubview(hostScroll)
+                hostScroll.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
+            } else {
+                for h in hosts { inner.addArrangedSubview(hostRow(h)) }
+            }
         }
         box.addSubview(inner)
         NSLayoutConstraint.activate([

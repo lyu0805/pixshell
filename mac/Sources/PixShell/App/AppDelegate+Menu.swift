@@ -16,7 +16,8 @@ extension AppDelegate {
         guard sessions.indices.contains(current) else { return }
         sessions[current].ssh?.close()
         sessions[current].connected = false
-        stopMonitor(); rebuildTabs(); setStatus("已断开")
+        clearSessionSidePanels()   // P1：断开即清 SFTP + 系统信息
+        rebuildTabs(); setStatus("已断开")
     }
     /// 重新连接：**原地复用当前标签**（见 reconnectCurrent 注释——旧实现会多开一个标签页）。
     @objc func menuReconnect() { reconnectCurrent() }
@@ -148,18 +149,98 @@ extension AppDelegate {
     /// 现在有 KeyManager 了（生成/复制公钥/用于此主机/删除），必须开它，
     /// 否则点「密钥管理器」弹出来的是连接管理器，名实不符。
     @objc func menuKeyMgr() { openKeyManager() }
-    // 复制/粘贴走 SwiftTerm 自带实现（含选区处理）
+    // 复制/粘贴：优先跟当前焦点走。命令板/命令框聚焦时 ⌘V 必须进输入框，
+    // 绝不能因为菜单项 target=self 就把剪贴板硬塞进终端（用户 P0：粘贴命令却进终端）。
     @objc func termCopy() {
+        if pasteTargetIsCommandBox() {
+            NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
+            return
+        }
         guard sessions.indices.contains(current) else { return }
         sessions[current].termView.copy(self)
     }
     @objc func termPaste() {
+        if pasteIntoCommandBoxIfFocused() { return }
         guard sessions.indices.contains(current) else { return }
         sessions[current].termView.paste(self)
     }
     @objc func termClear() {
         guard sessions.indices.contains(current) else { return }
         sessions[current].termView.feed(byteArray: ArraySlice(Array("\u{1b}[2J\u{1b}[H".utf8)))
+    }
+
+    /// 当前第一响应者是否是命令板编辑器 / 底栏命令框（含其内部 field editor）。
+    private func pasteTargetIsCommandBox() -> Bool {
+        guard let fr = window.firstResponder else { return false }
+        if let ed = cmdPanel?.editor {
+            if fr === ed { return true }
+            // NSTextField / NSTextView 编辑时 firstResponder 经常是内部 field editor
+            if let tv = fr as? NSTextView, tv.delegate as AnyObject? === ed { return true }
+            if let v = fr as? NSView, v.isDescendant(of: ed) { return true }
+            if let scroll = ed.enclosingScrollView, let v = fr as? NSView, v.isDescendant(of: scroll) { return true }
+        }
+        if let input = cmdInput {
+            if fr === input { return true }
+            if let v = fr as? NSView, v.isDescendant(of: input) { return true }
+            // field editor 属于 window，用 currentEditor 判断
+            if let fe = input.currentEditor(), fr === fe { return true }
+        }
+        return false
+    }
+
+    /// 命令输入聚焦时：把剪贴板文本插入命令框，返回 true 表示已处理。
+    @discardableResult
+    private func pasteIntoCommandBoxIfFocused() -> Bool {
+        guard pasteTargetIsCommandBox() else { return false }
+        let clip = NSPasteboard.general.string(forType: .string) ?? ""
+        guard !clip.isEmpty else { return true }
+
+        if let ed = cmdPanel?.editor, window.firstResponder.map({ fr -> Bool in
+            if fr === ed { return true }
+            if let v = fr as? NSView, let scroll = ed.enclosingScrollView { return v.isDescendant(of: scroll) || v.isDescendant(of: ed) }
+            return false
+        }) == true {
+            // 多行粘贴：整段进编辑器（保留换行，用户可再点发送）
+            if ed.shouldChangeText(in: ed.selectedRange(), replacementString: clip) {
+                ed.replaceCharacters(in: ed.selectedRange(), with: clip)
+                ed.didChangeText()
+            } else {
+                // 兜底：直接改 string + 光标到末尾
+                let ns = ed.string as NSString
+                let sel = ed.selectedRange()
+                ed.string = ns.replacingCharacters(in: sel, with: clip)
+                let loc = sel.location + (clip as NSString).length
+                ed.setSelectedRange(NSRange(location: loc, length: 0))
+            }
+            return true
+        }
+        if let input = cmdInput {
+            let fe = input.currentEditor()
+            if window.firstResponder === input || window.firstResponder === fe {
+                let ns = input.stringValue as NSString
+                let sel = fe?.selectedRange ?? NSRange(location: ns.length, length: 0)
+                // 单行框：换行压成空格，避免把多行命令拆飞
+                let oneLine = clip.replacingOccurrences(of: "\r\n", with: " ")
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .replacingOccurrences(of: "\r", with: " ")
+                input.stringValue = ns.replacingCharacters(in: sel, with: oneLine)
+                let loc = sel.location + (oneLine as NSString).length
+                fe?.selectedRange = NSRange(location: loc, length: 0)
+                return true
+            }
+        }
+        // firstResponder 判定没命中但命令板可见：仍优先塞进命令板（用户说的是「命令输入框」）
+        if let ed = cmdPanel?.editor, cmdPanel?.isHidden == false {
+            let ns = ed.string as NSString
+            let sel = ed.selectedRange()
+            let range = sel.length >= 0 ? sel : NSRange(location: ns.length, length: 0)
+            ed.string = ns.replacingCharacters(in: range, with: clip)
+            let loc = range.location + (clip as NSString).length
+            ed.setSelectedRange(NSRange(location: loc, length: 0))
+            window.makeFirstResponder(ed)
+            return true
+        }
+        return false
     }
 
     // MARK: 代理
@@ -173,6 +254,7 @@ extension AppDelegate {
         let a = NSAlert.pix()
         a.messageText = "设置"
         a.addButton(withTitle: "完成")
+        a.addButton(withTitle: "取消")
 
         let kinds: [Theme.Kind] = [.dark, .light, .ink, .retro]
         let themeBox = NSPopUpButton(); themeBox.addItems(withTitles: kinds.map { $0.display })
@@ -216,8 +298,10 @@ extension AppDelegate {
         grid.frame = NSRect(x: 0, y: 0, width: 360, height: 186)
         a.accessoryView = grid
 
-        a.beginSheetModal(for: window) { [weak self] _ in
+        a.beginSheetModal(for: window) { [weak self] resp in
             guard let self = self else { return }
+            // 仅「完成」落盘；「取消」直接丢弃
+            guard resp == .alertFirstButtonReturn else { return }
             self.highlightEnabled = (hl.state == .on)
             if let n = Double(sizeField.stringValue) {
                 let size = CGFloat(max(9, min(24, n)))

@@ -24,9 +24,13 @@ public partial class ConnectionManagerWindow : Window
     /// <summary>删除分组：组内主机移回"默认"，不删主机。</summary>
     public Action<string>? OnDeleteGroup { get; set; }
 
+    /// <summary>已折叠的分组名（对齐 mac ConnManager.collapsed）。</summary>
+    private readonly HashSet<string> _collapsed = new(StringComparer.Ordinal);
+
     public ConnectionManagerWindow()
     {
         InitializeComponent();
+        SourceInitialized += (s, e) => WindowInterop.ApplyBackdrop(this, ThemeManager.IsDark);
     }
 
     public new void Show() { Reload(); base.Show(); Focus(); }
@@ -44,35 +48,157 @@ public partial class ConnectionManagerWindow : Window
             });
             return;
         }
-        foreach (var group in hosts.GroupBy(h => string.IsNullOrWhiteSpace(h.Group) ? "默认" : h.Group))
+        foreach (var group in hosts.GroupBy(h => string.IsNullOrWhiteSpace(h.Group) ? "默认" : h.Group)
+                                   .OrderBy(g => g.Key == "默认" ? 1 : 0)
+                                   .ThenBy(g => g.Key, StringComparer.Ordinal))
         {
-            ListPanel.Children.Add(BuildGroupHeader(group.Key, group.Count()));
-            foreach (var h in group) ListPanel.Children.Add(BuildRow(h));
+            var name = group.Key;
+            var list = group.ToList();
+
+            // Create a Border representing the group card, styled matching Theme.bg2 / Theme.border
+            var groupBorder = new Border
+            {
+                Background = (Brush)Application.Current.Resources["BrushBg2"],
+                BorderBrush = (Brush)Application.Current.Resources["BrushBorder"],
+                BorderThickness = new Thickness(1),
+                CornerRadius = (CornerRadius)Application.Current.Resources["RadiusSm"],
+                Padding = new Thickness(10, 8, 10, 8),
+                Margin = new Thickness(0, 0, 0, 10)
+            };
+
+            var groupStack = new StackPanel { Orientation = Orientation.Vertical };
+
+            // Add Header
+            var header = BuildGroupHeader(name, list.Count);
+            groupStack.Children.Add(header);
+
+            if (!_collapsed.Contains(name))
+            {
+                // 分组内独立滚动：MaxHeight 压矮，Visible 强制出滑块轨道
+                var hostsScroll = new ScrollViewer
+                {
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
+                    HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                    Margin = new Thickness(0, 6, 0, 0),
+                    MaxHeight = 140, // 约 4 行主机；再矮一点保证多主机时一定出滑块
+                    CanContentScroll = false,
+                    PanningMode = PanningMode.VerticalOnly
+                };
+
+                // Add mouse wheel redirection to bubble scroll to parent ScrollViewer when boundaries are hit
+                hostsScroll.PreviewMouseWheel += (sender, e) =>
+                {
+                    if (sender is ScrollViewer sv)
+                    {
+                        if (sv.ScrollableHeight <= 0)
+                        {
+                            var parent = FindAncestor<ScrollViewer>(sv);
+                            if (parent != null)
+                            {
+                                e.Handled = true;
+                                var eventArg = new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta)
+                                {
+                                    RoutedEvent = UIElement.MouseWheelEvent,
+                                    Source = sv
+                                };
+                                parent.RaiseEvent(eventArg);
+                            }
+                        }
+                        else
+                        {
+                            bool isAtTop = sv.VerticalOffset <= 0;
+                            bool isAtBottom = sv.VerticalOffset >= sv.ScrollableHeight;
+                            if ((e.Delta > 0 && isAtTop) || (e.Delta < 0 && isAtBottom))
+                            {
+                                var parent = FindAncestor<ScrollViewer>(sv);
+                                if (parent != null)
+                                {
+                                    e.Handled = true;
+                                    var eventArg = new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta)
+                                    {
+                                        RoutedEvent = UIElement.MouseWheelEvent,
+                                        Source = sv
+                                    };
+                                    parent.RaiseEvent(eventArg);
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var hostsStack = new StackPanel { Orientation = Orientation.Vertical };
+                foreach (var h in list)
+                {
+                    hostsStack.Children.Add(BuildRow(h));
+                }
+
+                hostsScroll.Content = hostsStack;
+                groupStack.Children.Add(hostsScroll);
+            }
+
+            groupBorder.Child = groupStack;
+            ListPanel.Children.Add(groupBorder);
         }
     }
 
-    /// <summary>分组标题行：名称 + 数量 + 重命名/删除（"默认"分组是隐式的，不提供重命名/删除）。</summary>
+    /// <summary>分组标题行：▶/▼ + 名称 + 数量 + 重命名/删除。点击标题折叠/展开（对齐 mac）。</summary>
     private UIElement BuildGroupHeader(string name, int count)
     {
-        var panel = new DockPanel { Margin = new Thickness(4, 10, 0, 4), LastChildFill = false };
-        var title = new TextBlock
+        var collapsed = _collapsed.Contains(name);
+        var panel = new DockPanel
         {
-            Text = $"{name} ({count})", FontWeight = FontWeights.Bold, FontSize = 12,
-            Foreground = (Brush)Application.Current.Resources["BrushAccent"], VerticalAlignment = VerticalAlignment.Center
+            Margin = new Thickness(4, 10, 0, 4),
+            LastChildFill = true,
+            Cursor = Cursors.Hand,
+            Background = Brushes.Transparent, // 让整行可点
         };
-        panel.Children.Add(title);
+        panel.MouseLeftButtonUp += (_, e) =>
+        {
+            // 点按钮时不折叠
+            if (e.OriginalSource is DependencyObject d && FindAncestor<Button>(d) != null) return;
+            if (_collapsed.Contains(name)) _collapsed.Remove(name); else _collapsed.Add(name);
+            Reload();
+        };
+
         if (name != "默认")
         {
-            var renameBtn = new Button { Content = "重命名", Style = (Style)Application.Current.Resources["PillButton"], Margin = new Thickness(10, 0, 0, 0) };
-            renameBtn.Click += (_, _) => RenameGroup(name);
             var delBtn = new Button { Content = "删除分组", Tag = "Danger", Style = (Style)Application.Current.Resources["PillButton"], Margin = new Thickness(6, 0, 0, 0) };
             delBtn.Click += (_, _) => DeleteGroup(name);
+            var renameBtn = new Button { Content = "重命名", Style = (Style)Application.Current.Resources["PillButton"], Margin = new Thickness(10, 0, 0, 0) };
+            renameBtn.Click += (_, _) => RenameGroup(name);
             DockPanel.SetDock(delBtn, Dock.Right);
             DockPanel.SetDock(renameBtn, Dock.Right);
-            panel.Children.Add(renameBtn);
             panel.Children.Add(delBtn);
+            panel.Children.Add(renameBtn);
         }
+
+        var arrow = new TextBlock
+        {
+            Text = collapsed ? "▶" : "▼", FontSize = 10, Width = 14,
+            Foreground = (Brush)Application.Current.Resources["BrushMuted"],
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0),
+        };
+        var title = new TextBlock
+        {
+            Text = $"📁 {name}  ({count})", FontWeight = FontWeights.Bold, FontSize = 12,
+            Foreground = (Brush)Application.Current.Resources["BrushAccent"],
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var left = new StackPanel { Orientation = Orientation.Horizontal };
+        left.Children.Add(arrow);
+        left.Children.Add(title);
+        panel.Children.Add(left);
         return panel;
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? start) where T : DependencyObject
+    {
+        while (start != null)
+        {
+            if (start is T hit) return hit;
+            start = VisualTreeHelper.GetParent(start);
+        }
+        return null;
     }
 
     private void NewGroup_Click(object sender, RoutedEventArgs e)
@@ -142,13 +268,31 @@ public partial class ConnectionManagerWindow : Window
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        var info = new StackPanel();
-        info.Children.Add(new TextBlock { Text = h.Display, FontWeight = FontWeights.SemiBold, Foreground = (Brush)Application.Current.Resources["BrushText"] });
-        info.Children.Add(new TextBlock
+        var info = new Grid();
+        info.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        info.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var nameTxt = new TextBlock
         {
-            Text = h.Subtitle, FontSize = 11, FontFamily = (FontFamily)Application.Current.Resources["FontMono"],
-            Foreground = (Brush)Application.Current.Resources["BrushMuted"]
-        });
+            Text = h.Display,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = (Brush)Application.Current.Resources["BrushText"],
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        Grid.SetRow(nameTxt, 0);
+        info.Children.Add(nameTxt);
+
+        var subTxt = new TextBlock
+        {
+            Text = h.Subtitle,
+            FontSize = 11,
+            FontFamily = (FontFamily)Application.Current.Resources["FontMono"],
+            Foreground = (Brush)Application.Current.Resources["BrushMuted"],
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        Grid.SetRow(subTxt, 1);
+        info.Children.Add(subTxt);
+
         Grid.SetColumn(info, 0);
 
         var btns = new StackPanel { Orientation = Orientation.Horizontal };

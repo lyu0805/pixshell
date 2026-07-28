@@ -22,24 +22,23 @@ enum Theme {
         }
     }
 
-    /// 当前主题。优先级：PIXSHELL_THEME 环境变量 > 上次保存的选择 > 默认深色。
-    /// 老仓库同样把 settings.theme 持久化，切换后重启要记得住。
+    /// 当前主题。优先级：PIXSHELL_THEME 环境变量 > 上次保存的选择 > 默认水墨。
+    /// 产品默认主题固定为水墨，禁止首启随机落到深色/浅色。
     static var kind: Kind = {
         if let env = ProcessInfo.processInfo.environment["PIXSHELL_THEME"] {
-            return Kind(rawValue: env) ?? (env == "light" ? .light : .ink)
+            return Kind(rawValue: env) ?? .ink
         }
         if let saved = UserDefaults.standard.string(forKey: "pixshell.theme") {
             return Kind(rawValue: saved) ?? .ink
         }
         return .ink
-
     }() {
         didSet { UserDefaults.standard.set(kind.rawValue, forKey: "pixshell.theme") }
     }
 
     /// 用户选定的「浅色」是哪一套：浅色 / 水墨 / 复古。
     /// 在设置里选了水墨或复古，就等于把它**定义成这台机器的浅色主题**；
-    /// 之后顶栏按钮只在 深色 ⇄ 这一套 之间切，不再挨个轮一遍（用户明确要求）。
+    /// 之后顶栏按钮只在 深色 ⇄ 这一套 之间切，不再挨个轮一遍。
     static var lightKind: Kind = {
         if let s = UserDefaults.standard.string(forKey: "pixshell.lightKind"),
            let k = Kind(rawValue: s), k != .dark { return k }

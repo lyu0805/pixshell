@@ -39,7 +39,9 @@ public partial class MainWindow : IBridgeHost
             list.Add(new Dictionary<string, object?>
             {
                 ["session"] = i,
-                ["title"] = s.Title,
+                // 对外暴露用户命名（TabTitle），与标签栏一致；OSC 系统标题不进 bridge。
+                ["title"] = s.TabTitle,
+                ["oscTitle"] = s.Title,
                 ["host"] = s.SourceHost?.Host ?? s.HostName,
                 ["username"] = s.SourceHost?.Username ?? "",
                 ["connected"] = s.Connected,
@@ -67,7 +69,7 @@ public partial class MainWindow : IBridgeHost
         while (waited <= 20.0)
         {
             if (idx < Sessions.Items.Count && Sessions.Items[idx] is TabItem { Tag: TerminalSession s } && s.Connected)
-                return new Dictionary<string, object?> { ["session"] = idx, ["title"] = s.Title };
+                return new Dictionary<string, object?> { ["session"] = idx, ["title"] = s.TabTitle };
             await Task.Delay(250);
             waited += 0.25;
         }

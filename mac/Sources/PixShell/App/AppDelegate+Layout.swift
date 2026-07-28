@@ -17,6 +17,13 @@ extension AppDelegate {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
+        // GPU 优先 + 可回落：仅在非软件兜底路径开 layer 异步绘制；
+        // 回落路径仍 wantsLayer（AppKit 控件需要），但不强开 drawsAsynchronously。
+        window.contentView?.wantsLayer = true
+        if !AppDelegate._gpuUsingFallback {
+            window.contentView?.layerContentsRedrawPolicy = .onSetNeedsDisplay
+            window.contentView?.layer?.drawsAsynchronously = true
+        }
         window.setFrameAutosaveName("PixShell-Main-v4")  // 恢复 800×600 默认；换名避免 v3 的 1024 autosave 覆盖
         window.center()
         installContent()
@@ -32,7 +39,13 @@ extension AppDelegate {
         window.backgroundColor = .clear
 
         // ArrowRootView：给整窗铺箭头光标兜底（见 UI/CursorFix.swift —— SwiftTerm 会把指针钉成 I 型）
-        let root = ArrowRootView(frame: rect); root.wantsLayer = true
+        // wantsLayer 常开；drawsAsynchronously 仅 GPU 优先路径（软件兜底时关掉，防花屏）
+        let root = ArrowRootView(frame: rect)
+        root.wantsLayer = true
+        if !AppDelegate._gpuUsingFallback {
+            root.layerContentsRedrawPolicy = .onSetNeedsDisplay
+            root.layer?.drawsAsynchronously = true
+        }
         
         // 0. 国画底图层 (仅在水墨主题下可见)
         let bgImgView = NSImageView(frame: rect)
@@ -180,8 +193,8 @@ extension AppDelegate {
         ])
         monitor.onSysInfo = { [weak self] in self?.openSysInfo() }
 
-        // 密钥管理（生成 / 复制公钥 / 用于此主机 / 删除）
-        keyManager = KeyManager(frame: .zero); keyManager.isHidden = true
+        // 密钥管理（独立弹出窗口，对齐 ConnManager）
+        keyManager = KeyManager()
         keyManager.onUseKey = { [weak self] path in
             guard let self = self else { return }
             // 「用于此主机」：写回当前会话主机的 keyPath，下次连接就走私钥
@@ -193,15 +206,8 @@ extension AppDelegate {
             self.setStatus("已把密钥设为 \(h.display) 的登录私钥")
             self.quickConnect?.reload(); self.connMgr?.reload()
         }
-        root.addSubview(keyManager)
-        NSLayoutConstraint.activate([
-            keyManager.topAnchor.constraint(equalTo: topBar.bottomAnchor),
-            keyManager.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            keyManager.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            keyManager.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-        ])
 
-        // 工具面板（宫格图标）：主机下拉 + 5 个工具 + 下载目录（对齐老仓库 #toolsPanel）
+        // 工具面板（宫格图标）：主机下拉 + 工具 + 下载目录（对齐老仓库 #toolsPanel）
         toolsPanel = ToolsPanel(frame: .zero); toolsPanel.isHidden = true
         toolsPanel.sessionsProvider = { [weak self] in
             guard let self = self else { return [] }
@@ -216,10 +222,6 @@ extension AppDelegate {
         toolsPanel.onOpenDownloadDir = { [weak self] in
             guard let self = self else { return }
             NSWorkspace.shared.open(self.downloadDir)
-        }
-        toolsPanel.onCustomAccel = { [weak self] in
-            guard let self = self, self.sessions.indices.contains(self.current) else { self?.openConnMgr(); return }
-            self.editHostDirect(self.sessions[self.current].host)
         }
         // 结束进程（工具面板进程表）：发 SIGTERM 后自动刷新列表
         toolsPanel.onKill = { [weak self] pid, sig in
@@ -338,7 +340,7 @@ extension AppDelegate {
 
         // 右：月亮(主题) / 网格 / 汉堡
         let moon = IconButton(symbol: darkTheme ? "moon.fill" : "sun.max.fill", tooltip: "主题", target: self, action: #selector(toggleTheme))
-        // 宫格 = 工具面板（路由追踪/进程管理/网络监控/速度测试/自定义加速 + 下载目录），非快速连接
+        // 宫格 = 工具面板（路由追踪/进程管理/网络监控/速度测试 + 下载目录），非快速连接
         let grid = IconButton(symbol: "square.grid.2x2", tooltip: "工具", target: self, action: #selector(openTools))
         menuBtn = IconButton(symbol: "line.3.horizontal", tooltip: "菜单", target: self, action: #selector(openMenu))
         let menu = menuBtn!
@@ -476,6 +478,17 @@ extension AppDelegate {
         quickConnect.onEdit = { [weak self] h in self?.editHostDirect(h) }
         quickConnect.onNew = { [weak self] in self?.addHost() }
         quickConnect.onClear = { [weak self] in self?.store.clearRecents() }
+        // 有会话时从 QC 返回：一键回到当前标签（对齐 Win PreviewMouseLeftButtonDown 收起 QC）
+        quickConnect.onBack = { [weak self] in
+            guard let self = self else { return }
+            if self.sessions.indices.contains(self.current) {
+                self.selectSession(self.current)
+            } else if !self.sessions.isEmpty {
+                self.selectSession(0)
+            } else {
+                self.quickConnect?.isHidden = true
+            }
+        }
         center.addSubview(quickConnect)
         NSLayoutConstraint.activate([
             termContainer.topAnchor.constraint(equalTo: center.topAnchor),
@@ -491,27 +504,99 @@ extension AppDelegate {
         ])
         placeholder.isHidden = true   // 落地页取代占位文案
 
-        // 命令栏（在 文件/命令 之上）+ 拖拽条 + 文件/命令坞（可折叠、可拖高）
+        // 命令栏（在 文件/命令 之上，始终可见，不随坞折叠消失）+ 拖拽条 + 文件/命令坞（可折叠、可拖高）
+        // 截图 P0：mac 缺「命令 / 输入 / 历史 / 发送」这一行 —— 之前误并到命令板，落地页/会话页都看不见。
+        let cmdBar = buildCommandBar()
         let dockResizer = buildDockResizer()
         let dock = buildBottomDock()
         dock.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(center); container.addSubview(dockResizer); container.addSubview(dock)
+        container.addSubview(center)
+        container.addSubview(cmdBar)
+        container.addSubview(dockResizer)
+        container.addSubview(dock)
         let centerMin = center.heightAnchor.constraint(greaterThanOrEqualToConstant: 120); centerMin.priority = .defaultHigh
         NSLayoutConstraint.activate([
             center.topAnchor.constraint(equalTo: container.topAnchor),
             center.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             center.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             centerMin,
-            dockResizer.topAnchor.constraint(equalTo: center.bottomAnchor),
+            cmdBar.topAnchor.constraint(equalTo: center.bottomAnchor),
+            cmdBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            cmdBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            dockResizer.topAnchor.constraint(equalTo: cmdBar.bottomAnchor),
             dockResizer.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             dockResizer.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            dockResizer.heightAnchor.constraint(equalToConstant: 1),  // 同上：细线，不占 UI 空间
+            dockResizer.heightAnchor.constraint(equalToConstant: 4),  // 可拖命中区 4pt（原 1pt 几乎点不到）
             dock.topAnchor.constraint(equalTo: dockResizer.bottomAnchor),
             dock.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             dock.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             dock.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         return container
+    }
+
+    /// 命令栏：`命令` 标签 + 单行输入 + 历史 + 发送 + 坞折叠开关。对齐 Win MainWindow 命令栏。
+    func buildCommandBar() -> NSView {
+        let bar = NSView()
+        bar.wantsLayer = true
+        bar.layer?.backgroundColor = Theme.bg.cgColor
+        bar.translatesAutoresizingMaskIntoConstraints = false
+
+        let lab = NSTextField(labelWithString: "命令")
+        lab.font = Theme.ui(12, .medium); lab.textColor = Theme.muted
+        lab.translatesAutoresizingMaskIntoConstraints = false
+
+        let field = NSTextField()
+        field.isBordered = true
+        field.isBezeled = true
+        field.bezelStyle = .roundedBezel
+        field.drawsBackground = true
+        field.backgroundColor = Theme.bg2
+        field.textColor = Theme.text
+        field.font = Theme.mono(12)
+        field.placeholderString = "输入命令，Enter 发送；↑↓ 历史；Tab 补全路径"
+        field.focusRingType = .none
+        field.delegate = self
+        field.target = self
+        field.action = #selector(sendCommandBox)
+        field.translatesAutoresizingMaskIntoConstraints = false
+        cmdInput = field
+
+        let histBtn = PillButton("历史", style: .secondary, hPad: 12, height: 26,
+                                 target: self, action: #selector(showCommandHistory(_:)))
+        let sendBtn = PillButton("发送", style: .primary, hPad: 14, height: 26,
+                                 target: self, action: #selector(sendCommandBox))
+        dockToggleBtn = IconButton(symbol: dockCollapsed ? "chevron.up" : "chevron.down",
+                                   tooltip: "隐藏/显示文件/命令",
+                                   target: self, action: #selector(toggleDock))
+
+        let right = NSStackView(views: [histBtn, sendBtn, dockToggleBtn!])
+        right.orientation = .horizontal; right.spacing = 8; right.alignment = .centerY
+        right.translatesAutoresizingMaskIntoConstraints = false
+
+        bar.addSubview(lab); bar.addSubview(field); bar.addSubview(right)
+        NSLayoutConstraint.activate([
+            bar.heightAnchor.constraint(equalToConstant: 40),
+            lab.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
+            lab.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            field.leadingAnchor.constraint(equalTo: lab.trailingAnchor, constant: 10),
+            field.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            field.heightAnchor.constraint(equalToConstant: 28),
+            right.leadingAnchor.constraint(equalTo: field.trailingAnchor, constant: 8),
+            right.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            right.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+        ])
+        // 顶部分隔线
+        let sep = NSView(); sep.wantsLayer = true; sep.layer?.backgroundColor = Theme.border.cgColor
+        sep.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(sep)
+        NSLayoutConstraint.activate([
+            sep.topAnchor.constraint(equalTo: bar.topAnchor),
+            sep.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
+            sep.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+            sep.heightAnchor.constraint(equalToConstant: 1),
+        ])
+        return bar
     }
 
     // MARK: 底部坞：单行 [文件][命令] + 文件操作图标(与 tab 平行) / 面板体；整坞可折叠到 0
@@ -546,7 +631,8 @@ extension AppDelegate {
         }
         cmdPanel.onShowHistory = { [weak self] v in self?.showCommandHistory(v) }
         sftpPanel.onPathChange = { [weak self] p in self?.dockPathLabel?.stringValue = p }
-        sftpPanel.onUserNavigate = { [weak self] p in self?.syncTerminalCd(to: p) }   // SFTP 进目录 → 终端 cd
+        // P0：SFTP 独立于终端，禁止 onUserNavigate → 终端 cd 联动
+        sftpPanel.onUserNavigate = nil
         sftpPanel.proxyProvider = { [weak self] pid in
             guard let self = self, !pid.isEmpty else { return nil }
             return self.proxyStore.list().first { $0.id == pid }
@@ -772,6 +858,8 @@ extension AppDelegate {
     @objc func newQuickTab() { showQuickConnect() }
     func showQuickConnect() {
         guard let qc = quickConnect else { return }
+        // 有活动会话时显示返回箭头；无会话（启动/关完最后标签）不显示
+        qc.showsBack = !sessions.isEmpty
         qc.reload(); qc.isHidden = false
         qc.superview?.addSubview(qc)   // 置顶于终端之上
         collapseChrome()               // 落地页默认：收起侧栏 + 收起文件/命令坞（对齐老仓库）
@@ -803,7 +891,10 @@ extension AppDelegate {
         if toolsPanel.isOpen { toolsPanel.isHidden = true; return }
         Log.info("打开工具浮窗", "ui")
         toolsPanel.setDownloadPath(downloadDir.path); toolsPanel.show()
-        toolsPanel.superview?.addSubview(toolsPanel)
+        // 强制置顶：addSubview 到最前，避免被终端/其它弹层盖住
+        toolsPanel.superview?.addSubview(toolsPanel, positioned: .above, relativeTo: nil)
+        toolsPanel.wantsLayer = true
+        toolsPanel.layer?.zPosition = 1000
     }
     func pickDownloadDir() {
         let p = NSOpenPanel(); p.canChooseFiles = false; p.canChooseDirectories = true; p.canCreateDirectories = true
@@ -821,8 +912,6 @@ extension AppDelegate {
             ("连接", #selector(menuConnect)), ("断开", #selector(menuDisconnect)), ("重新连接", #selector(menuReconnect)),
             (nil, nil),
             ("导入主机…", #selector(importHosts)), ("导出主机…", #selector(exportHosts)),
-            (nil, nil),
-            ("设置…", #selector(openSettings)),
         ]))
         m.addItem(sub("查看", [
             ("显示/隐藏侧栏", #selector(toggleSidebar)), ("显示/隐藏底栏", #selector(toggleDock)),
@@ -831,12 +920,21 @@ extension AppDelegate {
             ("系统信息", #selector(openSysInfo)), ("进程管理", #selector(menuToolProcess)), ("网络监控", #selector(menuToolNetwork)),
         ]))
         m.addItem(sub("选项", [
-            ("设置…", #selector(openSettings)), ("代理服务器…", #selector(openProxy)), ("自定义加速", #selector(menuCustomAccel)),
-            (nil, nil),
-            ("复制", #selector(termCopy)), ("粘贴", #selector(termPaste)), ("清屏", #selector(termClear)),
+            ("设置…", #selector(openSettings)), ("代理服务器…", #selector(openProxy)),
         ]))
         m.addItem(.separator())
         m.addItem(item("密钥管理器", #selector(menuKeyMgr)))
+        // AI 对接：后端 AgentBridge / AgentCLI / AgentMCP 已就绪，汉堡菜单提供一键入口
+        m.addItem(sub("AI 对接", [
+            ("接入 AI 工具…", #selector(openAIIntegration)),
+            (nil, nil),
+            ("复制 CLI 用法", #selector(copyCLIUsage)),
+            ("复制 MCP 注册命令", #selector(copyMCPRegister)),
+            ("复制 Desktop MCP 配置", #selector(copyMCPDesktop)),
+            (nil, nil),
+            ("打开 CLI 脚本目录", #selector(openCLIBinDir)),
+            ("重新安装 CLI / MCP", #selector(reinstallCLIBridge)),
+        ]))
         m.addItem(sub("云端同步", [
             ("备份选项配置…", #selector(openBackup)),
             (nil, nil),
@@ -848,7 +946,9 @@ extension AppDelegate {
         m.addItem(item("软件更新", #selector(checkUpdate)))
         m.addItem(.separator())
         m.addItem(sub("帮助", [
-            ("关于 PixShell", #selector(menuAbout)), ("项目仓库", #selector(menuRepo)),
+            ("关于 PixShell", #selector(menuAbout)),
+            ("接入 AI 工具…", #selector(openAIIntegration)),
+            ("项目仓库", #selector(menuRepo)),
         ]))
         if let btn = menuBtn { m.popUp(positioning: nil, at: NSPoint(x: 0, y: btn.bounds.height + 4), in: btn) }
     }
@@ -945,7 +1045,6 @@ extension AppDelegate {
     /// 打开密钥管理（菜单 文件 → 密钥管理…）
     @objc func openKeyManager() {
         Log.info("打开密钥管理", "ui")
-        keyManager.superview?.addSubview(keyManager)
         keyManager.show()
     }
 }

@@ -32,6 +32,9 @@ final class ToolResultWindow: NSObject, NSTableViewDataSource, NSTableViewDelega
         w.title = "工具"
         w.isReleasedWhenClosed = false
         w.minSize = NSSize(width: 520, height: 320)
+        // 浮在主窗终端之上，避免被 SwiftTerm 视图/主窗抢层级（截图 P0：工具框被终端遮挡）
+        w.level = .floating
+        w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
 
         let root = NSView()
         root.wantsLayer = true
@@ -86,6 +89,16 @@ final class ToolResultWindow: NSObject, NSTableViewDataSource, NSTableViewDelega
     private func present(_ label: String) {
         ensureWindow()
         titleLabel.stringValue = label
+        if let main = NSApp.mainWindow, let w = window {
+            // 相对主窗偏移一点，避免完全重叠；保证每次都在主窗之上
+            let mf = main.frame
+            if !w.isVisible {
+                w.setFrameOrigin(NSPoint(x: mf.midX - w.frame.width / 2,
+                                         y: mf.midY - w.frame.height / 2 + 40))
+            }
+        }
+        window?.level = .floating
+        window?.orderFrontRegardless()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

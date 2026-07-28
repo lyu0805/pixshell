@@ -291,20 +291,19 @@ extension AppDelegate {
     func selectSession(_ i: Int) {
         guard i >= 0, i < sessions.count else { return }
         current = i
+        // 先立刻藏 QC（返回箭头 / 点标签回会话），避免动画期间再点无效
+        quickConnect?.isHidden = true
+        quickConnect?.showsBack = false
         termContainer.subviews.forEach { if $0 !== placeholder { $0.removeFromSuperview() } }
         placeholder.isHidden = true
-        quickConnect?.isHidden = true   // 有活动会话 → 隐藏落地页，显示终端
-        
+
+        // 从 QC 回来或同标签重选：短淡入即可，别用 0.6~0.85s ripple 卡点击
         let transition = CATransition()
-        transition.type = CATransitionType(rawValue: "rippleEffect")
-        if TermTheme.schemeId == "ink_wash" {
-            transition.duration = 0.85
-        } else {
-            transition.duration = 0.6
-        }
+        transition.type = .fade
+        transition.duration = 0.15
         transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         termContainer.layer?.add(transition, forKey: "sessionSwitch")
-        
+
         let tv = sessions[i].termView
         tv.frame = termContainer.bounds; tv.autoresizingMask = [.width, .height]
         termContainer.addSubview(tv)
@@ -317,12 +316,15 @@ extension AppDelegate {
 
     func closeSession(_ i: Int) {
         guard i >= 0, i < sessions.count else { return }
+        let wasActive = i == current
         sessions[i].ssh?.close(); sessions[i].termView.removeFromSuperview(); sessions.remove(at: i)
         if sessions.isEmpty {
-            current = -1; stopMonitor()
-            sftpPanel?.disconnect()
+            current = -1
+            clearSessionSidePanels()   // P1：关最后标签 → 清 SFTP + 系统信息
             window.title = "PixShell"; rebuildTabs(); showQuickConnect()   // 无会话 → 回到落地页
         } else {
+            // 关掉的是当前标签时，侧栏/SFTP 先清，再由 selectSession 按新活动会话重连
+            if wasActive { clearSessionSidePanels() }
             selectSession(min(i, sessions.count - 1))
         }
     }
@@ -373,7 +375,12 @@ extension AppDelegate {
         }
         tabBar.setItems(pills)
     }
-    @objc func tabClicked(_ sender: NSButton) { selectSession(sender.tag) }
+    @objc func tabClicked(_ sender: NSButton) {
+        // 一次点击必须立刻回会话（尤其 QC 盖住终端时）；禁止要连点多次
+        let idx = sender.tag
+        guard sessions.indices.contains(idx) else { return }
+        selectSession(idx)
+    }
     @objc func tabClose(_ sender: NSButton) { closeSession(sender.tag) }
 
     /// 标签右键菜单（老仓库交互文档 §1：切换/重连/再开/关闭/关闭其他）
@@ -529,7 +536,7 @@ extension AppDelegate {
     free -m 2>/dev/null | awk '/^Swap:/{if($2>0)printf "swap=%.0f|%.1fG/%.1fG\\n",$3*100/$2,$3/1024,$2/1024; else printf "swap=0|0/0\\n"}'
     printf "disks="; df -h 2>/dev/null | awk '$1 ~ /^\\/dev/{printf "%s|%s|%s;",$6,$4,$2}'; echo
     printf "procs="; ps aux 2>/dev/null | sed 1d | sort -rk4 | awk 'NR<=5{c=$11; sub(/.*\\//,"",c); printf "%dM|%s|%s;",$6/1024,$3,c}'; echo
-    cat /proc/net/dev 2>/dev/null | tr ':' ' ' | awk 'NR>2 && $1!="lo" && $1 !~ /^(docker|veth|br-)/{print "netif="$1; print "netval="$2+$10; exit}'
+    cat /proc/net/dev 2>/dev/null | tr ':' ' ' | awk 'NR>2 && $1!="lo" && $1 !~ /^(docker|veth|br-)/{print "netif="$1; print "netval="$2+$10; print "netrx="$2; print "nettx="$10; exit}'
     gw=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}'); [ -n "$gw" ] || gw=$(netstat -rn 2>/dev/null | awk '/^0.0.0.0|^default/{print $2; exit}')
     if [ -n "$gw" ]; then echo "pinghost=$gw"; ping -c 1 -W 1 "$gw" 2>/dev/null | awk -F'time=' '/time=/{split($2,a," ");printf "pingms=%s\\n",a[1];exit}'; fi
     """
@@ -619,7 +626,20 @@ extension AppDelegate {
                 connectOverlay?.fail("协议不兼容")
             case .network:
                 // P0：网络/超时/DNS/代理失败 —— 保留 Keychain，禁止当认证失败清密码。
-                let detail = error?.localizedDescription ?? "网络不可达"
+                let noRoute = LocalNetworkAuth.looksLikeLocalNetworkBlock(error)
+                let detail: String
+                if noRoute {
+                    // macOS 15+：未授权局域网 TCP → 伪装 EHOSTUNREACH。不能静默授权，弹一键开设置。
+                    detail = "无法到达主机（本地网络未授权）。点「一键打开授权设置」允许 PixShell，再点「立即重连」。"
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
+                        LocalNetworkAuth.presentGrantHelp(from: self.window) { [weak self] in
+                            self?.menuReconnect()
+                        }
+                    }
+                } else {
+                    detail = error?.localizedDescription ?? "网络不可达"
+                }
                 Log.warn("网络/连接失败 \(sess.host.subtitle): \(detail)（保留钥匙串）", "session")
                 t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：\(detail)\u{1b}[0m\r\n")
                 connectOverlay?.fail("网络失败")
@@ -643,7 +663,9 @@ extension AppDelegate {
         }
         rebuildTabs()
         if sessions.indices.contains(current), sessions[current] === sess {
-            stopMonitor(); setStatus(wasUp ? "已断开" : "连接失败")
+            // P1：活动会话掉线 → 文件系统/系统信息跟着关，别留"连接关闭"后的僵尸面板
+            clearSessionSidePanels()
+            setStatus(wasUp ? "已断开" : "连接失败")
         }
     }
 

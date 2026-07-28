@@ -13,6 +13,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using static System.Windows.Visibility;
 using PixShell.Logging;
 using PixShell.Proxy;
 using PixShell.UI;
@@ -39,7 +40,8 @@ public partial class MainWindow : Window
     private bool _sideCollapsed;
     private double _sidebarWidth = UiStore.Load().SidebarWidth;
     private bool _dockCollapsed;
-    private double _dockHeight = 230;
+    private bool _showingQuickConnect;
+    private double _dockHeight = Math.Max(160, UiStore.Load().BottomHeight > 0 ? UiStore.Load().BottomHeight : 230);
 
     private string _downloadDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
@@ -68,6 +70,9 @@ public partial class MainWindow : Window
         Log.Banner(AppVersion);
         ThemeManager.Initialize();   // 读回上次选的主题（之前 Windows 端主题完全没持久化）
         HighlightColors.Load();
+        // 恢复上次坞高度（GridLength 默认 230，这里覆盖成 prefs）
+        if (_dockHeight >= 160)
+            DockRow.Height = new GridLength(_dockHeight);
         SourceInitialized += MainWindow_SourceInitialized;
 
         Terminal.TermSchemeStore.Load();
@@ -98,6 +103,19 @@ public partial class MainWindow : Window
         QuickConnectPanel.OnEdit = EditHostFlow;
         QuickConnectPanel.OnNew = NewHostFlow;
         QuickConnectPanel.OnClear = () => { RecentsStore.ClearRecents(); QuickConnectPanel.Reload(); };
+        // 有会话时从 QC 返回当前终端（对齐 mac QuickConnect.onBack）
+        QuickConnectPanel.OnBack = () =>
+        {
+            _showingQuickConnect = false;
+            SetSessionViewsVisible(true);
+            QuickConnectPanel.Visibility = Visibility.Collapsed;
+            QuickConnectPanel.SetShowsBack(false);
+            UpdateWorkCenterVisibility();
+            if (Sessions.SelectedItem is TabItem { Tag: TerminalSession s })
+            {
+                try { s.View.Focus(); } catch { /* ignore */ }
+            }
+        };
         QuickConnectPanel.Reload(); // <- Added to fix history not showing by default
 
         // 工具面板（宫格图标 flyout）。
@@ -106,8 +124,8 @@ public partial class MainWindow : Window
         ToolsFlyout.OnExec = async cmd => ActiveSession != null ? await ActiveSession.ExecAsync(cmd) : "";
         ToolsFlyout.OnPickDownloadDir = PickDownloadDir;
         ToolsFlyout.OnOpenDownloadDir = () => { try { Process.Start(new ProcessStartInfo(_downloadDir) { UseShellExecute = true }); } catch { } };
-        ToolsFlyout.OnCustomAccel = CustomAccel;
-        ToolsFlyout.OnClose = () => ToolsFlyout.Visibility = Visibility.Collapsed;
+        // 工具面板走独立 Owner 窗口（ToolsPanel.Show/EnsureHost），不再藏 WebView2。
+        ToolsFlyout.OnClose = () => { /* HideFlyout 已关窗；终端 HWND 从未隐藏 */ };
         ToolsFlyout.SetDownloadPath(_downloadDir);
 
         // 侧栏监控仪表盘。
@@ -125,7 +143,8 @@ public partial class MainWindow : Window
         Sftp.OnPathChange += p => DockPathText.Text = p;
         Sftp.OnOpenFile += OpenEditor;
         Sftp.OnInsertToCommand += InsertToCommandBox;
-        Sftp.OnUserNavigate += SyncTerminalCd;
+        // P0：SFTP 与终端完全独立，禁止 OnUserNavigate → 终端 cd 联动
+        // Sftp.OnUserNavigate += SyncTerminalCd;
         // 智能打包传输需要远端执行命令能力（tar 打包/解包/清理），复用当前活动会话的 ExecAsync。
         Sftp.ExecRunner = cmd => ActiveSession != null ? ActiveSession.ExecAsync(cmd) : Task.FromResult("");
 
@@ -142,6 +161,14 @@ public partial class MainWindow : Window
         _monitorTimer.Start();
         StartAgentBridge();
         StateChanged += (_, __) => UpdateMaxButtonGlyph();   // Win+↑/双击顶栏也要同步图标
+
+        // 注册独立 ToolsFlyout 窗口的关闭控制，确保 Esc/Outside Click / Alt-Tab 均能正常关闭
+        PreviewMouseLeftButtonDown += MainWindow_PreviewMouseLeftButtonDown;
+        PreviewKeyDown += MainWindow_PreviewKeyDown;
+        Deactivated += MainWindow_Deactivated;
+        LocationChanged += (s, ev) => CloseToolsFlyout();
+        SizeChanged += (s, ev) => CloseToolsFlyout();
+        StateChanged += (s, ev) => CloseToolsFlyout();
     }
 
     private void MainWindow_SourceInitialized(object? sender, EventArgs e)
@@ -151,17 +178,39 @@ public partial class MainWindow : Window
 
     private void UpdateChildWindowsSize()
     {
+        // 只跟随移动「显式 opt-in」的大面板；弹出式对话框/工具/连接管理器禁止被 0.85 主窗拉伸（会重叠、比主窗还大）。
         foreach (Window w in Application.Current.Windows)
         {
-            if (w != this && w.Owner == this)
-            {
-                var targetWidth = Math.Max(w.MinWidth > 0 ? w.MinWidth : 400, ActualWidth * 0.85);
-                var targetHeight = Math.Max(w.MinHeight > 0 ? w.MinHeight : 300, ActualHeight * 0.85);
-                if (w.Width != targetWidth) w.Width = targetWidth;
-                if (w.Height != targetHeight) w.Height = targetHeight;
-                w.Left = this.Left + (this.ActualWidth - w.Width) / 2;
-                w.Top = this.Top + (this.ActualHeight - w.Height) / 2;
-            }
+            if (w == this || w.Owner != this) continue;
+            if (Equals(w.Tag, "NoAutoResize")) continue;
+            if (w.WindowStyle is WindowStyle.ToolWindow or WindowStyle.None) continue;
+            if (w.SizeToContent != SizeToContent.Manual) continue;
+            if (w.ResizeMode is ResizeMode.NoResize or ResizeMode.CanResizeWithGrip) continue;
+            if (w is UI.ConnectionManagerWindow or HostEditWindow) continue;
+            string typeName = w.GetType().Name;
+            if (typeName.Contains("Connection") || typeName.Contains("HostEdit") ||
+                typeName.Contains("Tools") || typeName.Contains("ToolResult")) continue;
+            // 名称/标题启发式：编辑主机、工具、连接管理器、密钥等
+            var title = w.Title ?? "";
+            if (title.Contains("主机", StringComparison.Ordinal) ||
+                title.Contains("连接", StringComparison.Ordinal) ||
+                title.Contains("工具", StringComparison.Ordinal) ||
+                title.Contains("密钥", StringComparison.Ordinal) ||
+                title.Contains("代理", StringComparison.Ordinal) ||
+                title.Contains("设置", StringComparison.Ordinal))
+                continue;
+            if (w.MaxWidth is > 0 and < 600) continue;
+            if (w.ActualWidth > 0 && w.ActualWidth < 420) continue;
+
+            // 仅对真正的大附属窗（如系统信息）做跟随缩放，且不放大超过 Max*
+            var targetWidth = Math.Max(w.MinWidth > 0 ? w.MinWidth : 400, ActualWidth * 0.85);
+            var targetHeight = Math.Max(w.MinHeight > 0 ? w.MinHeight : 300, ActualHeight * 0.85);
+            if (w.MaxWidth > 0 && !double.IsInfinity(w.MaxWidth)) targetWidth = Math.Min(targetWidth, w.MaxWidth);
+            if (w.MaxHeight > 0 && !double.IsInfinity(w.MaxHeight)) targetHeight = Math.Min(targetHeight, w.MaxHeight);
+            if (Math.Abs(w.Width - targetWidth) > 1) w.Width = targetWidth;
+            if (Math.Abs(w.Height - targetHeight) > 1) w.Height = targetHeight;
+            w.Left = this.Left + (this.ActualWidth - w.Width) / 2;
+            w.Top = this.Top + (this.ActualHeight - w.Height) / 2;
         }
     }
 
@@ -178,6 +227,7 @@ public partial class MainWindow : Window
     }
 
     private ConnectionManagerWindow? _connMgrWin;
+    private UI.SysInfoWindow? _sysInfoWin;
     private void ShowConnectionManager()
     {
         if (_connMgrWin != null && _connMgrWin.IsLoaded)
@@ -409,6 +459,17 @@ public partial class MainWindow : Window
         Log.Info($"打开会话 {host.Username}@{host.Host}:{host.Port}", "session");
         var session = new TerminalSession(host.Display, _htmlPath) { SourceHost = host };
         session.StatusChanged += (s, msg) => { if (IsActiveSession(s)) SetStatus(msg); };
+        // P1：活动会话掉线 → 清 SFTP + 关系统信息（与关标签/手动断开同路径）
+        session.ConnectedChanged += (s, on) =>
+        {
+            if (on) return;
+            if (!IsActiveSession(s)) return;
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                ClearSessionSidePanels();
+                RefreshConnState();
+            }));
+        };
 
         var item = new TabItem { Tag = session, Content = session.View };
         BuildTabHeader(item, session);
@@ -523,6 +584,8 @@ public partial class MainWindow : Window
                     s.Disconnect();
                     var proxy = ProxyStore.Find(host.ProxyId);
                     await s.ConnectAsync(host.Host, host.Port, host.Username, entered, host.KeyPath, proxy);
+                    _showingQuickConnect = false;
+                    SetSessionViewsVisible(true);
                     SyncDockSession();
                     Monitor.SetConnected(true, host.Host);
                     RefreshConnState();
@@ -539,10 +602,13 @@ public partial class MainWindow : Window
 
     private void BuildTabHeader(TabItem item, TerminalSession session)
     {
+        // 标签只显示用户设的名字（TabTitle）；远端 OSC 标题（root@host:~）只进 ToolTip。
+        // 对齐 mac TermSession.tabTitle —— 禁止再订阅 TitleChanged 把系统提示符盖到标签上。
         var titleBlock = new TextBlock
         {
-            Text = session.Title, VerticalAlignment = VerticalAlignment.Center,
-            MaxWidth = 150, TextTrimming = TextTrimming.CharacterEllipsis
+            Text = session.TabTitle, VerticalAlignment = VerticalAlignment.Center,
+            MaxWidth = 150, TextTrimming = TextTrimming.CharacterEllipsis,
+            ToolTip = session.Title,
         };
         var closeBtn = new Button
         {
@@ -557,12 +623,24 @@ public partial class MainWindow : Window
         item.Header = header;
         item.ContextMenu = BuildTabContextMenu(item);
 
-        session.TitleChanged += s => titleBlock.Dispatcher.BeginInvoke(new Action(() => titleBlock.Text = s.Title));
+        // OSC 标题变化 → 只刷新 tooltip，标签文字保持用户命名
+        session.TitleChanged += s => titleBlock.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            titleBlock.Text = s.TabTitle;
+            titleBlock.ToolTip = s.Title;
+        }));
 
         // 点击 tab（哪怕是已选中的同一个）都要把强制显示的快速连接落地页收起——
         // WPF 的 SelectionChanged 只在选中项真正变化时触发，重选同一 tab 不会触发，
         // 而 mac 版每个 tab 按钮点击都直接调用 selectSession，行为不同，这里补上。
-        item.PreviewMouseLeftButtonDown += (_, _) => QuickConnectPanel.Visibility = Visibility.Collapsed;
+        item.PreviewMouseLeftButtonDown += (_, _) =>
+        {
+            _showingQuickConnect = false;
+            SetSessionViewsVisible(true);
+            QuickConnectPanel.Visibility = Collapsed;
+            QuickConnectPanel.SetShowsBack(false);
+            UpdateWorkCenterVisibility();
+        };
     }
 
     /// <summary>标签右键菜单：切换到此标签 / 重新连接 / 再开一个同主机会话 / 关闭 / 关闭其他
@@ -608,6 +686,8 @@ public partial class MainWindow : Window
             ConnectAnim.Begin($"{host.Username}@{host.Host}:{host.Port}");
             var proxy = ProxyStore.Find(host.ProxyId);
             await session.ConnectAsync(host.Host, host.Port, host.Username, pass ?? "", host.KeyPath, proxy);
+            _showingQuickConnect = false;
+            SetSessionViewsVisible(true);
             SyncDockSession();
             Monitor.SetConnected(true, host.Host);
             ConnectAnim.Succeed();
@@ -638,9 +718,11 @@ public partial class MainWindow : Window
 
     private void CloseTab(TabItem item)
     {
+        var wasActive = ReferenceEquals(Sessions.SelectedItem, item);
         if (item.Tag is TerminalSession session) { try { session.Dispose(); } catch { } }
         Sessions.Items.Remove(item);
-        if (Sessions.Items.Count == 0) Sftp.Cleanup();
+        // P1：关标签就清侧栏；空会话或关掉的是当前活动标签都要
+        if (Sessions.Items.Count == 0 || wasActive) ClearSessionSidePanels();
         UpdateWorkCenterVisibility();
         SyncDockSession();
     }
@@ -658,6 +740,8 @@ public partial class MainWindow : Window
     {
         if (!ReferenceEquals(e.Source, Sessions)) return;
         if (IsLoaded && e.RemovedItems.Count > 0) PlayRippleTransition();
+        _showingQuickConnect = false;
+        SetSessionViewsVisible(true);
         RefreshConnState();
         SyncDockSession();
         UpdateWorkCenterVisibility();
@@ -715,7 +799,7 @@ public partial class MainWindow : Window
         var list = new List<(string, bool)>();
         for (int i = 0; i < Sessions.Items.Count; i++)
             if (Sessions.Items[i] is TabItem { Tag: TerminalSession s })
-                list.Add((s.Title, ReferenceEquals(s, ActiveSession)));
+                list.Add((s.TabTitle, ReferenceEquals(s, ActiveSession)));
         return list;
     }
 
@@ -725,7 +809,7 @@ public partial class MainWindow : Window
         var list = new List<(string, bool)>();
         foreach (var obj in Sessions.Items)
             if (obj is TabItem { Tag: TerminalSession s })
-                list.Add((s.Title, s.Connected));
+                list.Add((s.TabTitle, s.Connected));
         return list;
     }
 
@@ -750,19 +834,40 @@ public partial class MainWindow : Window
         }
     }
 
-    // 无会话 → 显示快速连接落地页；有会话 → 显示终端内容。
+    // 终端可见性：SessionContent + 各 WebView2 必须一起收/放。
+    // WebView2 是 HWND 空气空间，仅叠 QC 仍会穿透，点不着落地页。
+    private void SetSessionViewsVisible(bool vis)
+    {
+        var v = vis ? Visibility.Visible : Visibility.Collapsed;
+        SessionContent.Visibility = v;
+        foreach (var obj in Sessions.Items)
+            if (obj is TabItem { Tag: TerminalSession s })
+                s.View.Visibility = v;
+    }
+
+    // 背景一律走主题令牌：空态 BrushBg，有会话 BrushTerm。禁止 Transparent/White 硬编码，
+    // 否则深色下白屏、浅色下透黑边。
     private void UpdateWorkCenterVisibility()
     {
         bool empty = Sessions.Items.Count == 0;
-        QuickConnectPanel.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
-        if (empty)
+        if (_showingQuickConnect || empty)
         {
-            WorkCenter.Background = System.Windows.Media.Brushes.Transparent;
-            QuickConnectPanel.Reload();
+            QuickConnectPanel.Visibility = Visibility.Visible;
+            WorkCenter.SetResourceReference(BackgroundProperty, "BrushBg");
+            QuickConnectPanel.SetResourceReference(BackgroundProperty, "BrushBg");
+            if (empty)
+            {
+                _showingQuickConnect = false;
+                QuickConnectPanel.Reload();
+            }
+            // QC 模式有会话时：必须藏 SessionContent/WebView2，否则空气空间挡点击
+            SetSessionViewsVisible(false);
         }
         else
         {
+            QuickConnectPanel.Visibility = Visibility.Collapsed;
             WorkCenter.SetResourceReference(BackgroundProperty, "BrushTerm");
+            SetSessionViewsVisible(true);
         }
     }
 
@@ -783,7 +888,7 @@ public partial class MainWindow : Window
 
     private void SideSplitter_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
     {
-        if (!_sideCollapsed) 
+        if (!_sideCollapsed)
         {
             _sidebarWidth = SidebarColumn.Width.Value;
             var prefs = UiStore.Load();
@@ -798,35 +903,114 @@ public partial class MainWindow : Window
     // ＋快速连接：始终显示落地页（覆盖当前终端），并收起侧栏+坞，对齐 mac showQuickConnect/collapseChrome。
     private void QuickConnect_Click(object sender, RoutedEventArgs e)
     {
-        QuickConnectPanel.Visibility = Visibility.Visible;
-        
-        var brush = new System.Windows.Media.SolidColorBrush(((System.Windows.Media.SolidColorBrush)FindResource("BrushBg")).Color);
-        brush.Opacity = 0.85;
-        QuickConnectPanel.Background = brush;
-        
+        _showingQuickConnect = true;
+        QuickConnectPanel.Visibility = Visible;
+        QuickConnectPanel.SetResourceReference(BackgroundProperty, "BrushBg");
+        WorkCenter.SetResourceReference(BackgroundProperty, "BrushBg");
+        // 有会话才出返回箭头
+        QuickConnectPanel.SetShowsBack(Sessions.Items.Count > 0);
         QuickConnectPanel.Reload();
         SetSidebarCollapsed(true);
         SetDockCollapsed(true);
+        SetSessionViewsVisible(false);
     }
 
     private void ToggleTheme_Click(object sender, RoutedEventArgs e)
     {
         Log.Info("切换主题 → " + (ThemeManager.IsDark ? "浅色" : "深色"), "ui");
         ThemeManager.Toggle();
-        WindowInterop.ApplyBackdrop(this, ThemeManager.IsDark);
-        ThemeBtn.Content = ThemeManager.IsDark ? "\uE708" : "\uE706";  // Segoe MDL2: 月/日，单色随主题
-        // 大部分控件用 DynamicResource 会自动跟着换色；少数在代码里用 Application.Current.Resources[...]
-        // 取值后直接赋值(非 DynamicResource)构建的动态内容（卡片/表格行）需要主动重建一次才会换色。
-        RefreshHostViews();
+        AfterThemeChanged();
     }
 
-    /// <summary>顶栏宫格图标：点一下呼出、再点一下收起（对齐老仓库 openToolsPanel 的 willOpen 逻辑）。</summary>
+    /// <summary>主题切换后的统一收尾：DWM 边框深浅、按钮图标、落地页/卡片重绘。
+    /// 设置对话框与顶栏按钮共用，避免一边换色一边边框/滚动条残留旧主题。</summary>
+    private void AfterThemeChanged()
+    {
+        WindowInterop.ApplyBackdrop(this, ThemeManager.IsDark);
+        ThemeBtn.Content = ThemeManager.IsDark ? "\uE708" : "\uE706";  // Segoe MDL2: 月/日
+        // 动态内容（卡片/表格行）里有代码赋值的 brush，需要主动重建。
+        RefreshHostViews();
+        // 工作区背景跟令牌走，防止切主题后 QC 残留本地 brush。
+        if (QuickConnectPanel.Visibility == Visibility.Visible)
+        {
+            WorkCenter.SetResourceReference(BackgroundProperty, "BrushBg");
+            QuickConnectPanel.SetResourceReference(BackgroundProperty, "BrushBg");
+        }
+        else if (Sessions.Items.Count > 0)
+        {
+            WorkCenter.SetResourceReference(BackgroundProperty, "BrushTerm");
+        }
+        // 已开会话：再 fit + 右键菜单配色跟主题
+        foreach (var obj in Sessions.Items)
+        {
+            if (obj is TabItem { Tag: TerminalSession s })
+            {
+                try
+                {
+                    if (s.View.CoreWebView2 != null)
+                    {
+                        s.View.CoreWebView2.Profile.PreferredColorScheme = ThemeManager.IsDark
+                            ? Microsoft.Web.WebView2.Core.CoreWebView2PreferredColorScheme.Dark
+                            : Microsoft.Web.WebView2.Core.CoreWebView2PreferredColorScheme.Light;
+                    }
+                }
+                catch { /* 旧 runtime */ }
+                try { _ = s.View.CoreWebView2?.ExecuteScriptAsync("try{window.pixFit&&window.pixFit()}catch(e){}"); }
+                catch { }
+            }
+        }
+    }
+
+    /// <summary>顶栏宫格：点一下呼出、再点收起。
+    /// 工具面板在**独立 Owner 窗口**里画（同 ToolResultWindow），绝不藏 WebView2。</summary>
     private void OpenTools_Click(object sender, RoutedEventArgs e)
     {
-        if (ToolsFlyout.IsOpen) { ToolsFlyout.Visibility = Visibility.Collapsed; return; }
-        Log.Info("打开工具浮窗", "ui");
+        if (ToolsFlyout.IsOpen)
+        {
+            ToolsFlyout.HideFlyout();
+            return;
+        }
+        Log.Info("打开工具浮窗（独立窗口，不藏终端）", "ui");
         ToolsFlyout.SetDownloadPath(_downloadDir);
         ToolsFlyout.Show();
+    }
+
+    private void CloseToolsFlyout()
+    {
+        if (ToolsFlyout.IsOpen)
+            ToolsFlyout.HideFlyout();
+    }
+
+    private void MainWindow_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (!ToolsFlyout.IsOpen) return;
+        // 点主窗非工具按钮区域时收起；工具是独立 Owner 窗，点它不会走到这里。
+        CloseToolsFlyout();
+        var hit = VisualTreeHelper.HitTest(this, e.GetPosition(this));
+        if (hit?.VisualHit == null) return;
+        for (DependencyObject? obj = hit.VisualHit; obj != null; obj = VisualTreeHelper.GetParent(obj))
+        {
+            if (obj == ToolsBtn)
+            {
+                e.Handled = true; // 避免同一次点击又被 OpenTools 打开
+                break;
+            }
+        }
+    }
+
+    private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape && ToolsFlyout.IsOpen)
+        {
+            CloseToolsFlyout();
+            e.Handled = true;
+        }
+    }
+
+    private void MainWindow_Deactivated(object? sender, EventArgs e)
+    {
+        // 不在失焦时自动关工具窗：文件夹选择器/结果窗/子对话框会抢焦点导致闪关。
+        // 关闭靠 ✕ / Esc / 再点工具按钮 / 点主窗空白。
     }
 
     private void PickDownloadDir()
@@ -843,12 +1027,6 @@ public partial class MainWindow : Window
     {
         var win = new UI.ProxyWindow { Owner = this };
         win.ShowDialog();
-    }
-
-    private void CustomAccel()
-    {
-        if (ActiveSession?.SourceHost is { } h) EditHostFlow(h);
-        else ShowConnectionManager();
     }
 
     // =====================================================================
@@ -868,6 +1046,26 @@ public partial class MainWindow : Window
         DockSplitter.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
         DockToggleBtn.Content = collapsed ? "▴" : "▾";
         DockToggleBtn.ToolTip = collapsed ? "显示文件/命令" : "隐藏文件/命令";
+    }
+
+    /// <summary>拖完坞分隔条后，把实际高度写回 _dockHeight 并持久化（对齐 mac dragDockHeight）。</summary>
+    private void DockSplitter_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
+    {
+        if (_dockCollapsed) return;
+        var h = DockRow.ActualHeight;
+        if (h < 160) h = 160;
+        var max = Math.Max(240, ActualHeight - 220);
+        if (h > max) h = max;
+        _dockHeight = h;
+        DockRow.Height = new GridLength(_dockHeight);
+        try
+        {
+            var prefs = UiStore.Load();
+            prefs.BottomHeight = _dockHeight;
+            UiStore.Save(prefs);
+        }
+        catch { /* 持久化失败不挡 UI */ }
+        Log.Info($"底栏高度 → {(int)_dockHeight}", "ui");
     }
 
     private void ShowFiles_Click(object sender, RoutedEventArgs e) => SetFilesActive(true);
@@ -1060,20 +1258,33 @@ public partial class MainWindow : Window
         return p;
     }
 
-    /// <summary>cd 命令 → 同步 SFTP 目录 + 状态栏。</summary>
+    /// <summary>P0：SFTP 与终端独立 — 终端 cd 不再驱动 SFTP。</summary>
     private void ApplyCdSync(string command)
     {
-        if (!Store.CommandSync.ShouldSyncCd(command)) return;
-        var next = Store.CommandSync.ApplyCd(Sftp.CurrentRemotePath, command);
-        Sftp.Navigate(next);
-        SetStatus("同步目录 " + next);
+        // 保留空实现，避免调用点改漏；如需旧联动行为再打开下方逻辑。
+        _ = command;
     }
 
-    /// <summary>SFTP 里进目录 → 反向把 cd 写回终端。</summary>
+    /// <summary>P0：SFTP 进目录不再往终端灌 cd（旧 OnUserNavigate 已解绑）。</summary>
     private void SyncTerminalCd(string path)
     {
-        if (ActiveSession is not { Connected: true }) return;
-        ActiveSession.SendText("cd '" + path.Replace("'", "'\\''") + "'\r");
+        _ = path;
+    }
+
+    /// <summary>P1：SSH 断开/关标签 → 清 SFTP + 关系统信息窗口。</summary>
+    private void ClearSessionSidePanels()
+    {
+        try { Sftp.Cleanup(); } catch { }
+        try { DockPathText.Text = "远端未连接"; } catch { }
+        try
+        {
+            if (_sysInfoWin is { IsVisible: true })
+            {
+                _sysInfoWin.Close();
+            }
+        }
+        catch { }
+        _sysInfoWin = null;
     }
 
     /// <summary>命令栏「历史」按钮：按当前输入过滤历史，弹出选取菜单。</summary>
@@ -1163,8 +1374,11 @@ public partial class MainWindow : Window
     {
         Log.Info("打开系统信息面板", "ui");
         if (ActiveSession is not { Connected: true } session) { MessageBox.Show(this, "请先连接一个会话。", "系统信息"); return; }
+        try { _sysInfoWin?.Close(); } catch { }
         var win = new UI.SysInfoWindow { Owner = this, Title = "系统信息 · " + (session.SourceHost?.Display ?? session.HostName) };
         win.OnRefresh = () => IsActiveSession(session) ? session.ExecAsync(UI.SysInfoWindow.Command) : Task.FromResult("");
+        win.Closed += (_, _) => { if (ReferenceEquals(_sysInfoWin, win)) _sysInfoWin = null; };
+        _sysInfoWin = win;
         win.Show();
         await win.Reload();
     }
@@ -1187,8 +1401,6 @@ public partial class MainWindow : Window
         file.Items.Add(new Separator());
         file.Items.Add(Item("导入主机…", ImportHosts));
         file.Items.Add(Item("导出主机…", ExportHosts));
-        file.Items.Add(new Separator());
-        file.Items.Add(Item("设置…", OpenSettings));
         menu.Items.Add(file);
 
         var view = new MenuItem { Header = "查看" };
@@ -1205,11 +1417,6 @@ public partial class MainWindow : Window
         var options = new MenuItem { Header = "选项" };
         options.Items.Add(Item("设置…", OpenSettings));
         options.Items.Add(Item("代理服务器…", OpenProxyWindow));
-        options.Items.Add(Item("自定义加速", CustomAccel));
-        options.Items.Add(new Separator());
-        options.Items.Add(Item("复制", () => _ = TermCopy()));
-        options.Items.Add(Item("粘贴", TermPaste));
-        options.Items.Add(Item("清屏", () => ActiveSession?.ClearScreen()));
         menu.Items.Add(options);
 
         menu.Items.Add(new Separator());
@@ -1228,6 +1435,18 @@ public partial class MainWindow : Window
 
         menu.Items.Add(Item("软件更新", CheckUpdate));   // 对齐 mac 顶层 checkUpdate
 
+        // AI 对接：后端 AgentBridge / AgentCLI 已就绪，汉堡菜单提供一键入口
+        var ai = new MenuItem { Header = "AI 对接" };
+        ai.Items.Add(Item("接入 AI 工具…", OpenAIIntegration));
+        ai.Items.Add(new Separator());
+        ai.Items.Add(Item("复制 CLI 用法", CopyCLIUsage));
+        ai.Items.Add(Item("复制 MCP 注册命令", CopyMCPRegister));
+        ai.Items.Add(Item("复制 Desktop MCP 配置", CopyMCPDesktop));
+        ai.Items.Add(new Separator());
+        ai.Items.Add(Item("打开 CLI 脚本目录", OpenCLIBinDir));
+        ai.Items.Add(Item("重新安装 CLI / MCP", ReinstallCLIBridge));
+        menu.Items.Add(ai);
+
         menu.Items.Add(new Separator());
         var help = new MenuItem { Header = "帮助" };
         help.Items.Add(Item("关于 PixShell", () => MessageBox.Show(this, $"PixShell {AppVersion}\nWindows 原生 SSH / SFTP 客户端\nWPF + WebView2/xterm.js + SSH.NET", "关于")));
@@ -1236,7 +1455,64 @@ public partial class MainWindow : Window
         help.Items.Add(Item("项目仓库", () => { try { Process.Start(new ProcessStartInfo("https://github.com/lyu0805/pixshell") { UseShellExecute = true }); } catch { } }));
         menu.Items.Add(help);
 
+        // 暗色主题：系统 ContextMenu 默认白底，而 Window.Foreground 是浅色字 → 白底看不见字。
+        menu.SetResourceReference(Control.BackgroundProperty, "BrushBg2");
+        menu.SetResourceReference(Control.ForegroundProperty, "BrushText");
+        menu.SetResourceReference(Control.BorderBrushProperty, "BrushBorderStrong");
+        ApplyMenuTheme(menu);
         menu.IsOpen = true;
+    }
+
+    /// <summary>递归给 MenuItem 上主题前景，防止暗色白底无字。</summary>
+    private static void ApplyMenuTheme(ItemsControl root)
+    {
+        foreach (var obj in root.Items)
+        {
+            if (obj is MenuItem mi)
+            {
+                mi.SetResourceReference(Control.ForegroundProperty, "BrushText");
+                mi.SetResourceReference(Control.BackgroundProperty, "BrushBg2");
+                if (mi.HasItems) ApplyMenuTheme(mi);
+            }
+            else if (obj is Separator sep)
+            {
+                sep.SetResourceReference(Control.BackgroundProperty, "BrushBorder");
+            }
+        }
+    }
+
+    private void CopyCLIUsage()
+    {
+        if (_agentBridge != null) Bridge.AgentCLI.Install(_agentBridge.Port);
+        try { Clipboard.SetText(Bridge.AgentCLI.PromptPreamble()); SetStatus("已复制 CLI 用法"); } catch { }
+    }
+    private void CopyMCPRegister()
+    {
+        if (_agentBridge != null) Bridge.AgentCLI.Install(_agentBridge.Port);
+        try { Clipboard.SetText(Bridge.AgentCLI.ClaudeCodeCommand()); SetStatus("已复制 MCP 注册命令"); } catch { }
+    }
+    private void CopyMCPDesktop()
+    {
+        if (_agentBridge != null) Bridge.AgentCLI.Install(_agentBridge.Port);
+        try { Clipboard.SetText(Bridge.AgentCLI.DesktopConfigSnippet()); SetStatus("已复制 Desktop MCP 配置"); } catch { }
+    }
+    private void OpenCLIBinDir()
+    {
+        if (_agentBridge != null) Bridge.AgentCLI.Install(_agentBridge.Port);
+        try
+        {
+            Directory.CreateDirectory(Bridge.AgentCLI.BinDir);
+            Process.Start(new ProcessStartInfo("explorer.exe", Bridge.AgentCLI.BinDir) { UseShellExecute = true });
+            SetStatus("已打开 " + Bridge.AgentCLI.BinDir);
+        }
+        catch (Exception ex) { SetStatus("打开失败: " + ex.Message); }
+    }
+    private void ReinstallCLIBridge()
+    {
+        if (_agentBridge == null || !_agentBridge.IsRunning) StartAgentBridge();
+        if (_agentBridge != null) Bridge.AgentCLI.Install(_agentBridge.Port);
+        UpdateCliStatus();
+        SetStatus($"已重新安装 CLI / MCP（端口 {_agentBridge?.Port ?? 0}）");
     }
 
     private static MenuItem Item(string header, Action action)
@@ -1254,6 +1530,7 @@ public partial class MainWindow : Window
     private void MenuDisconnect()
     {
         ActiveSession?.Disconnect();
+        ClearSessionSidePanels();   // P1：断开即清 SFTP + 系统信息
         RefreshConnState();   // 侧栏红绿灯 + 断开/连接按钮跟着切
         SetStatus("已断开");
     }
@@ -1367,20 +1644,82 @@ public partial class MainWindow : Window
 
     private async Task TermCopy()
     {
+        // 焦点在命令输入时：复制走当前选区（命令框 / 编辑器），别硬拉终端选区
+        if (PasteTargetIsCommandBox())
+        {
+            try
+            {
+                if (CmdInput.IsKeyboardFocusWithin && !string.IsNullOrEmpty(CmdInput.SelectedText))
+                { Clipboard.SetText(CmdInput.SelectedText); return; }
+                if (Cmds.Visibility == Visibility.Visible && Cmds.IsKeyboardFocusWithin
+                    && !string.IsNullOrEmpty(Cmds.Editor.SelectedText))
+                { Clipboard.SetText(Cmds.Editor.SelectedText); return; }
+            }
+            catch { /* 剪贴板偶发占用 */ }
+        }
         if (ActiveSession == null) return;
         var text = await ActiveSession.GetSelectionAsync();
         if (!string.IsNullOrEmpty(text)) Clipboard.SetText(text);
     }
+
+    /// <summary>P0：粘贴优先进命令输入框。菜单/快捷键若总绑 TermPaste，命令板聚焦时也会把命令打进终端。</summary>
     private void TermPaste()
     {
+        if (PasteIntoCommandBoxIfFocused()) return;
         if (ActiveSession == null) return;
         try { var text = Clipboard.GetText(); if (!string.IsNullOrEmpty(text)) ActiveSession.SendText(text); } catch { }
     }
 
+    private bool PasteTargetIsCommandBox()
+    {
+        // 严格按焦点：只有命令框/命令板编辑器聚焦才截胡，终端聚焦时仍进终端
+        if (CmdInput.IsKeyboardFocusWithin) return true;
+        if (Cmds.Visibility == Visibility.Visible
+            && (Cmds.IsKeyboardFocusWithin || Cmds.Editor.IsKeyboardFocusWithin || Cmds.Editor.IsFocused))
+            return true;
+        return false;
+    }
+
+    /// <summary>命令输入聚焦时把剪贴板塞进命令框，返回 true 表示已处理。</summary>
+    private bool PasteIntoCommandBoxIfFocused()
+    {
+        if (!PasteTargetIsCommandBox()) return false;
+        string clip;
+        try { clip = Clipboard.GetText(); } catch { return true; } // 聚焦命令框但剪贴板炸了，也别漏进终端
+        if (string.IsNullOrEmpty(clip)) return true;
+
+        // 1) 底栏单行 CmdInput
+        if (CmdInput.IsKeyboardFocusWithin)
+        {
+            var oneLine = clip.Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ");
+            var start = CmdInput.SelectionStart;
+            var len = CmdInput.SelectionLength;
+            var t = CmdInput.Text ?? "";
+            CmdInput.Text = t.Substring(0, start) + oneLine + t.Substring(start + len);
+            CmdInput.CaretIndex = start + oneLine.Length;
+            CmdInput.Focus();
+            return true;
+        }
+
+        // 2) 命令板多行 Editor
+        if (Cmds.Visibility == Visibility.Visible
+            && (Cmds.IsKeyboardFocusWithin || Cmds.Editor.IsKeyboardFocusWithin || Cmds.Editor.IsFocused))
+        {
+            var ed = Cmds.Editor;
+            var start = ed.SelectionStart;
+            var len = ed.SelectionLength;
+            var t = ed.Text ?? "";
+            ed.Text = t.Substring(0, start) + clip + t.Substring(start + len);
+            ed.CaretIndex = start + clip.Length;
+            ed.Focus();
+            return true;
+        }
+        return false;
+    }
+
     private void MenuToolRun(string cmd, string label)
     {
-        ToolsFlyout.Visibility = Visibility.Visible;
-        ToolsFlyout.Show();
+        // 只跑工具结果窗；不强制打开下载浮窗，避免和终端抢 airspace。
         _ = ToolsFlyout.RunAsync(label, cmd);
     }
 
@@ -1458,8 +1797,10 @@ public partial class MainWindow : Window
         {
             Background = (System.Windows.Media.Brush)Application.Current.Resources["BrushBg"],
             Foreground = (System.Windows.Media.Brush)Application.Current.Resources["BrushText"],
-            Title = "设置", Width = 320, SizeToContent = SizeToContent.Height, Owner = this,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize,
+            Title = "设置", Width = 360, MinWidth = 300, MinHeight = 280,
+            SizeToContent = SizeToContent.Manual, Height = 420, Owner = this,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ResizeMode = ResizeMode.CanResizeWithGrip, ShowInTaskbar = false,
         };
         var sp = new StackPanel { Margin = new Thickness(14) };
         sp.Children.Add(new TextBlock { Text = "主题", Margin = new Thickness(0, 0, 0, 4) });
@@ -1487,7 +1828,18 @@ public partial class MainWindow : Window
         var hlChk = new CheckBox { Content = "终端语义高亮", IsChecked = TerminalSession.HighlightEnabled, Margin = new Thickness(0, 10, 0, 0) };
         sp.Children.Add(hlChk);
 
-        var doneBtn = new Button { Content = "完成", Width = 80, Margin = new Thickness(0, 14, 0, 0), HorizontalAlignment = HorizontalAlignment.Right, IsDefault = true };
+        var btnRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 14, 0, 0),
+        };
+        var cancelBtn = new Button
+        {
+            Content = "取消", Width = 80, Margin = new Thickness(0, 0, 8, 0), IsCancel = true,
+        };
+        cancelBtn.Click += (_, _) => win.Close();
+        var doneBtn = new Button { Content = "完成", Width = 80, IsDefault = true };
         doneBtn.Click += (_, _) =>
         {
             // 选浅色系的任意一套 → ApplyKind 内部会把它记为"我的浅色"，
@@ -1496,7 +1848,7 @@ public partial class MainWindow : Window
             if (wantKind != ThemeManager.Current)
             {
                 ThemeManager.ApplyKind(wantKind);
-                ThemeBtn.Content = ThemeManager.IsDark ? "\uE708" : "\uE706";  // Segoe MDL2: 月/日，单色随主题
+                AfterThemeChanged();
             }
             var chosen = Terminal.TermSchemes.All[schemeCombo.SelectedIndex];
             if (chosen.Id != Terminal.TermSchemeStore.CurrentId)
@@ -1508,8 +1860,11 @@ public partial class MainWindow : Window
             HighlightColors.Set(hlBox.Text, plainBox.Text);
             win.Close();
         };
-        sp.Children.Add(doneBtn);
+        btnRow.Children.Add(cancelBtn);
+        btnRow.Children.Add(doneBtn);
+        sp.Children.Add(btnRow);
         win.Content = sp;
+        win.ShowInTaskbar = false;
         win.ShowDialog();
     }
 

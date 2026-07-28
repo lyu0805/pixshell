@@ -79,12 +79,28 @@ extension AppDelegate {
     @objc func resetTermBg() {
         termBgOverride = ""
         Log.info("终端背景 → 恢复配色默认", "ui")
-        for s in sessions { TermTheme.apply(to: s.termView, dark: darkTheme) }
+        // 必须整套重刷：ink_wash 用 clear，其它方案用 scheme.background；
+        // 之前只 apply 在部分时序下不触发重绘，看起来「恢复默认」无效。
+        for s in sessions {
+            TermTheme.apply(to: s.termView, dark: darkTheme)
+            s.termView.needsDisplay = true
+            s.termView.setNeedsDisplay(s.termView.bounds)
+        }
     }
     /// 只覆盖背景色，不动前景/ANSI（老仓库 termBgOverride 行为）
     func applyTermBackground() {
-        guard !termBgOverride.isEmpty else { return }
+        if termBgOverride.isEmpty {
+            // 空覆盖 = 恢复方案默认背景（与 resetTermBg 同路径，避免只写 set 不刷）
+            for s in sessions {
+                TermTheme.apply(to: s.termView, dark: darkTheme)
+                s.termView.setNeedsDisplay(s.termView.bounds)
+            }
+            return
+        }
         let c = TermTheme.ns(termBgOverride)
-        for s in sessions { s.termView.nativeBackgroundColor = c }
+        for s in sessions {
+            s.termView.nativeBackgroundColor = c
+            s.termView.setNeedsDisplay(s.termView.bounds)
+        }
     }
 }

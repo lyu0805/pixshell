@@ -4,10 +4,10 @@
         xmlns:local="clr-namespace:PixShell"
         xmlns:ui="clr-namespace:PixShell.UI"
         Title="PixShell — native (Windows)"
-        Width="800" Height="600" MinWidth="800" MinHeight="600"
+        Width="960" Height="640" MinWidth="720" MinHeight="500"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None" ResizeMode="CanResize"
-        Background="Transparent">
+        Background="{DynamicResource BrushBg}">
     <!-- Windows 窗口 chrome：去掉系统标题栏，自绘顶栏。
          **注意：Windows 的窗口按钮在右侧、顺序是 最小化 — 最大化 □ 关闭 ✕，与 mac 左侧红绿灯相反，
          不能照搬 mac 的布局。** 关闭键悬停为红底白叉（Windows 习惯）。 -->
@@ -19,7 +19,9 @@
          侧栏 = 监控仪表盘（非主机列表，可整块折叠为 26px 窄轨）
          工作区 = 落地页(快速连接) 或 终端；命令栏在坞上方；底部坞单行[文件][命令]+文件操作图标，整体可折叠
          状态栏 -->
-    <Grid>
+    <!-- 根层也铺 BrushBg：Window 本体 Transparent 是为了 Mica，
+         内容层必须自绘，否则浅色/水墨下透系统黑边、状态栏发脏。 -->
+    <Grid Background="{DynamicResource BrushBg}">
         <Grid.RowDefinitions>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
@@ -27,7 +29,7 @@
 
         <Image x:Name="TransitionImage" Grid.RowSpan="2" Panel.ZIndex="1000" IsHitTestVisible="False" Visibility="Collapsed"/>
 
-        <Grid x:Name="MainArea" Grid.Row="0">
+        <Grid x:Name="MainArea" Grid.Row="0" Background="{DynamicResource BrushBg}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>   <!-- 顶栏 -->
                 <RowDefinition Height="*"/>       <!-- 侧栏 | 工作区 -->
@@ -118,33 +120,55 @@
                         <RowDefinition x:Name="DockRow" Height="230"/>       <!-- 底部坞（可整体折叠到 0）-->
                     </Grid.RowDefinitions>
 
-                    <!-- work-center：无会话 → 快速连接落地页；有会话 → 终端 -->
-                    <Grid x:Name="WorkCenter" Grid.Row="0">
-                        <ContentControl Content="{Binding SelectedContent, ElementName=Sessions}"/>
+                    <!-- work-center：无会话 → 快速连接落地页；有会话 → 终端。
+                         默认 BrushBg，避免 Transparent 透出黑底（浅色/水墨下尤其明显）。 -->
+                    <Grid x:Name="WorkCenter" Grid.Row="0" Background="{DynamicResource BrushBg}">
+                        <ContentControl x:Name="SessionContent" Content="{Binding SelectedContent, ElementName=Sessions}"/>
                         <ui:QuickConnectView x:Name="QuickConnectPanel"/>
                         <!-- 连接动画：盖在终端之上，连上/失败后自动淡出 -->
                         <ui:ConnectOverlay x:Name="ConnectAnim" Panel.ZIndex="20"/>
                         <Ellipse x:Name="RippleEllipse" Fill="{DynamicResource BrushAccent}" HorizontalAlignment="Center" VerticalAlignment="Center" Width="10" Height="10" IsHitTestVisible="False" Visibility="Collapsed" Panel.ZIndex="30"/>
                     </Grid>
 
-                    <!-- 命令栏：命令 输入 历史 发送 + 坞折叠开关 -->
+                    <!-- 命令栏：右侧操作区固定宽度优先，输入框吃剩余。
+                         200% DPI 下窗口可缩得很窄时，Grid 两列保证 历史/发送/▾
+                         永不被裁切（DockPanel 仍可能被父级 Clip）。 -->
                     <Border Grid.Row="1" Background="{DynamicResource BrushBg}"
-                            BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,1,0,0" Padding="10,7">
-                        <DockPanel LastChildFill="True">
-                            <TextBlock DockPanel.Dock="Left" Text="命令" FontSize="12" FontWeight="Medium"
+                            BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,1,0,0" Padding="10,7"
+                            ClipToBounds="False" MinHeight="42">
+                        <Grid MinHeight="28" ClipToBounds="False">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*" MinWidth="48"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="命令" FontSize="12" FontWeight="Medium"
                                        Foreground="{DynamicResource BrushMuted}" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <Button x:Name="DockToggleBtn" DockPanel.Dock="Right" Content="▾" Style="{StaticResource IconButton}"
-                                    ToolTip="隐藏/显示文件命令坞" Click="ToggleDock_Click" Margin="8,0,0,0"/>
-                            <Button DockPanel.Dock="Right" Content="发送" Tag="Primary" Style="{StaticResource PillButton}"
-                                    Margin="8,0,0,0" Click="SendCommand_Click"/>
-                            <Button DockPanel.Dock="Right" Content="历史" Style="{StaticResource PillButton}" Click="ShowCommandHistory_Click"/>
-                            <TextBox x:Name="CmdInput" VerticalContentAlignment="Center" Height="28"
-                                     Margin="0,0,8,0" PreviewKeyDown="CmdInput_PreviewKeyDown"/>
-                        </DockPanel>
+                            <TextBox x:Name="CmdInput" Grid.Column="1" VerticalContentAlignment="Center" Height="28"
+                                     MinWidth="48" Margin="0,0,8,0" HorizontalAlignment="Stretch"
+                                     PreviewKeyDown="CmdInput_PreviewKeyDown"/>
+                            <!-- 右侧锁死：历史 → 发送 → ▾，整列 Auto 不参与压缩 -->
+                            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button Content="历史" Style="{StaticResource PillButton}"
+                                        MinWidth="56" Padding="14,4" Margin="0,0,6,0"
+                                        Click="ShowCommandHistory_Click"/>
+                                <Button Content="发送" Tag="Primary" Style="{StaticResource PillButton}"
+                                        MinWidth="56" Padding="14,4" Margin="0,0,6,0"
+                                        Click="SendCommand_Click"/>
+                                <Button x:Name="DockToggleBtn" Content="▾" Style="{StaticResource IconButton}"
+                                        MinWidth="28" Width="28"
+                                        ToolTip="隐藏/显示文件命令坞" Click="ToggleDock_Click"/>
+                            </StackPanel>
+                        </Grid>
                     </Border>
 
-                    <!-- 纯视觉分隔（非拖动条）：坞整体折叠时随 DockSplitterRow 高度一起归零。 -->
-                    <Border x:Name="DockSplitter" Grid.Row="2" Height="4" Background="{DynamicResource BrushBorder}"/>
+                    <!-- 可拖高坞的分隔条（对齐 mac buildDockResizer）；折叠时高度归零。 -->
+                    <GridSplitter x:Name="DockSplitter" Grid.Row="2" Height="4"
+                                  HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                                  ResizeDirection="Rows" ResizeBehavior="PreviousAndNext"
+                                  Background="{DynamicResource BrushBorder}"
+                                  ShowsPreview="False"
+                                  DragCompleted="DockSplitter_DragCompleted"/>
 
                     <!-- 底部坞：[文件][命令] 与文件操作图标同一行 + 面板体（可整体折叠到 0） -->
                     <Border x:Name="DockBorder" Grid.Row="3" Background="{DynamicResource BrushBg}"
@@ -216,8 +240,9 @@
             </StatusBarItem>
         </StatusBar>
 
-        <!-- ===================== 弹层：连接管理器 / 工具面板 ===================== -->
-
-        <ui:ToolsPanel x:Name="ToolsFlyout" Grid.Row="0" Grid.RowSpan="2" Visibility="Collapsed" Panel.ZIndex="50"/>
+        <!-- 工具面板：树内 0×0 占位以便 x:Name 接线；Show() 时摘到独立 Owner 窗口，
+             禁止全屏盖 WebView2 / 禁止再藏终端（旧 ZIndex+airspace → 白屏）。 -->
+        <ui:ToolsPanel x:Name="ToolsFlyout" Grid.Row="0" Visibility="Collapsed" IsHitTestVisible="False"
+                       Width="0" Height="0" Panel.ZIndex="0"/>
     </Grid>
 </Window>

@@ -49,6 +49,9 @@ public final class NIOSSHSession: SSHSession {
                                 clientConfig: SSHClientConfiguration, term: String, cols: Int, rows: Int) {
         let bootstrap = ClientBootstrap(group: group)
             .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            // TCP_NODELAY：交互式 shell 小包立即发，别被 Nagle 攒着（局域网体感延迟）
+            .channelOption(ChannelOptions.socketOption(.tcp_nodelay), value: 1)
+            .channelOption(ChannelOptions.connectTimeout, value: .seconds(12))
             .channelInitializer { channel in
                 channel.pipeline.addHandlers([
                     NIOSSHHandler(
@@ -59,17 +62,33 @@ public final class NIOSSHSession: SSHSession {
                 ])
             }
 
-        bootstrap.connect(host: creds.host, port: creds.port).whenComplete { [weak self] result in
-            guard let self = self else { return }
-            switch result {
-            case .failure(let error):
-                Log.error("TCP 连接失败 \(creds.host):\(creds.port) → \(error)", "ssh")
-                self.emitClose(error)
-            case .success(let channel):
-                self.tcpChannel = channel
-                self.openShell(on: channel, term: term, cols: cols, rows: rows)
+        // macOS 15+ 本地网络隐私偶发把首连打成 EHOSTUNREACH(65)；短延迟重试一次，
+        // 仍失败则 emitClose，上层会归类为 network 并保留钥匙串。
+        func attemptConnect(remaining: Int) {
+            bootstrap.connect(host: creds.host, port: creds.port).whenComplete { [weak self] result in
+                guard let self = self else { return }
+                switch result {
+                case .failure(let error):
+                    let msg = "\(error)"
+                    let noRoute = msg.contains("No route to host")
+                        || msg.contains("errno: 65")
+                        || msg.lowercased().contains("host is down")
+                    if noRoute && remaining > 0 {
+                        Log.warn("TCP 连接 \(creds.host):\(creds.port) 暂不可达（可能是本地网络权限），\(remaining) 次重试… → \(error)", "ssh")
+                        group.next().scheduleTask(in: .milliseconds(350)) {
+                            attemptConnect(remaining: remaining - 1)
+                        }
+                        return
+                    }
+                    Log.error("TCP 连接失败 \(creds.host):\(creds.port) → \(error)", "ssh")
+                    self.emitClose(error)
+                case .success(let channel):
+                    self.tcpChannel = channel
+                    self.openShell(on: channel, term: term, cols: cols, rows: rows)
+                }
             }
         }
+        attemptConnect(remaining: 2)
     }
 
     /// 有代理：先 TCP 连到代理，再在裸 TCP 通道上跑对应协议握手把隧道打通，

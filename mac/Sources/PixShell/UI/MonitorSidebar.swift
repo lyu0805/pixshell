@@ -26,6 +26,12 @@ final class MonitorSidebar: NSView {
 
     private var connBtn: PillButton!
     private var isConnected = false
+    private var lastIP = ""
+    // 网卡累计字节 → 速率：上一拍计数与时间戳
+    private var lastRx: Double?
+    private var lastTx: Double?
+    private var lastNetAt: CFAbsoluteTime?
+    private var netInited = false
 
     override init(frame frameRect: NSRect) { super.init(frame: frameRect); build() }
     required init?(coder: NSCoder) { fatalError() }
@@ -56,11 +62,39 @@ final class MonitorSidebar: NSView {
         connBtn = PillButton("连接", style: .secondary, hPad: 10, height: 22,
                              font: Theme.ui(11, .medium), target: self, action: #selector(toggleConn))
         addRow(pad(hstack([connDot, connText, spacer(), connBtn], gap: 6), 8, 10, 6, 10), border: true)
-        // IP 行
+        // IP 行：复制必须贴右且留足边距，避免和侧栏右边框叠字（截图 P0）
+        // 单击 IP 文本本身也要复制（用户：点 192.168.x.x 就该复制，不只点「复制」二字）
         ipValue.font = Theme.ui(12, .bold); ipValue.textColor = Theme.text
+        ipValue.lineBreakMode = .byTruncatingTail
+        ipValue.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        ipValue.isSelectable = false
+        ipValue.toolTip = "单击复制 IP"
+        // NSTextField(label) 默认不吃鼠标；包一层可点按钮区域
+        let ipHit = NSButton(title: "", target: self, action: #selector(copyIP))
+        ipHit.isBordered = false; ipHit.bezelStyle = .regularSquare
+        ipHit.setButtonType(.momentaryChange)
+        ipHit.toolTip = "单击复制 IP"
+        ipHit.translatesAutoresizingMaskIntoConstraints = false
+        let ipWrap = NSView(); ipWrap.translatesAutoresizingMaskIntoConstraints = false
+        ipValue.translatesAutoresizingMaskIntoConstraints = false
+        ipWrap.addSubview(ipValue); ipWrap.addSubview(ipHit)
+        NSLayoutConstraint.activate([
+            ipValue.leadingAnchor.constraint(equalTo: ipWrap.leadingAnchor),
+            ipValue.trailingAnchor.constraint(equalTo: ipWrap.trailingAnchor),
+            ipValue.topAnchor.constraint(equalTo: ipWrap.topAnchor),
+            ipValue.bottomAnchor.constraint(equalTo: ipWrap.bottomAnchor),
+            ipHit.leadingAnchor.constraint(equalTo: ipWrap.leadingAnchor),
+            ipHit.trailingAnchor.constraint(equalTo: ipWrap.trailingAnchor),
+            ipHit.topAnchor.constraint(equalTo: ipWrap.topAnchor),
+            ipHit.bottomAnchor.constraint(equalTo: ipWrap.bottomAnchor),
+        ])
         let ipLab = small("IP")
         let copy = linkBtn("复制", #selector(copyIP))
-        addRow(pad(hstack([ipLab, ipValue, spacer(), copy], gap: 6), 6, 10, 6, 10), border: true)
+        copy.setContentHuggingPriority(.required, for: .horizontal)
+        copy.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let ipRow = hstack([ipLab, ipWrap, spacer(), copy], gap: 6)
+        // pad 默认 trailing 是 ≤，spacer 撑不开；IP 行改成 = 才能把「复制」顶到右侧并吃到右内边距
+        addRow(padEqual(ipRow, 6, 10, 6, 12), border: true)
         // 系统信息按钮
         let sysBtn = PillButton("系统信息", style: .secondary, hPad: 12, height: 28, target: self, action: #selector(sysInfoTap))
         sysBtn.attributedTitle = NSAttributedString(string: "系统信息", attributes: [.foregroundColor: Theme.accent, .font: Theme.ui(12, .semibold)])
@@ -120,12 +154,25 @@ final class MonitorSidebar: NSView {
         return hstack([lab, v], gap: 6)
     }
     private func small(_ s: String) -> NSTextField { let l = NSTextField(labelWithString: s); l.font = Theme.ui(11); l.textColor = Theme.muted; return l }
-    private func spacer() -> NSView { let v = NSView(); v.setContentHuggingPriority(.init(1), for: .horizontal); return v }
+    private func spacer() -> NSView {
+        let v = NSView()
+        v.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        v.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return v
+    }
     private func linkBtn(_ t: String, _ a: Selector) -> NSButton {
         let b = NSButton(title: t, target: self, action: a); b.isBordered = false; b.bezelStyle = .regularSquare
-        b.attributedTitle = NSAttributedString(string: t, attributes: [.foregroundColor: Theme.accent, .font: Theme.ui(11)]); return b
+        b.attributedTitle = NSAttributedString(string: t, attributes: [.foregroundColor: Theme.accent, .font: Theme.ui(11)])
+        // 文字按钮给一点可点区域，避免贴边被裁
+        b.controlSize = .small
+        return b
     }
-    private func hstack(_ v: [NSView], gap: CGFloat) -> NSStackView { let s = NSStackView(views: v); s.orientation = .horizontal; s.spacing = gap; s.alignment = .centerY; return s }
+    private func hstack(_ v: [NSView], gap: CGFloat) -> NSStackView {
+        let s = NSStackView(views: v); s.orientation = .horizontal; s.spacing = gap; s.alignment = .centerY
+        s.distribution = .fill
+        s.translatesAutoresizingMaskIntoConstraints = false
+        return s
+    }
     private func vstack(_ v: [NSView], gap: CGFloat) -> NSStackView { let s = NSStackView(views: v); s.orientation = .vertical; s.alignment = .leading; s.spacing = gap; return s }
     private func vstackFull(_ v: [NSView]) -> NSStackView { let s = NSStackView(views: v); s.orientation = .vertical; s.alignment = .leading; s.spacing = 0; s.distribution = .fill; return s }
     private func pad(_ v: NSView, _ t: CGFloat, _ l: CGFloat, _ b: CGFloat, _ r: CGFloat) -> NSView {
@@ -134,6 +181,17 @@ final class MonitorSidebar: NSView {
         NSLayoutConstraint.activate([
             v.topAnchor.constraint(equalTo: c.topAnchor, constant: t), v.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: l),
             v.bottomAnchor.constraint(equalTo: c.bottomAnchor, constant: -b), v.trailingAnchor.constraint(lessThanOrEqualTo: c.trailingAnchor, constant: -r),
+        ]); return c
+    }
+    /// 满宽内边距（trailing 用 =）：侧栏「IP · 复制」这种需要 spacer 顶右的行必须用这个
+    private func padEqual(_ v: NSView, _ t: CGFloat, _ l: CGFloat, _ b: CGFloat, _ r: CGFloat) -> NSView {
+        let c = NSView(); c.translatesAutoresizingMaskIntoConstraints = false; v.translatesAutoresizingMaskIntoConstraints = false
+        c.addSubview(v)
+        NSLayoutConstraint.activate([
+            v.topAnchor.constraint(equalTo: c.topAnchor, constant: t),
+            v.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: l),
+            v.bottomAnchor.constraint(equalTo: c.bottomAnchor, constant: -b),
+            v.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -r),
         ]); return c
     }
 
@@ -186,6 +244,14 @@ final class MonitorSidebar: NSView {
         connBtn.title = on ? "断开" : "连接"
         connBtn.style = on ? .danger : .primary          // 触发重绘配色
         ipValue.stringValue = ip.isEmpty ? "-" : ip
+        if !on {
+            lastRx = nil
+            lastTx = nil
+            lastNetAt = nil
+            netInited = false
+            lastIP = ""
+            netTitle.stringValue = "-"
+        }
     }
     @objc private func toggleConn() { onToggleConnection?() }
     func update(_ m: [String: String]) {
@@ -204,9 +270,53 @@ final class MonitorSidebar: NSView {
             let f = ln.split(separator: "|").map(String.init)
             if f.count >= 3 { let r = diskRowV(f[0], "\(f[1])/\(f[2])", header: false, even: i % 2 == 1); diskBody.addArrangedSubview(r); r.widthAnchor.constraint(equalTo: diskBody.widthAnchor).isActive = true }
         }
-        netTitle.stringValue = m["netif"] ?? "-"
-        if let v = m["netval"], let d = Double(v) { netSpark.push(d) }
-        // 延迟：网关 ping。之前只写死"网关"两个字、也从没往 pingSpark 推数据 —— 整个"延迟"区是死的。
+        // 网络：iface + 实时上下行。netrx/nettx 为 /proc/net/dev 累计字节，速率 = Δbytes/Δt。
+        let iface = m["netif"] ?? "-"
+        let currentIP = ipValue.stringValue
+        if currentIP != lastIP {
+            lastIP = currentIP
+            lastRx = nil
+            lastTx = nil
+            lastNetAt = nil
+            netInited = false
+        }
+
+        let now = CFAbsoluteTimeGetCurrent()
+        var rxRate: Double = 0
+        var txRate: Double = 0
+        var totalRate: Double = 0
+        var hasRate = false
+
+        if let rxStr = m["netrx"], let txStr = m["nettx"],
+           let rxVal = Double(rxStr), let txVal = Double(txStr) {
+            if netInited, let prevRx = lastRx, let prevTx = lastTx, let prevTime = lastNetAt {
+                let dt = now - prevTime
+                if dt > 0.2 {
+                    rxRate = max(0, rxVal - prevRx) / dt
+                    txRate = max(0, txVal - prevTx) / dt
+                    totalRate = rxRate + txRate
+                    hasRate = true
+                }
+            }
+            lastRx = rxVal
+            lastTx = txVal
+            lastNetAt = now
+            netInited = true
+            // 与 Win 一致：↑ 上行(tx)  ↓ 下行(rx)
+            if hasRate {
+                netTitle.stringValue = "\(iface)  ↑ \(formatRate(txRate))  ↓ \(formatRate(rxRate))"
+            } else {
+                netTitle.stringValue = "\(iface)  ↑ 0 B/s  ↓ 0 B/s"
+            }
+            netSpark.push(totalRate)
+        } else {
+            netTitle.stringValue = "\(iface)  ↑ 0 B/s  ↓ 0 B/s"
+            if let v = m["netval"], let d = Double(v) {
+                netSpark.push(d)
+            }
+        }
+
+        // 延迟：网关 ping
         let gw = m["pinghost"] ?? ""
         if let ms = m["pingms"], let d = Double(ms) {
             pingTitle.stringValue = gw.isEmpty ? String(format: "网关 %.1f ms", d)
@@ -214,6 +324,23 @@ final class MonitorSidebar: NSView {
             pingSpark.push(d)
         } else {
             pingTitle.stringValue = gw.isEmpty ? "网关 -" : "网关 \(gw) · 超时"
+        }
+    }
+    private func formatRate(_ bytesPerSec: Double) -> String {
+        if bytesPerSec < 0 || bytesPerSec.isNaN || bytesPerSec.isInfinite { return "0 B/s" }
+        let units = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
+        var v = bytesPerSec
+        var i = 0
+        while v >= 1024 && i < units.count - 1 {
+            v /= 1024
+            i += 1
+        }
+        if i == 0 {
+            return String(format: "%.0f B/s", v)
+        } else if v < 10 {
+            return String(format: "%.1f %@", v, units[i])
+        } else {
+            return String(format: "%.0f %@", v, units[i])
         }
     }
     private func dbl(_ s: String?) -> Double { Double((s ?? "").replacingOccurrences(of: "%", with: "")) ?? 0 }

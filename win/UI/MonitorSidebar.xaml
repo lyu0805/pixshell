@@ -25,7 +25,7 @@
                 </Grid>
             </Border>
 
-            <!-- IP + 复制 -->
+            <!-- IP + 复制：单击 IP 文本本身也复制（不只「复制」按钮） -->
             <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="10,6,10,6">
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -36,7 +36,8 @@
                     <TextBlock Text="IP" FontSize="11" Foreground="{DynamicResource BrushMuted}" VerticalAlignment="Center"/>
                     <TextBlock x:Name="IpValue" Grid.Column="1" Text="-" FontSize="12" FontWeight="Bold" Margin="6,0,0,0"
                                Foreground="{DynamicResource BrushText}" VerticalAlignment="Center"
-                               TextTrimming="CharacterEllipsis"/>
+                               TextTrimming="CharacterEllipsis" Cursor="Hand" ToolTip="单击复制 IP"
+                               MouseLeftButtonUp="IpValue_Click"/>
                     <Button Grid.Column="2" Content="复制" Style="{StaticResource PillButton}" Padding="8,2"
                             FontSize="11" Click="CopyIp_Click"/>
                 </Grid>

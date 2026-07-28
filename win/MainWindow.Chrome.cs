@@ -2,14 +2,14 @@ using System;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media;
 
 namespace PixShell
 {
-    // WindowStyle=None + WindowChrome 的最大化修正。
-    // 无边框窗口最大化时，Win32 默认让窗口比显示器工作区更大：会盖住任务栏，
-    // 顶栏（含右上角 最小化/最大化/关闭 按钮）被推到屏幕外裁掉。
-    // 这里挂 WM_GETMINMAXINFO，把最大化的尺寸/位置钳制到「当前显示器工作区」（自动避让任务栏）。
-    // mac 版是原生窗口无此问题；这是 Windows 无边框自绘标题栏必须补的一课。
+    // WindowStyle=None + WindowChrome 的最大化 / 最小尺寸修正。
+    // 1) 无边框最大化：Win32 默认比工作区更大，会盖任务栏、把右上角 ✕ 顶出屏幕。
+    // 2) 最小尺寸：一旦 handled=true 接管 WM_GETMINMAXINFO，必须自己写 ptMinTrackSize，
+    //    否则 200% DPI 下窗口可被缩到裁掉 历史/发送/▾ 和顶栏关闭键（用户报缩放重叠）。
     public partial class MainWindow
     {
         protected override void OnSourceInitialized(EventArgs e)
@@ -24,15 +24,41 @@ namespace PixShell
         {
             if (msg == WM_GETMINMAXINFO)
             {
-                ClampMaximizeToWorkArea(hwnd, lParam);
+                ApplyMinMaxInfo(hwnd, lParam);
                 handled = true;
             }
             return IntPtr.Zero;
         }
 
-        private static void ClampMaximizeToWorkArea(IntPtr hwnd, IntPtr lParam)
+        private void ApplyMinMaxInfo(IntPtr hwnd, IntPtr lParam)
         {
             var mmi = Marshal.PtrToStructure<MINMAXINFO>(lParam);
+
+            // 物理像素最小跟踪尺寸：WPF MinWidth/MinHeight 是 DIP，Win32 要像素。
+            double dipMinW = MinWidth > 0 ? MinWidth : 720;
+            double dipMinH = MinHeight > 0 ? MinHeight : 500;
+            double scaleX = 1.0, scaleY = 1.0;
+            try
+            {
+                var src = PresentationSource.FromVisual(this);
+                if (src?.CompositionTarget != null)
+                {
+                    var m = src.CompositionTarget.TransformToDevice;
+                    scaleX = m.M11;
+                    scaleY = m.M22;
+                }
+                else
+                {
+                    // 源尚未就绪时用窗口 DPI
+                    int dpi = GetDpiForWindow(hwnd);
+                    if (dpi > 0) { scaleX = dpi / 96.0; scaleY = dpi / 96.0; }
+                }
+            }
+            catch { /* keep 1.0 */ }
+
+            mmi.ptMinTrackSize.X = Math.Max(1, (int)Math.Ceiling(dipMinW * scaleX));
+            mmi.ptMinTrackSize.Y = Math.Max(1, (int)Math.Ceiling(dipMinH * scaleY));
+
             IntPtr monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             if (monitor != IntPtr.Zero)
             {
@@ -40,19 +66,23 @@ namespace PixShell
                 if (GetMonitorInfo(monitor, ref info))
                 {
                     RECT work = info.rcWork, mon = info.rcMonitor;
-                    // 位置相对于显示器左上（多显示器/非零原点也正确）
                     mmi.ptMaxPosition.X = work.left - mon.left;
                     mmi.ptMaxPosition.Y = work.top - mon.top;
                     mmi.ptMaxSize.X = work.right - work.left;
                     mmi.ptMaxSize.Y = work.bottom - work.top;
-                    Marshal.StructureToPtr(mmi, lParam, true);
+                    // 最小不能超过工作区
+                    if (mmi.ptMinTrackSize.X > mmi.ptMaxSize.X) mmi.ptMinTrackSize.X = mmi.ptMaxSize.X;
+                    if (mmi.ptMinTrackSize.Y > mmi.ptMaxSize.Y) mmi.ptMinTrackSize.Y = mmi.ptMaxSize.Y;
                 }
             }
+
+            Marshal.StructureToPtr(mmi, lParam, true);
         }
 
         private const int MONITOR_DEFAULTTONEAREST = 0x00000002;
         [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr handle, int flags);
         [DllImport("user32.dll")] private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+        [DllImport("user32.dll")] private static extern int GetDpiForWindow(IntPtr hwnd);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct POINT { public int X, Y; }

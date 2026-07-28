@@ -16,6 +16,13 @@ public partial class MonitorSidebar : UserControl
     public event Action? OnCopyIp;
     public event Action? OnSysInfo;
 
+    // 网卡累计字节 → 速率：上一拍计数与时间戳（对齐 mac MonitorSidebar lastRx/lastTx）。
+    private long _lastRx;
+    private long _lastTx;
+    private DateTime _lastNetAt;
+    private bool _netInited;
+    private string _lastNetIp = "";
+
     public MonitorSidebar()
     {
         InitializeComponent();
@@ -27,6 +34,12 @@ public partial class MonitorSidebar : UserControl
     }
 
     private void CopyIp_Click(object sender, RoutedEventArgs e) => OnCopyIp?.Invoke();
+    /// <summary>单击 IP 地址文本也复制（对齐用户：点 192.168.x.x 就该复制）。</summary>
+    private void IpValue_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        OnCopyIp?.Invoke();
+        e.Handled = true;
+    }
     private void SysInfo_Click(object sender, RoutedEventArgs e) => OnSysInfo?.Invoke();
     private void ConnToggle_Click(object sender, RoutedEventArgs e) => OnToggleConnection?.Invoke();
 
@@ -46,6 +59,9 @@ public partial class MonitorSidebar : UserControl
             CpuBar.SetValue(0, ""); MemBar.SetValue(0, ""); SwapBar.SetValue(0, "");
             ProcBody.Children.Clear(); DiskBody.Children.Clear();
             NetTitle.Text = "-";
+            _netInited = false;
+            _lastRx = _lastTx = 0;
+            _lastNetIp = "";
         }
     }
 
@@ -74,8 +90,39 @@ public partial class MonitorSidebar : UserControl
             if (f.Length >= 3) DiskBody.Children.Add(DiskRow(f[0], $"{f[1]}/{f[2]}", i % 2 == 1));
         }
 
-        NetTitle.Text = m.GetValueOrDefault("netif", "-");
-        if (double.TryParse(m.GetValueOrDefault("netval"), out var nv)) NetSpark.Push(nv);
+        // 网络：iface + 实时上下行。netrx/nettx 为 /proc/net/dev 累计字节，速率 = Δbytes/Δt。
+        var iface = m.GetValueOrDefault("netif", "-");
+        var ipNow = IpValue.Text ?? "";
+        if (ipNow != _lastNetIp)
+        {
+            _lastNetIp = ipNow;
+            _netInited = false;
+        }
+        var hasRx = long.TryParse(m.GetValueOrDefault("netrx"), out var rx);
+        var hasTx = long.TryParse(m.GetValueOrDefault("nettx"), out var tx);
+        if (!hasRx || !hasTx)
+        {
+            // 兼容旧脚本只吐 netval（累计和）的情况：无法拆上下行，只推火花线。
+            NetTitle.Text = iface;
+            if (double.TryParse(m.GetValueOrDefault("netval"), out var nvLegacy)) NetSpark.Push(nvLegacy);
+        }
+        else
+        {
+            var now = DateTime.UtcNow;
+            double rxRate = 0, txRate = 0;
+            if (_netInited)
+            {
+                var dt = (now - _lastNetAt).TotalSeconds;
+                if (dt > 0.2)
+                {
+                    rxRate = Math.Max(0, rx - _lastRx) / dt;
+                    txRate = Math.Max(0, tx - _lastTx) / dt;
+                }
+            }
+            _lastRx = rx; _lastTx = tx; _lastNetAt = now; _netInited = true;
+            NetTitle.Text = $"{iface}  ↑ {FormatRate(txRate)}  ↓ {FormatRate(rxRate)}";
+            NetSpark.Push(rxRate + txRate);
+        }
 
         // 延迟：网关 ping。此前"延迟"整块是死的——标题写死"网关"两个字，PushPing 也从没人调用，
         // 火花线永远空白。现在监控命令里带回 pinghost/pingms，这里直接消费（与 mac 同一份数据口径）。
@@ -93,6 +140,17 @@ public partial class MonitorSidebar : UserControl
 
     /// <summary>网关延迟(ms)推送：给外部（如 MainWindow 自己测 TCP 时延）额外喂点用。</summary>
     public void PushPing(double ms) => PingSpark.Push(ms);
+
+    /// <summary>字节/秒 → 人类可读速率（B/s · KB/s · MB/s · GB/s）。</summary>
+    private static string FormatRate(double bytesPerSec)
+    {
+        if (bytesPerSec < 0 || double.IsNaN(bytesPerSec) || double.IsInfinity(bytesPerSec)) return "0 B/s";
+        var units = new[] { "B/s", "KB/s", "MB/s", "GB/s", "TB/s" };
+        var v = bytesPerSec;
+        var i = 0;
+        while (v >= 1024 && i < units.Length - 1) { v /= 1024; i++; }
+        return i == 0 ? $"{v:0} B/s" : v < 10 ? $"{v:0.0} {units[i]}" : $"{v:0} {units[i]}";
+    }
 
     private static double ParseDouble(string? s) => double.TryParse((s ?? "").Replace("%", ""), out var d) ? d : 0;
     private static (double, string) SplitPct(string s)
@@ -144,7 +202,7 @@ free -m 2>/dev/null | awk '/^Mem:/{printf ""mem=%.0f|%.1fG/%.1fG\n"",$3*100/$2,$
 free -m 2>/dev/null | awk '/^Swap:/{if($2>0)printf ""swap=%.0f|%.1fG/%.1fG\n"",$3*100/$2,$3/1024,$2/1024; else printf ""swap=0|0/0\n""}'
 printf ""disks=""; df -h 2>/dev/null | awk '$1 ~ /^\/dev/{printf ""%s|%s|%s;"",$6,$4,$2}'; echo
 printf ""procs=""; ps aux 2>/dev/null | sed 1d | sort -rk4 | awk 'NR<=5{c=$11; sub(/.*\//,"""",c); printf ""%dM|%s|%s;"",$6/1024,$3,c}'; echo
-cat /proc/net/dev 2>/dev/null | tr ':' ' ' | awk 'NR>2 && $1!=""lo"" && $1 !~ /^(docker|veth|br-)/{print ""netif=""$1; print ""netval=""$2+$10; exit}'
+cat /proc/net/dev 2>/dev/null | tr ':' ' ' | awk 'NR>2 && $1!=""lo"" && $1 !~ /^(docker|veth|br-)/{print ""netif=""$1; print ""netrx=""$2; print ""nettx=""$10; print ""netval=""$2+$10; exit}'
 gw=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}'); [ -n ""$gw"" ] || gw=$(netstat -rn 2>/dev/null | awk '/^0.0.0.0|^default/{print $2; exit}')
 if [ -n ""$gw"" ]; then echo ""pinghost=$gw""; ping -c 1 -W 1 ""$gw"" 2>/dev/null | awk -F'time=' '/time=/{split($2,a,"" "");printf ""pingms=%s\n"",a[1];exit}'; fi
 ";

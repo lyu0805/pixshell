@@ -34,8 +34,8 @@ final class CommandPanel: NSView {
     private var selectedCmdId: String?          // 列表里被选中的那条（左栏「发送」用）
 
     /// 右栏展开宽度；收起后只留一个窄条。
-    /// 320 → 213（收掉三分之一）：编辑器用不了那么宽，省下来的给左边命令列表多铺几列。
-    private static let rightExpanded: CGFloat = 213
+    /// 截图 P0：命令 tab 打开时编辑器被默认收/窄到看不见 —— 默认展开且更宽一点。
+    private static let rightExpanded: CGFloat = 280
     private static let rightCollapsed: CGFloat = 30
 
     /// 发送回调：(命令文本, 目标)。文本已含换行。

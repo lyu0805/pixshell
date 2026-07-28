@@ -89,7 +89,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
 
     // 命令框：历史 / 参数 / 目录同步
     var cmdHistory = CommandHistory()
-    var syncDirWithSftp = true         // 老仓库 settings.syncDirWithSftp 默认开
+    // P0：SFTP 与终端完全独立，禁止双向 cd 联动（点文件夹不再往终端灌 cd）
+    var syncDirWithSftp = false
 
     // 配置：darkTheme 始终反映当前 Theme.dark（主题可运行时切换）。
     var darkTheme: Bool { Theme.dark }
@@ -97,14 +98,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
 
     // MARK: - 生命周期
     func applicationDidFinishLaunching(_ note: Notification) {
+        // GPU 加速：**优先 layer-backed，失败可回落**。
+        // 硬开且无兜底会在弱 GPU 场景花屏/黑屏。策略：
+        // 1) 环境变量 PIXSHELL_RENDER=sw|hw 可覆盖
+        // 2) 上次崩溃标记 → 本轮关掉默认 Core Animation
+        // 3) 正常路径 register NSViewDefaultUsesCoreAnimation=true（可被 1/2 覆盖）
+        configureGpuAcceleration()
         Log.banner("0.1.1")
         Log.info("主题=\(Theme.dark ? "深色" : "浅色")（来源：env/持久化/默认）", "ui")
         NSApp.appearance = NSAppearance(named: darkTheme ? .darkAqua : .aqua)
         AppIcon.install()    // 没有 .app bundle 就没有图标资源，所有系统弹窗会退化成"蓝色文件夹"占位图
         buildMainMenu()
         buildWindow()
+        // macOS 15+：启动即触发「本地网络」系统弹窗（不能静默写 TCC，只能主动要一次）
+        LocalNetworkAuth.requestAuthorizationIfNeeded()
         maybeSeedAndAutoConnect()
         startAgentBridge()   // 本地桥：仅 127.0.0.1，token 鉴权
+        // 启动 8 秒仍存活 → 清崩溃标记（说明本轮 GPU 路径 OK）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+            Self.clearGpuCrashFlagIfNeeded()
+        }
+    }
+
+    /// GPU 偏好与崩溃回落。标记文件：Application Support/PixShell/gpu-fallback.flag
+    private func configureGpuAcceleration() {
+        let env = (ProcessInfo.processInfo.environment["PIXSHELL_RENDER"] ?? "").lowercased()
+        let flagURL: URL = {
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? URL(fileURLWithPath: NSTemporaryDirectory())
+            let dir = base.appendingPathComponent("PixShell", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir.appendingPathComponent("gpu-fallback.flag")
+        }()
+        Self._gpuFlagURL = flagURL
+
+        let forceSw = env == "sw" || env == "software" || env == "soft"
+        let forceHw = env == "hw" || env == "hardware" || env == "gpu"
+        let hadCrash = FileManager.default.fileExists(atPath: flagURL.path)
+
+        if forceSw || (!forceHw && hadCrash) {
+            // 软件兜底：不要 register 默认 CA；各视图仍可自行 wantsLayer，但不全局强开
+            UserDefaults.standard.set(false, forKey: "NSViewDefaultUsesCoreAnimation")
+            Log.info("GPU：软件兜底 (env=\(env.isEmpty ? "auto" : env), crashFlag=\(hadCrash))", "ui")
+            Self._gpuUsingFallback = true
+        } else {
+            UserDefaults.standard.register(defaults: [
+                "NSViewDefaultUsesCoreAnimation": true,
+            ])
+            Log.info("GPU：Core Animation 优先 (失败将写回落标记)", "ui")
+            Self._gpuUsingFallback = false
+        }
+
+        // 捕获下一次异常信号式崩溃不够（那是信号），这里挂 NSSetUncaughtExceptionHandler 写标记
+        NSSetUncaughtExceptionHandler { exc in
+            AppDelegate.markGpuCrash(reason: exc.reason ?? exc.name.rawValue)
+        }
+    }
+
+    /// 跨文件可读：Layout 根据此开关决定是否开 drawsAsynchronously。
+    static var _gpuFlagURL: URL?
+    static var _gpuUsingFallback = false
+
+    static func markGpuCrash(reason: String) {
+        guard !_gpuUsingFallback, let url = _gpuFlagURL else { return }
+        let body = "\(ISO8601DateFormatter().string(from: Date()))\n\(reason)\n"
+        try? body.write(to: url, atomically: true, encoding: .utf8)
+        Log.warn("已写 GPU 回落标记，下次启动将关闭默认 Core Animation", "ui")
+    }
+
+    static func clearGpuCrashFlagIfNeeded() {
+        guard !_gpuUsingFallback, let url = _gpuFlagURL else { return }
+        try? FileManager.default.removeItem(at: url)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 

@@ -1,37 +1,66 @@
 import AppKit
 
-/// 密钥管理器（遮罩 + 居中卡片，风格与连接管理器一致）。
-/// 老仓库 config.json 里有 `secret_key_list`，但没做出独立 UI；这里补上：
-/// 列出 ~/.ssh 下的私钥（类型/位数/指纹/注释/是否带口令），支持 生成 / 复制公钥 / 用于当前主机 / 删除 / 在访达中显示。
-final class KeyManager: NSView {
+/// 密钥管理器：独立弹出窗口（对齐 ConnManager），不再盖主窗口全屏遮罩。
+/// 列出 ~/.ssh 下的私钥（类型/位数/指纹/注释/是否带口令），
+/// 支持 生成 / 复制公钥 / 用于当前主机 / 删除 / 在访达中显示。
+final class KeyManager: NSWindowController {
     private let card = NSView()
     private let listStack = NSStackView()
     private let countLabel = NSTextField(labelWithString: "")
-    private var cardX: NSLayoutConstraint!
-    private var cardY: NSLayoutConstraint!
     private var keys: [SSHKeys.KeyInfo] = []
 
     /// 「用于此主机」：把选中的私钥路径回填给调用方（通常是主机编辑表单 / 当前主机）。
     var onUseKey: ((String) -> Void)?
     var onClose: (() -> Void)?
 
-    override init(frame frameRect: NSRect) { super.init(frame: frameRect); build() }
+    init() {
+        // 比旧遮罩卡片 560×(scroll 400) 约小三分之一 → 380×(scroll 270)
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 360),
+                         styleMask: [.titled, .closable, .fullSizeContentView, .resizable],
+                         backing: .buffered, defer: false)
+        w.title = "密钥管理"
+        w.titlebarAppearsTransparent = true
+        w.titleVisibility = .hidden
+        w.isMovableByWindowBackground = true
+        w.backgroundColor = .clear
+        w.isOpaque = false
+        w.hasShadow = true
+        w.isReleasedWhenClosed = false
+        w.minSize = NSSize(width: 320, height: 260)
+        w.standardWindowButton(.closeButton)?.isHidden = true
+        w.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        w.standardWindowButton(.zoomButton)?.isHidden = true
+        super.init(window: w)
+        build()
+    }
     required init?(coder: NSCoder) { fatalError() }
 
-    func show() { isHidden = false; reload() }
-    func hide() { isHidden = true }
+    func show() {
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
+        reload()
+    }
+    func hide() {
+        window?.orderOut(nil)
+        onClose?()
+    }
 
     private func build() {
-        wantsLayer = true
-        layer?.backgroundColor = NSColor(white: 0, alpha: 0.35).cgColor
-        translatesAutoresizingMaskIntoConstraints = false
+        guard let w = window else { return }
 
         card.rounded(Theme.radiusLg, bg: Theme.bg, border: Theme.borderStrong)
         card.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(card)
-        cardX = card.centerXAnchor.constraint(equalTo: centerXAnchor)
-        cardY = card.topAnchor.constraint(equalTo: topAnchor, constant: 40)
-        NSLayoutConstraint.activate([cardX, cardY, card.widthAnchor.constraint(equalToConstant: 560)])
+
+        let root = EscapableView()
+        root.onEscape = { [weak self] in self?.hide() }
+        root.addSubview(card)
+        NSLayoutConstraint.activate([
+            card.topAnchor.constraint(equalTo: root.topAnchor),
+            card.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            card.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            card.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+        ])
+        w.contentView = root
 
         let title = NSTextField(labelWithString: "密钥管理")
         title.font = Theme.ui(15, .semibold); title.textColor = Theme.text
@@ -41,10 +70,10 @@ final class KeyManager: NSView {
         let rightBtns = NSStackView(views: [genBtn, refBtn, closeBtn]); rightBtns.spacing = 6
         let head = NSStackView(views: [title, NSView(), rightBtns]); head.spacing = 12; head.alignment = .centerY
         head.translatesAutoresizingMaskIntoConstraints = false
-        head.addGestureRecognizer(HeaderPanGesture(target: self, action: #selector(dragCard(_:))))
 
         countLabel.font = Theme.ui(12); countLabel.textColor = Theme.muted
         countLabel.translatesAutoresizingMaskIntoConstraints = false
+        countLabel.lineBreakMode = .byTruncatingMiddle
 
         listStack.orientation = .vertical; listStack.alignment = .leading; listStack.spacing = 8
         listStack.translatesAutoresizingMaskIntoConstraints = false
@@ -56,15 +85,16 @@ final class KeyManager: NSView {
         card.addSubview(head); card.addSubview(countLabel); card.addSubview(scroll)
         NSLayoutConstraint.activate([
             head.topAnchor.constraint(equalTo: card.topAnchor, constant: 14),
-            head.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-            head.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
-            countLabel.topAnchor.constraint(equalTo: head.bottomAnchor, constant: 10),
-            countLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+            head.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            head.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            countLabel.topAnchor.constraint(equalTo: head.bottomAnchor, constant: 8),
+            countLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            countLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
             scroll.topAnchor.constraint(equalTo: countLabel.bottomAnchor, constant: 8),
-            scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
-            scroll.heightAnchor.constraint(equalToConstant: 400),
+            scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
+            scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
+            scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220),
             doc.topAnchor.constraint(equalTo: scroll.topAnchor), doc.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
             doc.trailingAnchor.constraint(equalTo: scroll.trailingAnchor), doc.widthAnchor.constraint(equalTo: scroll.widthAnchor),
             listStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 4),
@@ -105,13 +135,13 @@ final class KeyManager: NSView {
         cmt.font = Theme.ui(10.5); cmt.textColor = Theme.muted
         cmt.lineBreakMode = .byTruncatingMiddle
 
-        let useBtn = PillButton("用于此主机", style: .primary, hPad: 10, height: 24,
+        let useBtn = PillButton("用于此主机", style: .primary, hPad: 8, height: 24,
                                 font: Theme.ui(11, .semibold), target: self, action: #selector(useKey(_:)))
-        let copyBtn = PillButton("复制公钥", style: .secondary, hPad: 10, height: 24,
+        let copyBtn = PillButton("复制公钥", style: .secondary, hPad: 8, height: 24,
                                  font: Theme.ui(11, .medium), target: self, action: #selector(copyPub(_:)))
-        let showBtn = PillButton("在访达中显示", style: .secondary, hPad: 10, height: 24,
+        let showBtn = PillButton("访达", style: .secondary, hPad: 8, height: 24,
                                  font: Theme.ui(11, .medium), target: self, action: #selector(revealKey(_:)))
-        let delBtn = PillButton("删除", style: .danger, hPad: 10, height: 24,
+        let delBtn = PillButton("删除", style: .danger, hPad: 8, height: 24,
                                 font: Theme.ui(11, .medium), target: self, action: #selector(deleteKey(_:)))
         for b in [useBtn, copyBtn, showBtn, delBtn] { b.identifier = .init("\(index)") }
         let btnRow = NSStackView(views: [useBtn, copyBtn, showBtn, NSView(), delBtn])
@@ -123,8 +153,8 @@ final class KeyManager: NSView {
         box.addSubview(v)
         NSLayoutConstraint.activate([
             v.topAnchor.constraint(equalTo: box.topAnchor, constant: 10),
-            v.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 12),
-            v.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -12),
+            v.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 10),
+            v.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -10),
             v.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -10),
             topRow.widthAnchor.constraint(equalTo: v.widthAnchor),
             btnRow.widthAnchor.constraint(equalTo: v.widthAnchor),
@@ -138,21 +168,8 @@ final class KeyManager: NSView {
     }
 
     // MARK: 动作
-    @objc private func hideAction() { hide(); onClose?() }
+    @objc private func hideAction() { hide() }
     @objc private func reloadAction() { reload() }
-    @objc private func dragCard(_ g: NSPanGestureRecognizer) {
-        let t = g.translation(in: self)
-        cardX.constant += t.x; cardY.constant += t.y
-        g.setTranslation(.zero, in: self)
-    }
-    override func mouseDown(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        if !card.frame.contains(p) { hide(); onClose?() } else { super.mouseDown(with: event) }
-    }
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if !isHidden, event.keyCode == 53 { hide(); onClose?(); return true }
-        return super.performKeyEquivalent(with: event)
-    }
 
     @objc private func useKey(_ b: NSButton) {
         guard let k = key(b) else { return }
@@ -212,11 +229,11 @@ final class KeyManager: NSView {
         grid.translatesAutoresizingMaskIntoConstraints = false
         for (label, view) in [("文件名", nameField as NSView), ("类型", typePopup), ("注释", commentField), ("口令", passField)] {
             view.translatesAutoresizingMaskIntoConstraints = false
-            view.widthAnchor.constraint(equalToConstant: 260).isActive = true
+            view.widthAnchor.constraint(equalToConstant: 220).isActive = true
             let l = NSTextField(labelWithString: label); l.alignment = .right
             grid.addRow(with: [l, view])
         }
-        let wrap = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 132))
+        let wrap = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 132))
         wrap.addSubview(grid)
         NSLayoutConstraint.activate([
             grid.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 6),
