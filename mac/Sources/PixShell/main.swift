@@ -67,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     var connMgr: ConnManager!
     var sysInfo: SysInfoPanel!
     var toolsPanel: ToolsPanel!        // 顶栏宫格 → 工具面板
-    var backupPanel: BackupPanel!      // 菜单 云端同步 → 备份选项
+    var backupPanel: BackupPanel!      // 备份选项独立弹窗（对齐 ConnManager）
     var editorPanel: EditorPanel!
     var detachedWindows: [DetachedTermWindow] = []   // 被拖出去的会话窗口（持有，否则 ARC 立刻回收）
     var editorWindow: NSWindow?        // 编辑器独立窗口（可拖出主窗）      // 内置文本编辑器（SFTP 双击文件打开）

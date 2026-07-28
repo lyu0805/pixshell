@@ -282,19 +282,11 @@ extension AppDelegate {
             proxyPanel.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
 
-        // 备份选项面板（菜单 云端同步 → 备份选项配置…）
-        backupPanel = BackupPanel(frame: .zero); backupPanel.isHidden = true
+        // 备份选项弹窗（独立 NSWindow，对齐连接管理器尺寸；不再嵌主窗全屏遮罩）
+        backupPanel = BackupPanel()
         backupPanel.onSave = { [weak self] set in self?.backupEnabled = set }
         backupPanel.onExport = { [weak self] in self?.exportHosts() }
         backupPanel.onImport = { [weak self] in self?.importHosts() }
-        backupPanel.onClose = { [weak self] in self?.backupPanel.isHidden = true }
-        root.addSubview(backupPanel)
-        NSLayoutConstraint.activate([
-            backupPanel.topAnchor.constraint(equalTo: topBar.bottomAnchor),
-            backupPanel.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            backupPanel.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            backupPanel.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-        ])
 
         // 侧栏折叠后的「⟩ 侧栏」竖条（点击展开）
         sidebarEdge = buildSidebarEdge(); sidebarEdge.isHidden = !sideCollapsed

@@ -247,7 +247,10 @@ extension AppDelegate {
     @objc func openProxy() { Log.info("打开代理管理", "ui"); proxyPanel.show(); proxyPanel.superview?.addSubview(proxyPanel) }
 
     // MARK: 云端同步
-    @objc func openBackup() { backupPanel.show(enabled: backupEnabled) }
+    @objc func openBackup() {
+        // 独立弹窗；尺寸约连接管理器，不再盖住主窗底栏
+        backupPanel.show(enabled: backupEnabled)
+    }
 
     // MARK: 设置（终端字号 / 主题 / 语义高亮）
     @objc func openSettings() {

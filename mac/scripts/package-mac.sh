@@ -19,6 +19,10 @@ else
   exit 2
 fi
 
+if [ -n "${ARCH:-}" ]; then
+  BUILD_ARGS+=("--arch" "$ARCH")
+fi
+
 echo "定位 SwiftPM $CONFIG 输出目录 ..."
 BIN_DIR="$(cd "$ROOT" && swift build "${BUILD_ARGS[@]}" --show-bin-path)"
 BIN="$BIN_DIR/PixShell"
@@ -175,41 +179,98 @@ shopt -u nullglob
 #   1) 先在临时路径给 Mach-O 单独 ad-hoc 签，再放进 .app（避免从 bundle 内签被父级连坐）
 #   2) 每个 *.bundle 单独签
 #   3) .app 级签名允许失败；本地网络 TCC 主要跟主可执行文件身份走
+# 稳定 codesign 身份：优先复用 login keychain 里的 "PixShell Local" 自签证书。
+# ad-hoc（codesign -s -）每次 CDHash 都变 → 钥匙串每次弹登录密码。
+# 自签证书跨 rebuild CDHash 稳定（同一证书），Keychain ACL / TCC 才能记住。
+ensure_local_sign_identity() {
+  local name="PixShell Local"
+  if security find-identity -v -p codesigning 2>/dev/null | grep -q "$name"; then
+    echo "$name"
+    return 0
+  fi
+  local dir="${HOME}/Library/Application Support/PixShell/codesign"
+  mkdir -p "$dir"
+  local key="$dir/pixshell-local.key"
+  local crt="$dir/pixshell-local.crt"
+  local p12="$dir/pixshell-local.p12"
+  local conf="$dir/openssl.cnf"
+  if [ ! -f "$p12" ]; then
+    cat > "$conf" <<'EOF'
+[ req ]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_code_signing
+prompt = no
+[ req_distinguished_name ]
+CN = PixShell Local
+O = PixShell
+[ v3_code_signing ]
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature
+extendedKeyUsage = codeSigning
+EOF
+    openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
+      -keyout "$key" -out "$crt" -config "$conf" >/dev/null 2>&1 || return 1
+    openssl pkcs12 -export -inkey "$key" -in "$crt" -out "$p12" \
+      -passout pass:pixshell-local -name "$name" >/dev/null 2>&1 || return 1
+  fi
+  security import "$p12" -k ~/Library/Keychains/login.keychain-db \
+    -P pixshell-local -T /usr/bin/codesign -T /usr/bin/security >/dev/null 2>&1 || true
+  # 允许 codesign 不弹钥匙串（尽量）
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" \
+    ~/Library/Keychains/login.keychain-db >/dev/null 2>&1 || true
+  if security find-identity -v -p codesigning 2>/dev/null | grep -q "$name"; then
+    echo "$name"
+    return 0
+  fi
+  return 1
+}
+
 if command -v codesign >/dev/null 2>&1; then
-  echo "ad-hoc codesign（稳定本地网络 TCC 身份）…"
+  SIGN_ID="-"
+  if LOCAL_ID="$(ensure_local_sign_identity)"; then
+    SIGN_ID="$LOCAL_ID"
+    echo "codesign 使用稳定身份: $SIGN_ID（钥匙串/TCC 可跨启动记住）"
+  else
+    echo "警告: 无法创建 PixShell Local 证书，回退 ad-hoc（钥匙串可能每次弹窗）" >&2
+  fi
   sign_ok=1
 
   # 主可执行：拷到 /tmp 再签，再写回（绕过 .app 根 unsealed 连坐）
   tmp_bin="$(mktemp -t PixShell.XXXXXX)"
   cp "$APP/Contents/MacOS/PixShell" "$tmp_bin"
   chmod +x "$tmp_bin"
-  if codesign --force --sign - --timestamp=none --identifier com.pixshell.mac "$tmp_bin" 2>/tmp/pixshell-codesign.err; then
+  if codesign --force --sign "$SIGN_ID" --timestamp=none --identifier com.pixshell.mac "$tmp_bin" 2>/tmp/pixshell-codesign.err; then
     cp "$tmp_bin" "$APP/Contents/MacOS/PixShell"
     chmod +x "$APP/Contents/MacOS/PixShell"
-    echo "主可执行 ad-hoc 签名 OK (id=com.pixshell.mac)"
+    echo "主可执行签名 OK (id=com.pixshell.mac, identity=$SIGN_ID)"
   else
-    echo "警告: 可执行文件签名失败" >&2
+    echo "警告: 可执行文件签名失败，尝试 ad-hoc…" >&2
     cat /tmp/pixshell-codesign.err >&2 || true
-    sign_ok=0
+    if codesign --force --sign - --timestamp=none --identifier com.pixshell.mac "$tmp_bin" 2>/tmp/pixshell-codesign.err; then
+      cp "$tmp_bin" "$APP/Contents/MacOS/PixShell"
+      chmod +x "$APP/Contents/MacOS/PixShell"
+      SIGN_ID="-"
+      echo "主可执行 ad-hoc 回退 OK"
+    else
+      sign_ok=0
+    fi
   fi
   rm -f "$tmp_bin"
 
   shopt -s nullglob
   for bundle in "$APP"/*.bundle; do
     [ -e "$bundle" ] || continue
-    if ! codesign --force --sign - --timestamp=none "$bundle" 2>/tmp/pixshell-codesign.err; then
-      echo "警告: bundle 签名失败: $bundle" >&2
-      cat /tmp/pixshell-codesign.err >&2 || true
-      sign_ok=0
+    if ! codesign --force --sign "$SIGN_ID" --timestamp=none "$bundle" 2>/tmp/pixshell-codesign.err; then
+      codesign --force --sign - --timestamp=none "$bundle" 2>/dev/null || true
+      echo "警告: bundle 签名降级: $(basename "$bundle")" >&2
     else
       echo "bundle 签名 OK: $(basename "$bundle")"
     fi
   done
   shopt -u nullglob
 
-  # .app 级：根上有 SwiftPM bundle，完整 seal 通常会失败；试一下不阻断。
-  if codesign --force --sign - --timestamp=none "$APP" 2>/tmp/pixshell-codesign.err; then
-    echo ".app 级 ad-hoc 签名 OK"
+  if codesign --force --sign "$SIGN_ID" --timestamp=none "$APP" 2>/tmp/pixshell-codesign.err; then
+    echo ".app 级签名 OK ($SIGN_ID)"
   else
     echo "提示: .app 级签名跳过（根级 SwiftPM .bundle 导致 unsealed；主二进制已单独签）" >&2
     head -5 /tmp/pixshell-codesign.err >&2 || true
@@ -220,12 +281,12 @@ if command -v codesign >/dev/null 2>&1; then
   echo "---- codesign -dv (.app, may be unsigned) ----"
   codesign -dv --verbose=2 "$APP" 2>&1 | head -10 || true
   if [ "$sign_ok" = 1 ]; then
-    echo "ad-hoc codesign 完成（主二进制+资源 bundle；TCC 身份应可记住本地网络授权）"
+    echo "codesign 完成 identity=$SIGN_ID（稳定身份可减少钥匙串反复授权）"
   else
-    echo "警告: 部分签名失败，本地网络仍可能 errno 65" >&2
+    echo "警告: 部分签名失败" >&2
   fi
 else
-  echo "警告: 无 codesign，跳过 ad-hoc 签名" >&2
+  echo "警告: 无 codesign，跳过签名" >&2
 fi
 
 echo "完成: $APP (version ${VERSION})"

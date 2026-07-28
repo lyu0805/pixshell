@@ -6,12 +6,12 @@ extension AppDelegate {
 
     @objc func addHost() {
         HostEditor.present(over: window, host: nil, password: nil) { [weak self] h, pass in
-            self?.store.upsert(h); Keychain.setPassword(pass, for: h.id); self?.refreshHostUI()
+            self?.store.upsert(h); Keychain.setPassword(pass, for: h.id, label: h.host.isEmpty ? h.name : h.host); self?.refreshHostUI()
         }
     }
     func editHostDirect(_ host: Host) {
         HostEditor.present(over: window, host: host, password: Keychain.password(for: host.id)) { [weak self] h, pass in
-            self?.store.upsert(h); Keychain.setPassword(pass, for: h.id); self?.refreshHostUI()
+            self?.store.upsert(h); Keychain.setPassword(pass, for: h.id, label: h.host.isEmpty ? h.name : h.host); self?.refreshHostUI()
         }
     }
     @objc func editHost() {

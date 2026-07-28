@@ -30,7 +30,7 @@ extension AppDelegate {
         // 密码认证路径：无 key、无已存密码 → 必须向用户要密码；空串直接 return（与 key auth 区分）。
         promptPassword(for: host, prefill: "") { [weak self] pw, remember in
             guard let self = self, let pw = pw, !pw.isEmpty else { return }
-            if remember { Keychain.setPassword(pw, for: host.id) }
+            if remember { Keychain.setPassword(pw, for: host.id, label: host.host.isEmpty ? host.name : host.host) }
             self.beginSession(to: host, password: pw)
         }
     }
@@ -260,7 +260,7 @@ extension AppDelegate {
         if pass.isEmpty, sess.host.keyPath.isEmpty {
             promptPassword(for: sess.host, prefill: "") { [weak self, weak sess] pw, remember in
                 guard let self = self, let sess = sess, let pw = pw, !pw.isEmpty else { return }
-                if remember { Keychain.setPassword(pw, for: sess.host.id) }
+                if remember { Keychain.setPassword(pw, for: sess.host.id, label: sess.host.host.isEmpty ? sess.host.name : sess.host.host) }
                 self.startSSH(for: sess, password: pw)
                 self.rebuildTabs()
             }
@@ -335,7 +335,7 @@ extension AppDelegate {
                 guard let self = self else { return }
                 self.retryPrompting = false
                 guard let pw = pw, !pw.isEmpty else { return }
-                if remember { Keychain.setPassword(pw, for: host.id) }
+                if remember { Keychain.setPassword(pw, for: host.id, label: host.host.isEmpty ? host.name : host.host) }
                 self.beginSession(to: host, password: pw)
             }
         }
@@ -476,7 +476,7 @@ extension AppDelegate {
         if store.hosts.isEmpty, let h = env["PIXSHELL_HOST"], !h.isEmpty {
             let host = Host(name: env["PIXSHELL_NAME"] ?? "Demo Host", host: h,
                             port: Int(env["PIXSHELL_PORT"] ?? "22") ?? 22, username: env["PIXSHELL_USER"] ?? "root")
-            store.upsert(host); if let p = env["PIXSHELL_PASS"] { Keychain.setPassword(p, for: host.id) }
+            store.upsert(host); if let p = env["PIXSHELL_PASS"] { Keychain.setPassword(p, for: host.id, label: host.host.isEmpty ? host.name : host.host) }
             tableView.reloadData()
         }
         if env["PIXSHELL_AUTOCONNECT"] == "1", !store.hosts.isEmpty {
