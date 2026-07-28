@@ -700,11 +700,17 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
                 Log.error("压缩包上传失败: \(e)", "sftp")
                 self.statusLabel.stringValue = "上传失败: \(self.msg(e))"; return
             }
-            let dst = SFTPTransfer.quote(self.remotePath)
-            let arc = SFTPTransfer.quote(remoteArchive)
-            ssh("tar -xzf \(arc) -C \(dst) 2>&1; rm -f \(arc)") { out in
-                self.statusLabel.stringValue = out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? "已上传并解压 \(urls.count) 项" : "远端解压: \(out)"
+            ssh(SFTPTransfer.extractCommand(archive: remoteArchive, into: self.remotePath)) { out in
+                let parsed = SFTPTransfer.parseRemoteRC(out)
+                if parsed.code != 0 {
+                    let detail = parsed.message.isEmpty ? "exit \(parsed.code)" : parsed.message
+                    Log.error("远端解压失败: \(detail)", "sftp")
+                    self.statusLabel.stringValue = "远端解压失败: \(detail)"
+                    // 解压失败时 extractCommand 仍会 rm 临时包；刷新以反映可能的部分写入
+                    self.reloadRemote()
+                    return
+                }
+                self.statusLabel.stringValue = "已上传并解压 \(urls.count) 项"
                 Log.info("打包上传完成 → \(self.remotePath)", "sftp")
                 self.reloadRemote()
             }
@@ -812,12 +818,20 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
         Log.info("智能打包下载 \(paths.joined(separator: ", "))", "sftp")
         ssh(SFTPTransfer.packCommand(archive: remoteArchive, remotePaths: paths)) { [weak self] out in
             guard let self = self else { return }
+            let packed = SFTPTransfer.parseRemoteRC(out)
+            if packed.code != 0 {
+                let detail = packed.message.isEmpty ? "exit \(packed.code)" : packed.message
+                Log.error("远端打包失败: \(detail)", "sftp")
+                self.statusLabel.stringValue = "远端打包失败: \(detail)"
+                self.execRunner?("rm -f \(SFTPTransfer.quote(remoteArchive))") { _ in }
+                return
+            }
             self.statusLabel.stringValue = "下载压缩包 …"
             sftp.download(remote: remoteArchive, local: localArchive) { r in
                 self.execRunner?("rm -f \(SFTPTransfer.quote(remoteArchive))") { _ in }
                 switch r {
                 case .failure(let e):
-                    Log.error("打包下载失败: \(e) 远端输出=\(out)", "sftp")
+                    Log.error("打包下载失败: \(e) 远端输出=\(packed.message)", "sftp")
                     self.statusLabel.stringValue = "下载失败: \(self.msg(e))"
                 case .success:
                     if let err = SFTPTransfer.extractLocal(archive: localArchive, into: destDir.path) {

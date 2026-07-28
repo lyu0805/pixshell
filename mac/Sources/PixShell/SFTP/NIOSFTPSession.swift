@@ -38,22 +38,26 @@ public final class NIOSFTPSession: SFTPService {
                                                keyPath: creds.keyPath)
         // 与 NIOSSHSession 一致：显式挂库内 transport（当前仅 AES-GCM）。
         // Dropbear/OpenWrt 无 GCM 时会在握手期失败，由 SFTPPanel 回落 OpenSSHSFTPSession。
-        let clientConfig = SSHClientConfiguration(
+        // SSHClientConfiguration / NIOSSHHandler 非 Sendable；NIO 回调跨线程只读传递，用 box 消警告。
+        let clientConfig = NIOSSHClientConfigBox(SSHClientConfiguration(
             userAuthDelegate: authDelegate,
             serverAuthDelegate: SFTPAcceptAllHostKeysDelegate(),
             transportProtectionSchemes: Constants.bundledTransportProtectionSchemes
-        )
+        ))
 
         let bootstrap = ClientBootstrap(group: group)
             .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .channelInitializer { channel in
-                channel.pipeline.addHandlers([
-                    NIOSSHHandler(
-                        role: .client(clientConfig),
-                        allocator: channel.allocator,
-                        inboundChildChannelInitializer: nil
+                // NIOSSHHandler 库侧标记 Sendable unavailable；用 syncOperations 在本 event loop 同步装。
+                channel.eventLoop.makeCompletedFuture {
+                    try channel.pipeline.syncOperations.addHandler(
+                        NIOSSHHandler(
+                            role: .client(clientConfig.value),
+                            allocator: channel.allocator,
+                            inboundChildChannelInitializer: nil
+                        )
                     )
-                ])
+                }
             }
 
         bootstrap.connect(host: creds.host, port: creds.port).whenComplete { [weak self] result in

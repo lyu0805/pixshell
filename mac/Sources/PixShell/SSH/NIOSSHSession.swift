@@ -33,11 +33,12 @@ public final class NIOSSHSession: SSHSession {
         let authDelegate = SSHUserAuthDelegate(username: creds.username, password: creds.password, keyPath: creds.keyPath)
         // 显式挂上库内全部 transport protection（当前仅 AES-GCM 两档）。
         // KEX / HostKey 列表由 NIOSSH 内部写死，无法在 ClientConfiguration 再扩。
-        let clientConfig = SSHClientConfiguration(
+        // SSHClientConfiguration / NIOSSHHandler 非 Sendable；NIO 回调跨线程只读传递，用 box 消警告。
+        let clientConfig = NIOSSHClientConfigBox(SSHClientConfiguration(
             userAuthDelegate: authDelegate,
             serverAuthDelegate: AcceptAllHostKeysDelegate(),
             transportProtectionSchemes: Constants.bundledTransportProtectionSchemes
-        )
+        ))
 
         // 代理：ssh-jump(跳板机) 本版本未实现真正的跳板逻辑——退化为直连，只记一条警告，
         // 绝不假装能走通导致连接卡死。见 Proxy/ProxyConfig.swift 里 ProxyType.sshJump 的注释。
@@ -56,20 +57,23 @@ public final class NIOSSHSession: SSHSession {
 
     /// 无代理：老的直连路径，字节不动——bootstrap 的 channelInitializer 里直接装 NIOSSHHandler。
     private func connectDirect(_ creds: SSHCredentials, group: EventLoopGroup,
-                                clientConfig: SSHClientConfiguration, term: String, cols: Int, rows: Int) {
+                                clientConfig: NIOSSHClientConfigBox, term: String, cols: Int, rows: Int) {
         let bootstrap = ClientBootstrap(group: group)
             .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             // TCP_NODELAY：交互式 shell 小包立即发，别被 Nagle 攒着（局域网体感延迟）
             .channelOption(ChannelOptions.socketOption(.tcp_nodelay), value: 1)
             .channelOption(ChannelOptions.connectTimeout, value: .seconds(12))
             .channelInitializer { channel in
-                channel.pipeline.addHandlers([
-                    NIOSSHHandler(
-                        role: .client(clientConfig),
-                        allocator: channel.allocator,
-                        inboundChildChannelInitializer: nil
+                // NIOSSHHandler 库侧标记 Sendable unavailable；用 syncOperations 在本 event loop 同步装，避开 @Sendable 捕获。
+                channel.eventLoop.makeCompletedFuture {
+                    try channel.pipeline.syncOperations.addHandler(
+                        NIOSSHHandler(
+                            role: .client(clientConfig.value),
+                            allocator: channel.allocator,
+                            inboundChildChannelInitializer: nil
+                        )
                     )
-                ])
+                }
             }
 
         // macOS 15+ 本地网络隐私偶发把首连打成 EHOSTUNREACH(65)；短延迟重试一次，
@@ -104,7 +108,7 @@ public final class NIOSSHSession: SSHSession {
     /// 有代理：先 TCP 连到代理，再在裸 TCP 通道上跑对应协议握手把隧道打通，
     /// 隧道建立后才在**同一个 channel** 上装 NIOSSHHandler，继续走跟直连一样的 openShell 流程。
     private func connectViaProxy(_ proxy: ProxyConfig, creds: SSHCredentials, group: EventLoopGroup,
-                                  clientConfig: SSHClientConfiguration, term: String, cols: Int, rows: Int) {
+                                  clientConfig: NIOSSHClientConfigBox, term: String, cols: Int, rows: Int) {
         Log.info("经代理 \(proxy.type.rawValue) \(proxy.host):\(proxy.port) 连接 \(creds.host):\(creds.port)", "proxy")
         let bootstrap = ClientBootstrap(group: group)
             .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -124,7 +128,7 @@ public final class NIOSSHSession: SSHSession {
     }
 
     private func performProxyHandshake(_ proxy: ProxyConfig, on channel: Channel, creds: SSHCredentials,
-                                        clientConfig: SSHClientConfiguration, term: String, cols: Int, rows: Int) {
+                                        clientConfig: NIOSSHClientConfigBox, term: String, cols: Int, rows: Int) {
         let promise = channel.eventLoop.makePromise(of: ByteBuffer.self)
         let handler: ChannelHandler & RemovableChannelHandler
         switch proxy.type {
@@ -155,9 +159,16 @@ public final class NIOSSHSession: SSHSession {
                 self.emitClose(error)
             case .success(let leftover):
                 Log.info("代理握手成功: \(proxy.type.rawValue) \(proxy.host):\(proxy.port) → 隧道已建立，继续 SSH 握手", "proxy")
-                channel.pipeline.addHandler(
-                    NIOSSHHandler(role: .client(clientConfig), allocator: channel.allocator, inboundChildChannelInitializer: nil)
-                ).whenComplete { result in
+                // syncOperations：在本 event loop 同步装 NIOSSHHandler，避开 Sendable 不可用警告。
+                channel.eventLoop.makeCompletedFuture {
+                    try channel.pipeline.syncOperations.addHandler(
+                        NIOSSHHandler(
+                            role: .client(clientConfig.value),
+                            allocator: channel.allocator,
+                            inboundChildChannelInitializer: nil
+                        )
+                    )
+                }.whenComplete { result in
                     switch result {
                     case .failure(let error):
                         self.emitClose(error)

@@ -1,4 +1,14 @@
 import Foundation
+import NIOSSH
+
+/// 把非 Sendable 的 `SSHClientConfiguration` 包一层，供 NIO `channelInitializer` /
+/// `whenComplete` 等 `@Sendable` 闭包捕获。配置本身只在建连阶段只读使用，
+/// 真正的 handler 生命周期仍由 NIO event loop 约束——这是消 Sendable 警告的标准手法，
+/// 不是把配置变成可跨线程可变共享。
+struct NIOSSHClientConfigBox: @unchecked Sendable {
+    let value: SSHClientConfiguration
+    init(_ value: SSHClientConfiguration) { self.value = value }
+}
 
 /// 终端会话所需的最小 SSH 接口。SwiftTerm 的 TerminalView 通过它收发字节。
 /// 关键路径由本文件的协议锁定：任何实现（Citadel / swift-nio-ssh / libssh2 封装）

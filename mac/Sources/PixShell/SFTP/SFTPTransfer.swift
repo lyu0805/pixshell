@@ -20,7 +20,8 @@ enum SFTPTransfer {
         return one.isDir || one.size >= packThreshold
     }
 
-    /// 构造远端打包命令：逐项 `-C 父目录 basename`
+    /// 构造远端打包命令：逐项 `-C 父目录 basename`；末尾回传 `__PIXSHELL_RC:<code>` 供调用方判定成败
+    /// （`ssh.exec` 只回 stdout 文本，不带 exit code）。
     static func packCommand(archive: String, remotePaths: [String]) -> String {
         let parts = remotePaths.map { rp -> String in
             let norm = rp.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
@@ -30,19 +31,44 @@ enum SFTPTransfer {
             if parent.isEmpty || parent == "." { parent = "/" }
             return "-C \(quote(parent)) \(quote(base.isEmpty ? path : base))"
         }.joined(separator: " ")
-        return "tar -czf \(quote(archive)) \(parts) 2>&1"
+        return "tar -czf \(quote(archive)) \(parts) 2>&1; echo __PIXSHELL_RC:$?"
+    }
+
+    /// 远端解压命令：解压后删临时包，并回传 tar 的真实退出码（rm 不影响 RC）
+    static func extractCommand(archive: String, into remoteDir: String) -> String {
+        let arc = quote(archive)
+        let dst = quote(remoteDir)
+        return "tar -xzf \(arc) -C \(dst) 2>&1; rc=$?; rm -f \(arc); echo __PIXSHELL_RC:$rc"
+    }
+
+    /// 解析 `ssh.exec` 输出里的 `__PIXSHELL_RC:N`；无标记时按「有/无 stderr 风格输出」兜底。
+    static func parseRemoteRC(_ out: String) -> (code: Int, message: String) {
+        let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let range = trimmed.range(of: #"__PIXSHELL_RC:(-?\d+)\s*$"#, options: .regularExpression) {
+            let tail = String(trimmed[range])
+            let msg = trimmed[..<range.lowerBound]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let num = tail.replacingOccurrences(of: "__PIXSHELL_RC:", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return (Int(num) ?? 1, String(msg))
+        }
+        // 兼容旧命令（无 RC 标记）：空输出当成功
+        return (trimmed.isEmpty ? 0 : 1, trimmed)
     }
 
     /// 本地解压到目标目录（返回错误描述，nil 表示成功）
     static func extractLocal(archive: String, into dir: String) -> String? {
         run("/usr/bin/tar", ["-xzf", archive, "-C", dir])
     }
-    /// 本地打包（多项 → 一个 .tar.gz）
+    /// 本地打包（多项 → 一个 .tar.gz）。逐项 `-C 父目录 basename`，支持跨目录多选。
     static func packLocal(archive: String, files: [URL]) -> String? {
-        guard let first = files.first else { return "无文件" }
-        let parent = first.deletingLastPathComponent().path
-        var args = ["-czf", archive, "-C", parent]
-        args.append(contentsOf: files.map { $0.lastPathComponent })
+        guard !files.isEmpty else { return "无文件" }
+        var args = ["-czf", archive]
+        for u in files {
+            let parent = u.deletingLastPathComponent().path
+            let base = u.lastPathComponent
+            args.append(contentsOf: ["-C", parent.isEmpty ? "/" : parent, base])
+        }
         return run("/usr/bin/tar", args)
     }
 
