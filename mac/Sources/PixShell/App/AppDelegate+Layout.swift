@@ -478,6 +478,8 @@ extension AppDelegate {
         quickConnect.onEdit = { [weak self] h in self?.editHostDirect(h) }
         quickConnect.onNew = { [weak self] in self?.addHost() }
         quickConnect.onClear = { [weak self] in self?.store.clearRecents() }
+        // logo → 应用内本机终端（LocalSession），不弹 Terminal.app
+        quickConnect.onLocalTerminal = { [weak self] in self?.openLocalTerminal() }
         // 有会话时从 QC 返回：一键回到当前标签（对齐 Win PreviewMouseLeftButtonDown 收起 QC）
         quickConnect.onBack = { [weak self] in
             guard let self = self else { return }
@@ -721,6 +723,8 @@ extension AppDelegate {
     func connectSFTPToActive() {
         guard sessions.indices.contains(current) else { return }
         let sess = sessions[current]
+        // 本机终端无远端 SFTP
+        if sess.host.isLocal { return }
         sftpPanel?.connectIfNeeded(host: sess.host, password: sess.password)
     }
 
@@ -822,19 +826,23 @@ extension AppDelegate {
         }
     }
 
-    // MARK: 状态栏（PixShell 版本 · ●CLI 已开启 … ssh2 OK | UTF-8）
+    // MARK: 状态栏（[GitHub] PixShell 版本 · ●CLI 已开启 … ssh2 OK | UTF-8）
     func buildStatusBar() -> NSView {
         let bar = NSView(); bar.wantsLayer = true
         bar.layer?.backgroundColor = Theme.statusBg.cgColor
         let sep = NSBox(); sep.boxType = .custom; sep.borderWidth = 0; sep.fillColor = Theme.border
         sep.translatesAutoresizingMaskIntoConstraints = false
 
+        // 品牌前 GitHub 标志 → 点开仓库
+        let gh = GitHubMarkButton()
+        gh.target = self; gh.action = #selector(menuRepo)
         let brand = NSTextField(labelWithString: "PixShell"); brand.font = Theme.ui(12, .bold); brand.textColor = Theme.text
         let ver = NSTextField(labelWithString: "v0.1.1"); ver.font = Theme.ui(11); ver.textColor = Theme.muted
         statusDot = Dot(Theme.warn, size: 8)
         statusLabel = NSTextField(labelWithString: "CLI 未开启"); statusLabel.font = Theme.ui(11); statusLabel.textColor = Theme.muted
-        let leftStack = NSStackView(views: [brand, ver, statusDot, statusLabel])
+        let leftStack = NSStackView(views: [gh, brand, ver, statusDot, statusLabel])
         leftStack.orientation = .horizontal; leftStack.spacing = 6; leftStack.alignment = .centerY
+        leftStack.setCustomSpacing(4, after: gh)
         leftStack.translatesAutoresizingMaskIntoConstraints = false
 
         statusRight = NSTextField(labelWithString: "就绪  |  UTF-8"); statusRight.font = Theme.ui(11); statusRight.textColor = Theme.muted

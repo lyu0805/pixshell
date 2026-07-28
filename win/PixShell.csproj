@@ -25,6 +25,10 @@
 
   <ItemGroup>
     <Content Include="web\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- QC logo / 状态栏等运行时读取；exe 图标仍走 ApplicationIcon=.ico -->
+    <Resource Include="Resources\AppIcon.png" />
+    <Content Include="Resources\AppIcon.png" CopyToOutputDirectory="PreserveNewest" Link="Resources\AppIcon.png" />
+    <Content Include="Resources\AppIcon.ico" CopyToOutputDirectory="PreserveNewest" Link="Resources\AppIcon.ico" />
   </ItemGroup>
 
 </Project>

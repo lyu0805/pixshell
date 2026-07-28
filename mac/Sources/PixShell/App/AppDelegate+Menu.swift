@@ -332,35 +332,64 @@ extension AppDelegate {
         }
     }
 
-    // MARK: 软件更新（仅检查 + 打开发行页，不自动安装）
+    // MARK: 软件更新（对接 GitHub Releases：比较 + 匹配资产下载 / 打开该次发行页）
     @objc func checkUpdate() {
         setStatus("检查更新…")
-        AppUpdate.check(current: "0.1.1") { [weak self] st in
+        AppUpdate.check(current: "0.1.1") { [weak self] result in
             guard let self = self else { return }
-            self.setStatus(st.text)
-            switch st {
+            self.setStatus(result.text)
+            switch result.kind {
             case .updateAvailable(let v):
-                let a = NSAlert.pix(); a.messageText = "发现新版本 \(v)"
-                a.informativeText = "当前 0.1.1。是否打开发行页下载？"
-                a.addButton(withTitle: "打开发行页"); a.addButton(withTitle: "稍后")
+                let a = NSAlert.pix()
+                a.messageText = "发现新版本 \(v)"
+                var info = "当前 0.1.1，来源 GitHub Releases（lyu0805/pixshell）。"
+                if let name = result.assetName {
+                    info += "\n匹配资产：\(name)"
+                }
+                a.informativeText = info
+                if result.assetDownloadURL != nil {
+                    a.addButton(withTitle: "下载并打开")
+                }
+                a.addButton(withTitle: "打开发行页")
+                a.addButton(withTitle: "稍后")
+                let r = a.runModal()
+                if result.assetDownloadURL != nil {
+                    if r == .alertFirstButtonReturn, let u = result.assetDownloadURL, let name = result.assetName {
+                        self.setStatus("正在下载 \(name)…")
+                        AppUpdate.downloadAsset(url: u, name: name, progress: { [weak self] s in self?.setStatus(s) }) { [weak self] dest, err in
+                            if let err {
+                                self?.setStatus("下载失败")
+                                self?.alert("下载失败", err)
+                            } else if let dest {
+                                self?.setStatus("已下载 \(dest.lastPathComponent)")
+                            }
+                        }
+                    } else if r == .alertSecondButtonReturn {
+                        NSWorkspace.shared.open(result.releasePageURL ?? AppUpdate.releasesURL!)
+                    }
+                } else if r == .alertFirstButtonReturn {
+                    NSWorkspace.shared.open(result.releasePageURL ?? AppUpdate.releasesURL!)
+                }
+            case .latest:
+                self.alert("已是最新", "当前 0.1.1 已是最新版本（GitHub Releases）")
+            case .unknown:
+                let a = NSAlert.pix()
+                a.messageText = "检查更新"
+                a.informativeText = "无法获取更新信息（网络或仓库不可达）。可手动打开 GitHub 发行页。"
+                a.addButton(withTitle: "打开发行页"); a.addButton(withTitle: "关闭")
                 if a.runModal() == .alertFirstButtonReturn, let u = AppUpdate.releasesURL {
                     NSWorkspace.shared.open(u)
                 }
-            case .latest:
-                self.alert("已是最新", "当前 0.1.1 已是最新版本")
-            case .unknown:
-                // 失败不谎称最新
-                self.alert("检查更新", "无法获取更新信息（网络或仓库不可达）")
             }
         }
     }
 
     // MARK: 帮助
     @objc func menuAbout() {
-        alert("PixShell 0.1.1", "macOS 原生 SSH / SFTP 客户端\nSwift + AppKit + SwiftTerm + swift-nio-ssh")
+        alert("PixShell 0.1.1", "macOS 原生 SSH / SFTP 客户端\nSwift + AppKit + SwiftTerm + swift-nio-ssh\nhttps://github.com/lyu0805/pixshell")
     }
     @objc func menuRepo() {
-        if let u = URL(string: "https://github.com/lyu0805/pixshell") { NSWorkspace.shared.open(u) }
+        if let u = AppUpdate.repoURL { NSWorkspace.shared.open(u) }
     }
 
     // MARK: 通用

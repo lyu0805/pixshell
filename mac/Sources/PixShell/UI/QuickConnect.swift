@@ -19,6 +19,8 @@ final class QuickConnect: NSView {
     var onClear: (() -> Void)?
     /// 有活动会话时点返回箭头 → 收起落地页回到终端
     var onBack: (() -> Void)?
+    /// 点左侧 logo → 打开应用内本机终端标签（LocalSession，不弹外部 Terminal.app）
+    var onLocalTerminal: (() -> Void)?
     /// 是否显示返回箭头（打开连接后再点 ＋ 进入本页时为 true）
     var showsBack: Bool = false {
         didSet { backBtn.isHidden = !showsBack }
@@ -54,10 +56,26 @@ final class QuickConnect: NSView {
         let titleCol = NSStackView(views: [title, subtitle])
         titleCol.orientation = .vertical; titleCol.alignment = .leading; titleCol.spacing = 2
 
+        // 新建连接左侧：App logo，高度对齐按钮（30），点开本机终端
+        let logoBtn = NSButton(frame: .zero)
+        logoBtn.translatesAutoresizingMaskIntoConstraints = false
+        logoBtn.isBordered = false
+        logoBtn.bezelStyle = .regularSquare
+        logoBtn.focusRingType = .none
+        logoBtn.image = AppIcon.make(size: 60)   // 2× 清晰
+        logoBtn.imageScaling = .scaleProportionallyDown
+        logoBtn.imagePosition = .imageOnly
+        logoBtn.toolTip = "打开本机终端（应用内）"
+        logoBtn.target = self
+        logoBtn.action = #selector(localTermAction)
+        logoBtn.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        logoBtn.heightAnchor.constraint(equalToConstant: 30).isActive = true
+
         let newBtn = PillButton("＋ 新建连接", style: .primary, hPad: 14, height: 30, target: self, action: #selector(newAction))
         let clearBtn = PillButton("清空历史", style: .ghost, hPad: 12, height: 30, target: self, action: #selector(clearAction))
-        let head = NSStackView(views: [backBtn, titleCol, NSView(), newBtn, clearBtn])
+        let head = NSStackView(views: [backBtn, titleCol, NSView(), logoBtn, newBtn, clearBtn])
         head.spacing = 8; head.alignment = .centerY
+        head.setCustomSpacing(10, after: logoBtn)
         head.translatesAutoresizingMaskIntoConstraints = false
 
         // 标题下一条细分隔线，把"头部"和"卡片区"在视觉上分开
@@ -103,6 +121,10 @@ final class QuickConnect: NSView {
     @objc private func newAction() { onNew?() }
     @objc private func clearAction() { onClear?(); reload() }
     @objc private func backAction() { onBack?() }
+    @objc private func localTermAction() {
+        // 必须由 App 接线到 openLocalTerminal()：应用内本地 shell 标签，禁止弹外部终端。
+        onLocalTerminal?()
+    }
 
     func reload() {
         let hosts = hostsProvider?() ?? []

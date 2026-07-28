@@ -15,8 +15,9 @@ struct Host: Codable, Identifiable, Equatable {
     var keyPath: String = ""
     /// 出站代理引用：对应 ProxyConfig.id（见 Proxy/ProxyConfig.swift）。留空 = 直连，不经代理。
     var proxyId: String = ""
-    /// 连接类型：100 = SSH（默认），200 = RDP（Windows 远程桌面）。对齐老仓库 app.js 的 h.connectionType。
+    /// 连接类型：100 = SSH（默认），200 = RDP（Windows 远程桌面），300 = 本机终端（应用内本地 shell）。
     /// RDP 类型不走 SSH，连接时直接拉起系统 RDP 客户端（见 openSession(to:)）。
+    /// 本机终端走 LocalSession（forkpty），不弹外部 Terminal.app。
     var connectionType: Int = 100
 
     init(id: String = UUID().uuidString, name: String = "", host: String = "",
@@ -49,7 +50,24 @@ struct Host: Codable, Identifiable, Equatable {
 
     /// RDP 主机（Windows 远程桌面），连接时拉起系统 RDP 客户端而非建 SSH 会话。
     var isRdp: Bool { connectionType == 200 }
+    /// 本机终端会话（应用内本地 shell，不经 SSH）。
+    var isLocal: Bool { connectionType == 300 }
 
     var display: String { name.isEmpty ? host : name }
-    var subtitle: String { "\(username)@\(host):\(port)" }
+    var subtitle: String {
+        if isLocal { return username.isEmpty ? "local" : "\(username)@local" }
+        return "\(username)@\(host):\(port)"
+    }
+
+    /// 快速连接 logo 打开的本机终端主机（不进 hosts.json）。
+    static func localTerminal() -> Host {
+        Host(id: "local-\(UUID().uuidString)",
+             name: "本机终端",
+             host: "localhost",
+             port: 0,
+             username: NSUserName(),
+             group: "",
+             osId: "macos",
+             connectionType: 300)
+    }
 }

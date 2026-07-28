@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -114,12 +115,16 @@ public sealed class TerminalSession : IDisposable
     // ---- 以下为单会话桥逻辑的实例化字段（与 P1 完全一致，仅从窗口移入会话）----
     private SshClient? _ssh;
     private ShellStream? _shell;
+    /// <summary>本机 shell 进程（ConnectionType=300）；与 _ssh/_shell 互斥。</summary>
+    private Process? _localProc;
+    private Stream? _localStdin;
     private Thread? _readThread;
     private uint _cols = 80;
     private uint _rows = 24;
     private object? _channel;
     private MethodInfo? _windowChange;
     private volatile bool _connected;
+    private volatile bool _isLocal;
 
     /// <summary>终端语义高亮开关（对齐 mac AppDelegate.highlightEnabled）。默认开。</summary>
     public static bool HighlightEnabled { get; set; } = true;
@@ -460,6 +465,7 @@ public sealed class TerminalSession : IDisposable
         if (_connected) Disconnect();
         // 清掉首屏欢迎语 / 上一次会话残留，终端只留给远端真实输出
         ClearScreen();
+        _isLocal = false;
         _host = host; _port = port; _user = user; _pass = pass; _keyPath = keyPath; _proxy = proxy;   // 存凭据给 SFTP 复用
         Log.Info($"SSH 连接中 {user}@{host}:{port}", "ssh");
         SetStatus($"连接 {user}@{host}:{port} …");
@@ -478,6 +484,166 @@ public sealed class TerminalSession : IDisposable
         // 不往终端写 [pixshell] connected —— 状态栏已有；终端只留远端 MOTD/提示符。
         try { ConnectedChanged?.Invoke(this, true); } catch { }
         FocusWhenReady();
+    }
+
+    /// <summary>
+    /// 应用内本机终端：启动 cmd.exe / powershell 并把 stdout/stderr 接到 xterm，
+    /// stdin 走标准输入。**禁止** Process.Start 弹外部 wt/cmd 窗口。
+    /// 右键菜单走 InitAsync 已挂的 WebView2 ContextMenu（复制/粘贴/清屏/背景），与 SSH 会话相同。
+    /// </summary>
+    public async Task ConnectLocalAsync()
+    {
+        if (_connected) Disconnect();
+        ClearScreen();
+        _isLocal = true;
+        _host = "localhost";
+        _port = 0;
+        _user = Environment.UserName;
+        _pass = "";
+        _keyPath = null;
+        _proxy = null;
+        Log.Info("启动本机 shell …", "local");
+        SetStatus("启动本机终端 …");
+        try
+        {
+            await Task.Run(StartLocalShell);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"本机 shell 启动失败: {ex.Message}", "local");
+            throw;
+        }
+        _connected = true;
+        Log.Info("本机 shell 已就绪", "local");
+        SetStatus("本机终端");
+        try { ConnectedChanged?.Invoke(this, true); } catch { }
+        FocusWhenReady();
+    }
+
+    /// <summary>起本机 shell 子进程（重定向 stdio，CreateNoWindow）。优先 ComSpec/cmd，其次 powershell。</summary>
+    private void StartLocalShell()
+    {
+        var shell = ResolveLocalShell(out var args);
+        var psi = new ProcessStartInfo
+        {
+            FileName = shell,
+            Arguments = args,
+            WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+            // 输入也按 UTF-8，避免中文路径/命令乱码
+            StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+        };
+        // 给子进程一个可用的终端环境变量（即便没有真 ConPTY）
+        psi.Environment["TERM"] = "xterm-256color";
+        psi.Environment["COLORTERM"] = "truecolor";
+        psi.Environment["PIXSHELL_LOCAL"] = "1";
+        try { psi.Environment["COLUMNS"] = _cols.ToString(); } catch { }
+        try { psi.Environment["LINES"] = _rows.ToString(); } catch { }
+
+        var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+        if (!proc.Start())
+            throw new InvalidOperationException("无法启动本机 shell：" + shell);
+
+        _localProc = proc;
+        _localStdin = proc.StandardInput.BaseStream;
+        // 退出时清连接态（对齐 SSH ReadPump finally）
+        proc.Exited += (_, _) =>
+        {
+            View.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_connected)
+                {
+                    _connected = false;
+                    Log.Info("本机 shell 已退出", "local");
+                    SetStatus("本机终端已关闭");
+                    try { ConnectedChanged?.Invoke(this, false); } catch { }
+                }
+            }));
+        };
+
+        _readThread = new Thread(() => LocalReadPump(proc))
+        {
+            IsBackground = true,
+            Name = "local-shell-read"
+        };
+        _readThread.Start();
+    }
+
+    private static string ResolveLocalShell(out string args)
+    {
+        // cmd.exe：/K 保持交互；ComSpec 优先
+        var comspec = Environment.GetEnvironmentVariable("ComSpec");
+        if (!string.IsNullOrWhiteSpace(comspec) && File.Exists(comspec))
+        {
+            args = "/K chcp 65001>nul";
+            return comspec;
+        }
+        var sysCmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (File.Exists(sysCmd))
+        {
+            args = "/K chcp 65001>nul";
+            return sysCmd;
+        }
+        // 兜底 powershell
+        args = "-NoLogo -NoExit";
+        return "powershell.exe";
+    }
+
+    /// <summary>并行读 stdout + stderr，按 UTF-8 解码后 base64 推到 xterm（复用 SSH out 通路）。</summary>
+    private void LocalReadPump(Process proc)
+    {
+        var outs = new[] { proc.StandardOutput.BaseStream, proc.StandardError.BaseStream };
+        var threads = new List<Thread>();
+        foreach (var stream in outs)
+        {
+            var s = stream;
+            var th = new Thread(() =>
+            {
+                var buf = new byte[4096];
+                var decoder = Encoding.UTF8.GetDecoder();
+                var chars = new char[Encoding.UTF8.GetMaxCharCount(buf.Length)];
+                try
+                {
+                    while (true)
+                    {
+                        int n;
+                        try { n = s.Read(buf, 0, buf.Length); }
+                        catch { break; }
+                        if (n <= 0) break;
+                        int c = decoder.GetChars(buf, 0, n, chars, 0, flush: false);
+                        var text = c > 0 ? new string(chars, 0, c) : "";
+                        if (text.Length > 0) AppendOutputBuffer(text);
+                        string b64;
+                        if (HighlightEnabled && c > 0)
+                        {
+                            b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                                Highlight.SemanticHighlight.Decorate(text, ThemeManager.IsDark)));
+                        }
+                        else
+                        {
+                            b64 = Convert.ToBase64String(buf, 0, n);
+                        }
+                        View.Dispatcher.BeginInvoke(new Action(() => SendToTerm("out", b64)));
+                    }
+                }
+                catch { /* 进程退出 */ }
+            })
+            { IsBackground = true, Name = "local-shell-stream" };
+            th.Start();
+            threads.Add(th);
+        }
+        foreach (var t in threads)
+        {
+            try { t.Join(); } catch { }
+        }
+        // 双流出空：等进程退，Exited 事件会清 _connected
+        try { proc.WaitForExit(500); } catch { }
     }
 
     // 后台线程：建立 SSH 会话 + 交互式 shell + 启动读线程。
@@ -649,11 +815,21 @@ public sealed class TerminalSession : IDisposable
 
     private void WriteInput(string data)
     {
-        var shell = _shell;
-        if (shell == null || !_connected) return;
+        if (!_connected || string.IsNullOrEmpty(data)) return;
         try
         {
             var bytes = Encoding.UTF8.GetBytes(data);
+            // 本机 shell：写 stdin
+            if (_isLocal)
+            {
+                var stdin = _localStdin;
+                if (stdin == null) return;
+                stdin.Write(bytes, 0, bytes.Length);
+                stdin.Flush();
+                return;
+            }
+            var shell = _shell;
+            if (shell == null) return;
             shell.Write(bytes, 0, bytes.Length);
             shell.Flush();
         }
@@ -669,6 +845,37 @@ public sealed class TerminalSession : IDisposable
     /// </summary>
     public async Task<string> ExecAsync(string command)
     {
+        // 本机会话：另起一次性 cmd /c，不干扰交互 shell。
+        if (_isLocal)
+        {
+            try
+            {
+                return await Task.Run(() =>
+                {
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+                        Arguments = "/c " + command,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true,
+                        StandardOutputEncoding = Encoding.UTF8,
+                        StandardErrorEncoding = Encoding.UTF8,
+                    };
+                    using var p = Process.Start(psi);
+                    if (p == null) return "";
+                    var stdout = p.StandardOutput.ReadToEnd();
+                    var stderr = p.StandardError.ReadToEnd();
+                    p.WaitForExit(20_000);
+                    return string.IsNullOrEmpty(stdout) ? stderr : stdout;
+                });
+            }
+            catch (Exception ex)
+            {
+                return "执行失败: " + ex.Message;
+            }
+        }
         if (_ssh is not { IsConnected: true }) return "";
         try
         {
@@ -771,6 +978,7 @@ public sealed class TerminalSession : IDisposable
     public SftpClient CreateSftpClient()
     {
         if (!_connected) throw new InvalidOperationException("会话未连接");
+        if (_isLocal) throw new InvalidOperationException("本机终端无远端 SFTP");
         var info = BuildConnectionInfo(_host, _port, _user, _pass, _keyPath, _proxy);
         info.Timeout = TimeSpan.FromSeconds(30);
         var sftp = new SftpClient(info)
@@ -1011,8 +1219,26 @@ public sealed class TerminalSession : IDisposable
     public void Disconnect()
     {
         var was = _connected;
-        if (was) Log.Info($"主动断开 {_user}@{_host}:{_port}", "ssh");
+        if (was)
+        {
+            if (_isLocal) Log.Info("主动关闭本机终端", "local");
+            else Log.Info($"主动断开 {_user}@{_host}:{_port}", "ssh");
+        }
         _connected = false;
+        // 本机 shell
+        try
+        {
+            if (_localProc is { HasExited: false })
+            {
+                try { _localProc.Kill(entireProcessTree: true); } catch { try { _localProc.Kill(); } catch { } }
+            }
+        }
+        catch { }
+        try { _localStdin?.Dispose(); } catch { }
+        try { _localProc?.Dispose(); } catch { }
+        _localStdin = null;
+        _localProc = null;
+        // SSH
         try { _shell?.Dispose(); } catch { }
         try { _ssh?.Disconnect(); } catch { }
         try { _ssh?.Dispose(); } catch { }
@@ -1020,6 +1246,7 @@ public sealed class TerminalSession : IDisposable
         _ssh = null;
         _channel = null;
         _windowChange = null;
+        _isLocal = false;
         if (was)
         {
             try { ConnectedChanged?.Invoke(this, false); } catch { }

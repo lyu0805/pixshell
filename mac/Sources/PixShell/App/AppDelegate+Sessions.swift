@@ -13,6 +13,8 @@ extension AppDelegate {
     // 打开会话：解析凭据（env → 钥匙串 → 仅私钥直连 → 弹框密码），再真正建立连接。
     // key-only（配置了 keyPath、无密码）不得强制弹密码；空密码 + 无私钥才是 password-auth 闸门。
     func openSession(to host: Host) {
+        // 本机终端：应用内 LocalSession，不弹外部 Terminal、不经 SSH/密码。
+        if host.isLocal { openLocalTerminal(host: host); return }
         // RDP 类型不走 SSH：直接拉起系统远程桌面客户端（对齐老仓库 app.js connectionType===200 分支）。
         if host.isRdp { launchRdp(host); return }
         if let envPass = ProcessInfo.processInfo.environment["PIXSHELL_PASS"], !envPass.isEmpty {
@@ -50,6 +52,7 @@ extension AppDelegate {
 
     // 真正建立 SSH 连接并开一个终端 tab。
     func beginSession(to host: Host, password: String) {
+        if host.isLocal { openLocalTerminal(host: host); return }
         let tv = TerminalView(frame: termContainer.bounds)
         tv.terminalDelegate = self
         TermTheme.apply(to: tv, dark: darkTheme)
@@ -62,6 +65,44 @@ extension AppDelegate {
         store.noteRecent(host.id)   // 记入历史（供快速连接落地页）
         sessions.append(sess); selectSession(sessions.count - 1)
         startSSH(for: sess, password: password)
+    }
+
+    /// 快速连接 logo / 菜单：在软件内新开本机终端标签（forkpty 本地 shell）。
+    /// **禁止** NSWorkspace 拉起 Terminal.app。
+    func openLocalTerminal(host: Host? = nil) {
+        let h = host ?? Host.localTerminal()
+        let tv = TerminalView(frame: termContainer.bounds)
+        tv.terminalDelegate = self
+        TermTheme.apply(to: tv, dark: darkTheme)
+        tv.menu = buildTerminalMenu()
+        if !termBgOverride.isEmpty { tv.nativeBackgroundColor = TermTheme.ns(termBgOverride) }
+        let sess = TermSession(host: h, termView: tv)
+        sess.password = nil
+        Log.info("打开本机终端 \(h.display)", "session")
+        // 本机会话不记入「远程历史」列表，避免污染快速连接卡片。
+        sessions.append(sess); selectSession(sessions.count - 1)
+        startLocalShell(for: sess)
+    }
+
+    /// 在已有标签上启动本机 shell（LocalSession）。
+    func startLocalShell(for sess: TermSession) {
+        if let old = sess.ssh {
+            sess.ssh = nil
+            old.close()
+        }
+        sess.connected = false
+        sess.shellOpened = false
+        sess.closeHandled = false
+        setStatus("启动本机终端 …")
+        let t = sess.termView.getTerminal()
+        // 本机启动几乎瞬时，仍走覆盖层保持 UX 一致。
+        showConnectOverlay(for: sess.host)
+        let s = LocalSession()
+        s.delegate = self
+        sess.ssh = s
+        // creds 对 LocalSession 无用，填占位即可。
+        let creds = SSHCredentials(host: "localhost", port: 0, username: sess.host.username)
+        s.connectAndOpenShell(creds, term: "xterm-256color", cols: t.cols, rows: t.rows)
     }
 
     /// 在**已有会话**上建立 SSH 连接（不新开标签）。
@@ -166,6 +207,10 @@ extension AppDelegate {
     }
 
     func startSSH(for sess: TermSession, password: String, forceOpenSSH: Bool = false) {
+        if sess.host.isLocal {
+            startLocalShell(for: sess)
+            return
+        }
         let host = sess.host
         sess.password = password
         // 先拆旧传输，避免 EventLoopGroup / 旧 pty 泄漏，也防止迟到回调串台。
@@ -204,6 +249,12 @@ extension AppDelegate {
         let old = sess.ssh
         sess.ssh = nil
         old?.close()
+
+        if sess.host.isLocal {
+            startLocalShell(for: sess)
+            rebuildTabs()
+            return
+        }
 
         let pass = sess.password ?? Keychain.password(for: sess.host.id) ?? ""
         if pass.isEmpty, sess.host.keyPath.isEmpty {
@@ -245,6 +296,8 @@ extension AppDelegate {
     /// （对齐老仓库：连过一次就认得这台机器是什么系统，不用用户手填）。
     /// 已经有 osId 的主机不覆盖：用户可能在表单里手动指定过。
     func detectRemoteOS(for sess: TermSession) {
+        // 本机会话固定 osId，不跑远端探测。
+        guard !sess.host.isLocal else { return }
         guard sess.host.osId.isEmpty, let ssh = sess.ssh else { return }
         // /etc/os-release 的 ID 最准（ubuntu/debian/centos/alpine/openwrt…），退回 uname。
         let cmd = ". /etc/os-release 2>/dev/null && printf '%s' \"$ID\" || uname -s 2>/dev/null"

@@ -31,14 +31,17 @@ public class HostEntry
     /// 对齐 mac Host.proxyId。</summary>
     public string ProxyId { get; set; } = "";
 
-    /// <summary>连接类型：100 = SSH（默认），200 = RDP（Windows 远程桌面）。对齐老仓库 app.js 的 connectionType
-    /// 与 mac Host.connectionType。RDP 主机连接时直接拉起 mstsc，不建 SSH 会话（见 MainWindow.ConnectToHost）。
-    /// 旧 hosts.json 没有此字段时 System.Text.Json 按默认值 100 反序列化，不影响解析。</summary>
+    /// <summary>连接类型：100 = SSH（默认），200 = RDP，300 = 本机终端（应用内本地 shell）。
+    /// 对齐 mac Host.connectionType。RDP 拉 mstsc；本机终端走 TerminalSession.ConnectLocalAsync，不弹 wt/cmd。</summary>
     public int ConnectionType { get; set; } = 100;
 
     /// <summary>RDP 主机（Windows 远程桌面）。</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsRdp => ConnectionType == 200;
+
+    /// <summary>本机终端会话（应用内本地 shell，不经 SSH）。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsLocal => ConnectionType == 300;
 
     public override string ToString() =>
         string.IsNullOrWhiteSpace(Name) ? $"{Username}@{Host}" : Name;
@@ -46,8 +49,23 @@ public class HostEntry
     /// <summary>卡片标题：优先显示名称，否则 user@host（对齐 mac Host.display）。</summary>
     public string Display => string.IsNullOrWhiteSpace(Name) ? $"{Username}@{Host}" : Name;
 
-    /// <summary>卡片副标题：user@host:port（对齐 mac Host.subtitle）。</summary>
-    public string Subtitle => $"{Username}@{Host}:{Port}";
+    /// <summary>卡片副标题：user@host:port；本机终端显示 user@local。</summary>
+    public string Subtitle => IsLocal
+        ? (string.IsNullOrWhiteSpace(Username) ? "local" : $"{Username}@local")
+        : $"{Username}@{Host}:{Port}";
+
+    /// <summary>快速连接 logo 打开的本机终端主机（不进 hosts.json）。</summary>
+    public static HostEntry LocalTerminal() => new()
+    {
+        Id = "local-" + Guid.NewGuid().ToString("N"),
+        Name = "本机终端",
+        Host = "localhost",
+        Port = 0,
+        Username = Environment.UserName,
+        Group = "",
+        OsId = "windows",
+        ConnectionType = 300,
+    };
 }
 
 /// <summary>

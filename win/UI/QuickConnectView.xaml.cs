@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Input;
 
 namespace PixShell.UI;
@@ -22,10 +24,52 @@ public partial class QuickConnectView : UserControl
     public Action? OnClear { get; set; }
     /// <summary>有会话时点返回箭头 → 收起 QC 回终端。</summary>
     public Action? OnBack { get; set; }
+    /// <summary>点左侧 logo → 打开应用内本机终端标签（不弹 wt/cmd）。</summary>
+    public Action? OnLocalTerminal { get; set; }
 
     public QuickConnectView()
     {
         InitializeComponent();
+        Loaded += (_, _) => LoadLogo();
+    }
+
+    private void LoadLogo()
+    {
+        if (LogoImage == null) return;
+        try
+        {
+            // 优先打包资源；失败再试磁盘旁路（开发态）
+            var uri = new Uri("pack://application:,,,/Resources/AppIcon.png", UriKind.Absolute);
+            var bmp = new BitmapImage();
+            bmp.BeginInit();
+            bmp.UriSource = uri;
+            bmp.DecodePixelWidth = 56;
+            bmp.CacheOption = BitmapCacheOption.OnLoad;
+            bmp.EndInit();
+            bmp.Freeze();
+            LogoImage.Source = bmp;
+        }
+        catch
+        {
+            try
+            {
+                var disk = Path.Combine(AppContext.BaseDirectory, "Resources", "AppIcon.png");
+                if (!File.Exists(disk))
+                    disk = Path.Combine(AppContext.BaseDirectory, "AppIcon.png");
+                if (File.Exists(disk))
+                {
+                    var bmp = new BitmapImage();
+                    bmp.BeginInit();
+                    bmp.UriSource = new Uri(disk, UriKind.Absolute);
+                    bmp.DecodePixelWidth = 56;
+                    bmp.CacheOption = BitmapCacheOption.OnLoad;
+                    bmp.EndInit();
+                    bmp.Freeze();
+                    LogoImage.Source = bmp;
+                }
+            }
+            catch { /* logo 缺失不致命 */ }
+        }
     }
 
     /// <summary>有活动会话时显示返回箭头。</summary>
@@ -38,6 +82,11 @@ public partial class QuickConnectView : UserControl
     private void New_Click(object sender, RoutedEventArgs e) => OnNew?.Invoke();
     private void Clear_Click(object sender, RoutedEventArgs e) { OnClear?.Invoke(); Reload(); }
     private void Back_Click(object sender, RoutedEventArgs e) => OnBack?.Invoke();
+    private void LocalTerm_Click(object sender, RoutedEventArgs e)
+    {
+        // 必须由 MainWindow 接到 OpenLocalTerminalSession：应用内本地 shell，禁止弹外部终端。
+        OnLocalTerminal?.Invoke();
+    }
 
     public void Reload()
     {

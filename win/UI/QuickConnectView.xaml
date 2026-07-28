@@ -13,6 +13,14 @@
 
         <DockPanel Grid.Row="0" Margin="0,0,0,24" LastChildFill="True">
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                <!-- 新建连接左侧 App logo，高度对齐按钮，点击打开本机终端 -->
+                <Button x:Name="LogoBtn" Width="30" Height="30" Margin="0,0,10,0"
+                        ToolTip="打开本机终端" Click="LocalTerm_Click"
+                        Style="{StaticResource IconButton}" Padding="0"
+                        Background="Transparent" BorderThickness="0" Cursor="Hand">
+                    <Image x:Name="LogoImage" Width="28" Height="28" Stretch="Uniform"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                </Button>
                 <Button Content="＋ 新建" Style="{StaticResource PillButton}" Margin="0,0,8,0" Click="New_Click"/>
                 <Button Content="清空历史" Style="{StaticResource PillButton}" Click="Clear_Click"/>
             </StackPanel>

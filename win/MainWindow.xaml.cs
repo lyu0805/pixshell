@@ -103,6 +103,8 @@ public partial class MainWindow : Window
         QuickConnectPanel.OnEdit = EditHostFlow;
         QuickConnectPanel.OnNew = NewHostFlow;
         QuickConnectPanel.OnClear = () => { RecentsStore.ClearRecents(); QuickConnectPanel.Reload(); };
+        // logo → 应用内本机终端（不弹 wt/cmd）
+        QuickConnectPanel.OnLocalTerminal = () => _ = OpenLocalTerminalSession();
         // 有会话时从 QC 返回当前终端（对齐 mac QuickConnect.onBack）
         QuickConnectPanel.OnBack = () =>
         {
@@ -364,6 +366,8 @@ public partial class MainWindow : Window
     // 对齐 ReconnectInPlaceAsync / BridgeConnect：key-only 不强制 PromptPassword。
     private void ConnectToHost(HostEntry host)
     {
+        // 本机终端：应用内 Local shell，不经 SSH/密码、不弹外部终端。
+        if (host.IsLocal) { _ = OpenLocalTerminalSession(host); return; }
         // RDP 类型不走 SSH：直接拉起系统远程桌面 mstsc（对齐老仓库 app.js connectionType===200 分支）。
         if (host.IsRdp) { LaunchRdp(host); return; }
         var pass = CredentialStore.GetPassword(host.Id);
@@ -454,8 +458,70 @@ public partial class MainWindow : Window
     // =====================================================================
     // 会话 tab（新开/关闭/切换）
     // =====================================================================
+    /// <summary>快速连接 logo：软件内新开本机终端标签（cmd/powershell 重定向到 xterm）。
+    /// 右键菜单与 SSH 会话相同（InitAsync 已挂 WebView2 复制/粘贴/清屏/背景）。</summary>
+    private async Task OpenLocalTerminalSession(HostEntry? host = null)
+    {
+        var h = host ?? HostEntry.LocalTerminal();
+        Log.Info("打开本机终端", "session");
+        var session = new TerminalSession(h.Display, _htmlPath) { SourceHost = h };
+        session.StatusChanged += (s, msg) => { if (IsActiveSession(s)) SetStatus(msg); };
+        session.ConnectedChanged += (s, on) =>
+        {
+            if (on) return;
+            if (!IsActiveSession(s)) return;
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                ClearSessionSidePanels();
+                RefreshConnState();
+            }));
+        };
+
+        var item = new TabItem { Tag = session, Content = session.View };
+        BuildTabHeader(item, session);
+        Sessions.Items.Add(item);
+        Sessions.SelectedItem = item;
+        _showingQuickConnect = false;
+        UpdateWorkCenterVisibility();
+        ConnectAnim.Begin("本机终端");
+
+        try
+        {
+            await session.InitAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"本机终端初始化失败: {ex.Message}", "session");
+            ConnectAnim.Fail("终端初始化失败");
+            SetStatus("终端初始化失败: " + ex.Message);
+            MessageBox.Show(this,
+                "终端无法启动：\n" + ex.Message,
+                "PixShell", MessageBoxButton.OK, MessageBoxImage.Warning);
+            CloseTab(item);
+            return;
+        }
+
+        try
+        {
+            session.ApplyTermScheme(Terminal.TermSchemeStore.Current);
+            await session.ConnectLocalAsync();
+            // 本机无远端 SFTP；仍同步 dock 以便本地文件侧可用
+            SyncDockSession();
+            Monitor.SetConnected(true, "local");
+            ConnectAnim.Succeed();
+            RefreshConnState();
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"本机 shell 启动失败: {ex.Message}", "session");
+            ConnectAnim.Fail("启动失败");
+            SetStatus("本机终端启动失败: " + ex.Message);
+        }
+    }
+
     private async Task OpenSessionTab(HostEntry host, string pass)
     {
+        if (host.IsLocal) { await OpenLocalTerminalSession(host); return; }
         Log.Info($"打开会话 {host.Username}@{host.Host}:{host.Port}", "session");
         var session = new TerminalSession(host.Display, _htmlPath) { SourceHost = host };
         session.StatusChanged += (s, msg) => { if (IsActiveSession(s)) SetStatus(msg); };
@@ -545,6 +611,7 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task DetectRemoteOsAsync(TerminalSession session, HostEntry host)
     {
+        if (host.IsLocal) return;
         if (!string.IsNullOrWhiteSpace(host.OsId)) return;
         try
         {
@@ -669,6 +736,31 @@ public partial class MainWindow : Window
     {
         if (item.Tag is not TerminalSession session || session.SourceHost is not { } host) return;
         Sessions.SelectedItem = item;
+
+        // 本机终端：原地重启本地 shell，不弹密码。
+        if (host.IsLocal)
+        {
+            try
+            {
+                session.Disconnect();
+                ConnectAnim.Begin("本机终端");
+                await session.ConnectLocalAsync();
+                _showingQuickConnect = false;
+                SetSessionViewsVisible(true);
+                SyncDockSession();
+                Monitor.SetConnected(true, "local");
+                ConnectAnim.Succeed();
+                RefreshConnState();
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"本机终端重连失败: {ex.Message}", "session");
+                ConnectAnim.Fail("重连失败");
+                SetStatus("重连失败: " + ex.Message);
+                RefreshConnState();
+            }
+            return;
+        }
 
         var pass = session.Password ?? CredentialStore.GetPassword(host.Id);
         // 没有可用密码且没有可用私钥 → 要一次密码（框里带"记住密码"）。
@@ -1449,7 +1541,7 @@ public partial class MainWindow : Window
 
         menu.Items.Add(new Separator());
         var help = new MenuItem { Header = "帮助" };
-        help.Items.Add(Item("关于 PixShell", () => MessageBox.Show(this, $"PixShell {AppVersion}\nWindows 原生 SSH / SFTP 客户端\nWPF + WebView2/xterm.js + SSH.NET", "关于")));
+        help.Items.Add(Item("关于 PixShell", () => MessageBox.Show(this, $"PixShell {AppVersion}\nWindows 原生 SSH / SFTP 客户端\nWPF + WebView2/xterm.js + SSH.NET\nhttps://github.com/lyu0805/pixshell", "关于")));
         help.Items.Add(Item("接入 AI 工具…", OpenAIIntegration));
         help.Items.Add(new Separator());
         help.Items.Add(Item("项目仓库", () => { try { Process.Start(new ProcessStartInfo("https://github.com/lyu0805/pixshell") { UseShellExecute = true }); } catch { } }));
@@ -1563,9 +1655,11 @@ public partial class MainWindow : Window
             {
                 Log.Warn($"检查更新 HTTP {(int)resp.StatusCode}", "update");
                 SetStatus("无法获取更新信息");
-                MessageBox.Show(this,
-                    "无法获取更新信息（网络或仓库不可达）。\n可手动打开发行页查看。",
-                    "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+                var fail = MessageBox.Show(this,
+                    "无法获取更新信息（网络或仓库不可达）。\n是否打开发行页？",
+                    "检查更新", MessageBoxButton.YesNo, MessageBoxImage.Information);
+                if (fail == MessageBoxResult.Yes)
+                    Process.Start(new ProcessStartInfo(releasesUrl) { UseShellExecute = true });
                 return;
             }
             var json = await resp.Content.ReadAsStringAsync();
@@ -1582,33 +1676,134 @@ public partial class MainWindow : Window
                 return;
             }
 
+            // 该次 release 页（优先 html_url）
+            string? releasePage = null;
+            if (root.TryGetProperty("html_url", out var hu)) releasePage = hu.GetString();
+            if (string.IsNullOrEmpty(releasePage))
+                releasePage = $"https://github.com/{repo}/releases/tag/{(tag.StartsWith("v") ? tag : "v" + latest)}";
+
+            // 匹配 win-x64 安装包 / zip
+            string? assetName = null, assetUrl = null;
+            if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
+            {
+                string[] hints = { "win-x64-setup.exe", "win-x64.zip", "windows-x64", "win64" };
+                foreach (var hint in hints)
+                {
+                    foreach (var a in assets.EnumerateArray())
+                    {
+                        var n = a.TryGetProperty("name", out var an) ? an.GetString() ?? "" : "";
+                        var u = a.TryGetProperty("browser_download_url", out var au) ? au.GetString() : null;
+                        if (!string.IsNullOrEmpty(n) && !string.IsNullOrEmpty(u)
+                            && n.Contains(hint, StringComparison.OrdinalIgnoreCase))
+                        {
+                            assetName = n; assetUrl = u; break;
+                        }
+                    }
+                    if (assetUrl != null) break;
+                }
+                if (assetUrl == null)
+                {
+                    foreach (var a in assets.EnumerateArray())
+                    {
+                        var n = a.TryGetProperty("name", out var an) ? an.GetString() ?? "" : "";
+                        var u = a.TryGetProperty("browser_download_url", out var au) ? au.GetString() : null;
+                        var low = n.ToLowerInvariant();
+                        if ((low.Contains("win") || low.Contains("windows"))
+                            && (low.EndsWith(".exe") || low.EndsWith(".zip") || low.EndsWith(".msi"))
+                            && !string.IsNullOrEmpty(u))
+                        {
+                            assetName = n; assetUrl = u; break;
+                        }
+                    }
+                }
+            }
+
             var cmp = CompareSemver(latest, AppVersion);
             if (cmp > 0)
             {
                 SetStatus($"发现新版本 {latest}");
-                var ans = MessageBox.Show(this,
-                    $"发现新版本 {latest}\n当前 {AppVersion}。是否打开发行页下载？",
-                    "软件更新", MessageBoxButton.YesNo, MessageBoxImage.Information);
-                if (ans == MessageBoxResult.Yes)
+                var info = $"发现新版本 {latest}\n当前 {AppVersion}，来源 GitHub Releases（{repo}）。";
+                if (!string.IsNullOrEmpty(assetName)) info += $"\n匹配资产：{assetName}";
+
+                if (!string.IsNullOrEmpty(assetUrl) && !string.IsNullOrEmpty(assetName))
                 {
-                    Process.Start(new ProcessStartInfo(releasesUrl) { UseShellExecute = true });
+                    var ans = MessageBox.Show(this,
+                        info + "\n\n是 = 下载并打开\n否 = 打开发行页\n取消 = 稍后",
+                        "软件更新", MessageBoxButton.YesNoCancel, MessageBoxImage.Information);
+                    if (ans == MessageBoxResult.Yes)
+                        await DownloadReleaseAssetAsync(assetUrl!, assetName!);
+                    else if (ans == MessageBoxResult.No)
+                        Process.Start(new ProcessStartInfo(releasePage!) { UseShellExecute = true });
+                }
+                else
+                {
+                    var ans = MessageBox.Show(this,
+                        info + "\n\n是否打开发行页？",
+                        "软件更新", MessageBoxButton.YesNo, MessageBoxImage.Information);
+                    if (ans == MessageBoxResult.Yes)
+                        Process.Start(new ProcessStartInfo(releasePage!) { UseShellExecute = true });
                 }
             }
             else
             {
                 SetStatus($"已是最新版本 {AppVersion}");
-                MessageBox.Show(this, $"当前 {AppVersion} 已是最新版本", "已是最新",
+                MessageBox.Show(this, $"当前 {AppVersion} 已是最新版本（GitHub Releases）", "已是最新",
                     MessageBoxButton.OK, MessageBoxImage.Information);
             }
-            Log.Info($"检查更新结果 latest={latest} current={AppVersion} cmp={cmp}", "update");
+            Log.Info($"检查更新结果 latest={latest} current={AppVersion} cmp={cmp} asset={assetName ?? "-"}", "update");
         }
         catch (Exception ex)
         {
             Log.Warn($"检查更新失败: {ex.Message}", "update");
             SetStatus("无法获取更新信息");
-            MessageBox.Show(this,
-                "无法获取更新信息（网络或仓库不可达）。\n可手动打开发行页查看。",
-                "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+            var fail = MessageBox.Show(this,
+                "无法获取更新信息（网络或仓库不可达）。\n是否打开发行页？",
+                "检查更新", MessageBoxButton.YesNo, MessageBoxImage.Information);
+            if (fail == MessageBoxResult.Yes)
+                Process.Start(new ProcessStartInfo(releasesUrl) { UseShellExecute = true });
+        }
+    }
+
+    /// <summary>下载 release 资产到「下载」目录并打开。</summary>
+    private async Task DownloadReleaseAssetAsync(string url, string name)
+    {
+        try
+        {
+            SetStatus($"正在下载 {name}…");
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+            Directory.CreateDirectory(dir);
+            var dest = Path.Combine(dir, name);
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+            http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "PixShell/" + AppVersion);
+            var bytes = await http.GetByteArrayAsync(url);
+            await File.WriteAllBytesAsync(dest, bytes);
+            SetStatus($"已下载 {name}");
+            Process.Start(new ProcessStartInfo(dest) { UseShellExecute = true });
+            // 顺带在资源管理器中选中
+            try { Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{dest}\"") { UseShellExecute = true }); }
+            catch { /* 忽略 */ }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"下载更新失败: {ex.Message}", "update");
+            SetStatus("下载失败");
+            MessageBox.Show(this, "下载失败：" + ex.Message, "软件更新",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>状态栏 GitHub Mark → 打开仓库主页。</summary>
+    private void GitHubMark_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("https://github.com/lyu0805/pixshell") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "无法打开浏览器：" + ex.Message, "PixShell",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 

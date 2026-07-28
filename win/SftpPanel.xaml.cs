@@ -118,6 +118,13 @@ public partial class SftpPanel : UserControl
     {
         if (_sftp is { IsConnected: true }) return;
         if (_session is not { Connected: true }) { OnPathChange?.Invoke("远端未连接"); return; }
+        // 本机终端无远端 SFTP
+        if (_session.SourceHost?.IsLocal == true)
+        {
+            OnPathChange?.Invoke("本机终端（无远端）");
+            StatusLabel.Text = "本机终端无 SFTP";
+            return;
+        }
         try
         {
             OnPathChange?.Invoke("连接中…");
