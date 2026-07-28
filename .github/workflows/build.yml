@@ -81,24 +81,13 @@ jobs:
           ARCH: ${{ matrix.arch_label }}
         run: bash scripts/make-dmg.sh
 
-      - name: Create app zip
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist/artifacts
-          ZIP="dist/artifacts/PixShell-${VERSION}-mac-${{ matrix.arch_label }}.zip"
-          ditto -c -k --keepParent dist/PixShell.app "$ZIP"
-          ls -lh dist/artifacts/
-          file dist/artifacts/* || true
-
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: PixShell-${{ steps.ver.outputs.version }}-mac-${{ matrix.arch_label }}
           path: |
             mac/dist/artifacts/PixShell-${{ steps.ver.outputs.version }}-mac-${{ matrix.arch_label }}.dmg
-            mac/dist/artifacts/PixShell-${{ steps.ver.outputs.version }}-mac-${{ matrix.arch_label }}.zip
+          if-no-files-found: error
           if-no-files-found: error
 
   # ─────────────────────────────────────────────
@@ -303,9 +292,7 @@ jobs:
           # merge-multiple flattens files into release-assets/
           for f in \
             "PixShell-${VER}-mac-arm64.dmg" \
-            "PixShell-${VER}-mac-arm64.zip" \
             "PixShell-${VER}-mac-x64.dmg" \
-            "PixShell-${VER}-mac-x64.zip" \
             "PixShell-${VER}-win-x64.zip" \
             "PixShell-${VER}-win-x64-setup.exe"
           do
