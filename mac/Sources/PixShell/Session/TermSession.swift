@@ -50,6 +50,10 @@ final class TermSession {
     var closeHandled = false
     /// 是否已经因算法协商失败回落到系统 ssh 重试过（每条会话最多回落一次，防止来回打转）。
     var triedOpenSSHFallback = false
+    /// 主动断开/关闭标签时禁止自动重连；意外掉线才重试。
+    var userInitiatedClose = false
+    var autoReconnectAttempt = 0
+    var autoReconnectWorkItem: DispatchWorkItem?
 
     /// 会话输出缓冲（对齐老仓库 termBuffers）：上限 ~500KB，超出保留尾部。
     /// 每个会话各自持有 TerminalView，后台标签同样在收数据；此缓冲用于诊断/导出与

@@ -648,6 +648,10 @@ public partial class MainWindow : Window
     }
 
     private bool _retryPrompting;   // 防止连续失败叠出多个密码框
+    private readonly HashSet<TerminalSession> _reconnectInProgress = new();
+    private readonly HashSet<TerminalSession> _manualDisconnects = new();
+    private readonly HashSet<TerminalSession> _autoReconnectScheduled = new();
+    private readonly Dictionary<TerminalSession, int> _autoReconnectAttempts = new();
 
     /// <summary>认证失败后重新要密码并在**当前标签**上重连（勾选记住则写回 DPAPI 凭据库）。</summary>
     private void PromptRetryPassword(HostEntry host, TabItem item)
@@ -737,10 +741,11 @@ public partial class MainWindow : Window
     /// 而且历史输出跟着旧标签一起没了。TerminalSession.ConnectAsync 本身就会先 Disconnect，
     /// 所以直接在原会话上重连即可（与 mac reconnectCurrent 同一套语义）。
     /// </summary>
-    private async Task ReconnectInPlaceAsync(TabItem item)
+    private async Task ReconnectInPlaceAsync(TabItem item, bool automatic = false)
     {
         if (item.Tag is not TerminalSession session || session.SourceHost is not { } host) return;
-        Sessions.SelectedItem = item;
+        if (!automatic) Sessions.SelectedItem = item;
+        _manualDisconnects.Remove(session);
 
         // 应用内 Web 终端：只刷新 WebView，不建 SSH
         if (host.IsWebSsh || session.IsWebSsh)
@@ -793,6 +798,7 @@ public partial class MainWindow : Window
             if (remember) CredentialStore.SetPassword(host.Id, pass);
         }
 
+        _reconnectInProgress.Add(session);
         try
         {
             session.Disconnect();
@@ -804,6 +810,7 @@ public partial class MainWindow : Window
             Monitor.SetConnected(true, host.Host);
             ConnectAnim.Succeed();
             RefreshConnState();
+            _autoReconnectAttempts.Remove(session);
         }
         catch (Exception ex)
         {
@@ -811,6 +818,11 @@ public partial class MainWindow : Window
             ConnectAnim.Fail("重连失败");
             SetStatus("重连失败: " + ex.Message);
             RefreshConnState();
+        }
+        finally
+        {
+            _reconnectInProgress.Remove(session);
+            if (automatic && !session.Connected) ScheduleAutoReconnect(session);
         }
     }
 
@@ -835,6 +847,10 @@ public partial class MainWindow : Window
         var wasActive = ReferenceEquals(Sessions.SelectedItem, item);
         if (item.Tag is TerminalSession session)
         {
+            _manualDisconnects.Add(session);
+            _autoReconnectScheduled.Remove(session);
+            _autoReconnectAttempts.Remove(session);
+            _reconnectInProgress.Remove(session);
             session.StatusChanged -= OnSessionStatusChanged;
             session.ConnectedChanged -= OnSessionConnectedChanged;
             session.TitleChanged -= OnSessionTitleChanged;
@@ -889,6 +905,11 @@ public partial class MainWindow : Window
     private void OnSessionStatusChanged(TerminalSession s, string msg) { if (IsActiveSession(s)) SetStatus(msg); }
     private void OnSessionConnectedChanged(TerminalSession s, bool on)
     {
+        if (on)
+        {
+            _autoReconnectAttempts.Remove(s);
+            _autoReconnectScheduled.Remove(s);
+        }
         if (!on && IsActiveSession(s))
         {
             Dispatcher.BeginInvoke(new Action(() =>
@@ -897,6 +918,33 @@ public partial class MainWindow : Window
                 RefreshConnState();
             }));
         }
+        if (!on && !_manualDisconnects.Contains(s) && !_reconnectInProgress.Contains(s)
+            && s.SourceHost is { IsLocal: false, IsWebSsh: false })
+            ScheduleAutoReconnect(s);
+    }
+
+    /// <summary>曾经连通后的意外掉线自动原地重连。2/4/8/16/30 秒退避；
+    /// 用户主动断开、关闭标签、正在手动重连时均不触发。</summary>
+    private void ScheduleAutoReconnect(TerminalSession session)
+    {
+        if (_autoReconnectScheduled.Contains(session) || _manualDisconnects.Contains(session)) return;
+        var item = Sessions.Items.Cast<object>().OfType<TabItem>()
+            .FirstOrDefault(x => ReferenceEquals(x.Tag, session));
+        if (item == null) return;
+        var attempt = _autoReconnectAttempts.TryGetValue(session, out var n) ? n + 1 : 1;
+        _autoReconnectAttempts[session] = attempt;
+        _autoReconnectScheduled.Add(session);
+        var delay = TimeSpan.FromSeconds(Math.Min(30, 1 << Math.Min(attempt, 4)));
+        Log.Warn($"连接意外断开，{delay.TotalSeconds:0} 秒后自动重连（第 {attempt} 次）", "session");
+        _ = Dispatcher.InvokeAsync(async () =>
+        {
+            await Task.Delay(delay);
+            _autoReconnectScheduled.Remove(session);
+            if (_manualDisconnects.Contains(session) || session.Connected
+                || !Sessions.Items.Cast<object>().OfType<TabItem>().Any(x => ReferenceEquals(x.Tag, session)))
+                return;
+            await ReconnectInPlaceAsync(item, automatic: true);
+        });
     }
     private void OnSessionTitleChanged(TerminalSession s)
     {
@@ -2091,7 +2139,12 @@ public partial class MainWindow : Window
     }
     private void MenuDisconnect()
     {
-        ActiveSession?.Disconnect();
+        if (ActiveSession is { } session)
+        {
+            _manualDisconnects.Add(session);
+            _autoReconnectScheduled.Remove(session);
+            session.Disconnect();
+        }
         ClearSessionSidePanels();   // P1：断开即清 SFTP + 系统信息
         RefreshConnState();   // 侧栏红绿灯 + 断开/连接按钮跟着切
         SetStatus("已断开");

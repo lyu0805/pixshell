@@ -16,6 +16,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>   <!-- 顶部：分组文件夹 chips + 新建 -->
             <RowDefinition Height="*"/>       <!-- 主体：左栏 | 竖分隔 | 右栏 -->
+            <RowDefinition Height="Auto"/>    <!-- 参数填写区（仅待发送模板有参数时显示） -->
         </Grid.RowDefinitions>
 
         <!-- 顶部：分组文件夹（WrapPanel 换行）+ ＋新建 -->
@@ -81,5 +82,26 @@
                         VerticalContentAlignment="Center" Click="OnExpandEditor" ToolTip="展开命令编辑器"/>
             </Grid>
         </Grid>
+
+        <!-- 参数不再弹窗：固定显示在命令窗口下方。ComboBox 可输入，也可选择历史值。 -->
+        <Border x:Name="ParamPanel" Grid.Row="2" Visibility="Collapsed" Margin="0,8,0,0"
+                Padding="10,8" Background="{DynamicResource BrushBg2}"
+                BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1"
+                CornerRadius="{DynamicResource RadiusSm}">
+            <DockPanel LastChildFill="True">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Bottom"
+                            Margin="10,0,0,0">
+                    <Button Content="取消" Style="{StaticResource PillButton}" Padding="12,2"
+                            Margin="0,0,6,0" Click="OnCancelParams"/>
+                    <Button Content="发送" Tag="Primary" Style="{StaticResource PillButton}" Padding="14,2"
+                            Click="OnConfirmParams"/>
+                </StackPanel>
+                <StackPanel>
+                    <TextBlock x:Name="ParamTitle" Text="填写命令参数" FontWeight="SemiBold"
+                               Margin="0,0,0,6"/>
+                    <WrapPanel x:Name="ParamFields" Orientation="Horizontal"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
     </Grid>
 </UserControl>

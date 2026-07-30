@@ -355,6 +355,9 @@ extension AppDelegate {
     func reconnectCurrent() {
         guard sessions.indices.contains(current) else { return }
         let sess = sessions[current]
+        sess.userInitiatedClose = false
+        sess.autoReconnectWorkItem?.cancel()
+        sess.autoReconnectWorkItem = nil
         // 应用内 Web 终端：只 reload WKWebView，不建 SSH
         if sess.isWebSSH {
             sess.webSSHView?.reload()
@@ -501,6 +504,8 @@ extension AppDelegate {
     func closeSession(_ i: Int) {
         guard i >= 0, i < sessions.count else { return }
         let wasActive = i == current
+        sessions[i].userInitiatedClose = true
+        sessions[i].autoReconnectWorkItem?.cancel()
         sessions[i].ssh?.close()
         sessions[i].contentView.removeFromSuperview()
         sessions[i].webSSHView = nil
@@ -603,6 +608,8 @@ extension AppDelegate {
         guard sessions.indices.contains(s.tag) else { return }
         let keep = sessions[s.tag]
         for sess in sessions where sess !== keep {
+            sess.userInitiatedClose = true
+            sess.autoReconnectWorkItem?.cancel()
             sess.ssh?.close()
             sess.contentView.removeFromSuperview()
             sess.webSSHView = nil
@@ -755,6 +762,10 @@ extension AppDelegate {
         guard let sess = session(forSSH: s) else { return }
         sess.connected = true
         sess.shellOpened = true     // 认证确实过了；之后任何关闭都不再算"认证失败"
+        sess.userInitiatedClose = false
+        sess.autoReconnectAttempt = 0
+        sess.autoReconnectWorkItem?.cancel()
+        sess.autoReconnectWorkItem = nil
         connectOverlay?.succeed()   // 连接动画收尾（绿点 + 淡出）
         detectRemoteOS(for: sess)   // 首次连上 → 认出发行版，主机图标换成对应系统标志
         rebuildTabs()
@@ -904,6 +915,35 @@ extension AppDelegate {
                 setStatus(statusDetail ?? "连接失败")
             }
         }
+        // 自动重连尝试本身可能在 shell 打开前再次失败；只要不是认证失败就继续退避重试。
+        let retryingUnexpectedDrop = sess.autoReconnectAttempt > 0
+            && Self.classifyClose(error) != .auth
+        if (wasUp || retryingUnexpectedDrop), !sess.userInitiatedClose,
+           !sess.host.isLocal, !sess.isWebSSH {
+            scheduleAutoReconnect(for: sess)
+        } else {
+            sess.userInitiatedClose = false
+        }
+    }
+
+    /// 曾经连接成功后的意外掉线自动原地重连。2/4/8/16/30 秒退避；
+    /// 手动断开、关闭标签和显式重连均会取消待执行任务。
+    private func scheduleAutoReconnect(for sess: TermSession) {
+        guard sessions.contains(where: { $0 === sess }), sess.autoReconnectWorkItem == nil,
+              !sess.userInitiatedClose else { return }
+        sess.autoReconnectAttempt += 1
+        let seconds = min(30, 1 << min(sess.autoReconnectAttempt, 4))
+        Log.warn("连接意外断开，\(seconds) 秒后自动重连（第 \(sess.autoReconnectAttempt) 次）", "session")
+        let work = DispatchWorkItem { [weak self, weak sess] in
+            guard let self = self, let sess = sess else { return }
+            sess.autoReconnectWorkItem = nil
+            guard !sess.connected, !sess.userInitiatedClose,
+                  self.sessions.contains(where: { $0 === sess }) else { return }
+            let pass = sess.password ?? Keychain.password(for: sess.host.id) ?? ""
+            self.startSSH(for: sess, password: pass)
+        }
+        sess.autoReconnectWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(seconds), execute: work)
     }
 
     // MARK: - TerminalViewDelegate

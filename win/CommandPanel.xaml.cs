@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Media;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -34,6 +36,15 @@ public partial class CommandPanel : UserControl
     private string? _selectedGroup;
     private string? _selectedCmdId;   // 列表里被选中的那条（左栏「发送」用）
     private bool _editorCollapsed;
+    private string? _pendingTemplate;
+    private SendTarget _pendingTarget;
+    private readonly Dictionary<string, ComboBox> _paramInputs = new();
+    private readonly Dictionary<string, List<string>> _paramHistory = LoadParamHistory();
+    private int _paramHistoryLimit = LoadParamHistoryLimit();
+    private static readonly string ParamHistoryPath =
+        Path.Combine(HostStore.AppDir, "quick-command-param-history.json");
+    private static readonly string ParamSettingsPath =
+        Path.Combine(HostStore.AppDir, "quick-command-settings.json");
 
     // 右栏展开宽度；收起后只留一个窄条（对齐 mac rightExpanded/rightCollapsed）。
     private const double RightExpanded = 213;
@@ -265,23 +276,133 @@ public partial class CommandPanel : UserControl
     /// <summary>发送一条命令（含 ${参数} 逐个询问）—— 双击和左栏「发送」共用。</summary>
     private void SendCommand(QuickCommand c, SendTarget tgt)
     {
-        var text = CommandStore.Render(c);   // 先套参数默认值
-        if (CommandParams.HasUnresolved(text))
+        // 必须先检查原模板。旧代码先套默认值，导致占位符消失，双击直接发送。
+        var names = CommandParams.Parse(c.Command);
+        if (names.Count > 0)
         {
-            var vals = new Dictionary<string, string>();
-            foreach (var name in CommandParams.Parse(text))
-            {
-                var v = AskParam(name);
-                if (v == null) return;   // 取消 → 整条放弃
-                vals[name] = v;
-            }
-            text = CommandParams.Render(text, vals);
+            ShowParamPanel(c, tgt, names);
+            return;
         }
-        OnSendTo?.Invoke(text + "\r", tgt);
+        OnSendTo?.Invoke(c.Command + "\r", tgt);
     }
 
+    private void ShowParamPanel(QuickCommand command, SendTarget target, IReadOnlyList<string> names)
+    {
+        _pendingTemplate = command.Command;
+        _pendingTarget = target;
+        _paramInputs.Clear();
+        ParamFields.Children.Clear();
+        ParamTitle.Text = $"填写「{command.Name}」参数";
 
+        foreach (var name in names)
+        {
+            var declared = command.Params?.FirstOrDefault(p => p.Name == name);
+            var history = _paramHistory.TryGetValue(name, out var saved) ? saved : new List<string>();
+            var box = new ComboBox
+            {
+                IsEditable = true, MinWidth = 150, MaxWidth = 260,
+                Margin = new Thickness(0, 0, 10, 4),
+                ToolTip = $"${{{name}}}",
+            };
+            foreach (var value in history) box.Items.Add(value);
+            box.Text = history.FirstOrDefault() ?? declared?.DefaultValue ?? "";
 
+            var field = new StackPanel { Margin = new Thickness(0, 0, 4, 0) };
+            field.Children.Add(new TextBlock
+            {
+                Text = name + (declared?.Required == true ? " *" : ""),
+                FontSize = 11, Foreground = (Brush)Application.Current.Resources["BrushMuted"]
+            });
+            field.Children.Add(box);
+            ParamFields.Children.Add(field);
+            _paramInputs[name] = box;
+        }
+        ParamPanel.Visibility = Visibility.Visible;
+        _paramInputs.Values.FirstOrDefault()?.Focus();
+    }
+
+    private void OnConfirmParams(object sender, RoutedEventArgs e)
+    {
+        if (_pendingTemplate == null) return;
+        var values = new Dictionary<string, string>();
+        foreach (var pair in _paramInputs)
+        {
+            var value = pair.Value.Text;
+            values[pair.Key] = value;
+            RememberParamValue(pair.Key, value);
+        }
+        var text = CommandParams.Render(_pendingTemplate, values);
+        var target = _pendingTarget;
+        HideParamPanel();
+        OnSendTo?.Invoke(text + "\r", target);
+    }
+
+    private void OnCancelParams(object sender, RoutedEventArgs e) => HideParamPanel();
+
+    private void HideParamPanel()
+    {
+        _pendingTemplate = null;
+        _paramInputs.Clear();
+        ParamFields.Children.Clear();
+        ParamPanel.Visibility = Visibility.Collapsed;
+    }
+
+    private void RememberParamValue(string name, string value)
+    {
+        if (string.IsNullOrEmpty(value)) return;
+        if (!_paramHistory.TryGetValue(name, out var list)) _paramHistory[name] = list = new List<string>();
+        list.Remove(value);
+        list.Insert(0, value);
+        if (list.Count > _paramHistoryLimit)
+            list.RemoveRange(_paramHistoryLimit, list.Count - _paramHistoryLimit);
+        try { File.WriteAllText(ParamHistoryPath, JsonSerializer.Serialize(_paramHistory)); } catch { }
+    }
+
+    private static Dictionary<string, List<string>> LoadParamHistory()
+    {
+        try
+        {
+            if (File.Exists(ParamHistoryPath))
+                return JsonSerializer.Deserialize<Dictionary<string, List<string>>>(
+                    File.ReadAllText(ParamHistoryPath)) ?? new();
+        }
+        catch { }
+        return new();
+    }
+
+    private void SetParamHistoryLimit()
+    {
+        var raw = Ask("参数历史数量", "每个参数保存多少个历史值（1–500）",
+            _paramHistoryLimit.ToString());
+        if (!int.TryParse(raw, out var value)) return;
+        _paramHistoryLimit = Math.Clamp(value, 1, 500);
+        foreach (var list in _paramHistory.Values)
+            if (list.Count > _paramHistoryLimit)
+                list.RemoveRange(_paramHistoryLimit, list.Count - _paramHistoryLimit);
+        try
+        {
+            File.WriteAllText(ParamSettingsPath,
+                JsonSerializer.Serialize(new Dictionary<string, int> { ["paramHistoryLimit"] = _paramHistoryLimit }));
+            File.WriteAllText(ParamHistoryPath, JsonSerializer.Serialize(_paramHistory));
+        }
+        catch { }
+    }
+
+    private static int LoadParamHistoryLimit()
+    {
+        try
+        {
+            if (File.Exists(ParamSettingsPath))
+            {
+                var settings = JsonSerializer.Deserialize<Dictionary<string, int>>(
+                    File.ReadAllText(ParamSettingsPath));
+                if (settings != null && settings.TryGetValue("paramHistoryLimit", out var value))
+                    return Math.Clamp(value, 1, 500);
+            }
+        }
+        catch { }
+        return 50;
+    }
     /// <summary>右栏「发送」：发编辑器里的内容（有选中就只发选中那段）。</summary>
     private void OnSendEditor(object sender, RoutedEventArgs e)
     {
@@ -302,6 +423,8 @@ public partial class CommandPanel : UserControl
             var c = _selectedCmdId == null ? null : CommandStore.Commands.FirstOrDefault(x => x.Id == _selectedCmdId);
             if (c != null) Editor.Text = c.Command;
         }));
+        m.Items.Add(new Separator());
+        m.Items.Add(MenuItem($"参数历史数量…（当前 {_paramHistoryLimit}）", SetParamHistoryLimit));
         m.Items.Add(new Separator());
         m.Items.Add(MenuItem("存为新命令…", SaveEditorAsCommand));
         m.PlacementTarget = (UIElement)sender;
@@ -442,10 +565,8 @@ public partial class CommandPanel : UserControl
     }
 
     // =====================================================================
-    // 弹框取值（参数 / 分组名等）
+    // 弹框取值（仅分组名等管理操作；命令参数使用底部内嵌表单）
     // =====================================================================
-    private string? AskParam(string name) => Ask("参数 " + name, $"请输入 ${{{name}}} 的值", "");
-
     private string? Ask(string title, string prompt, string defaultValue)
     {
         var win = new Window

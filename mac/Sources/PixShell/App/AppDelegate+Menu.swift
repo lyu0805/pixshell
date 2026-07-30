@@ -14,8 +14,12 @@ extension AppDelegate {
     }
     @objc func menuDisconnect() {
         guard sessions.indices.contains(current) else { return }
-        sessions[current].ssh?.close()
-        sessions[current].connected = false
+        let sess = sessions[current]
+        sess.userInitiatedClose = true
+        sess.autoReconnectWorkItem?.cancel()
+        sess.autoReconnectWorkItem = nil
+        sess.ssh?.close()
+        sess.connected = false
         clearSessionSidePanels()   // P1：断开即清 SFTP + 系统信息
         rebuildTabs(); setStatus("已断开")
     }

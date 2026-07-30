@@ -32,6 +32,18 @@ final class CommandPanel: NSView {
     private var editorCollapsed = false
     private var selectedGroup: String?
     private var selectedCmdId: String?          // 列表里被选中的那条（左栏「发送」用）
+    private let paramBox = CardView(radius: Theme.radiusSm, bg: Theme.bg2, border: Theme.border)
+    private let paramFields = NSStackView()
+    private var paramHeightC: NSLayoutConstraint!
+    private var paramInputs: [String: NSComboBox] = [:]
+    private var pendingTemplate: String?
+    private var pendingTarget: SendTarget = .current
+    private static let paramHistoryKey = "pixshell.quickCommand.paramHistory"
+    private static let paramHistoryLimitKey = "pixshell.quickCommand.paramHistoryLimit"
+    private var paramHistoryLimit: Int {
+        let saved = UserDefaults.standard.integer(forKey: Self.paramHistoryLimitKey)
+        return saved == 0 ? 50 : min(500, max(1, saved))
+    }
 
     /// 右栏展开宽度；收起后只留一个窄条。
     /// 截图 P0：命令 tab 打开时编辑器被默认收/窄到看不见 —— 默认展开且更宽一点。
@@ -144,13 +156,39 @@ final class CommandPanel: NSView {
             edSendBar.bottomAnchor.constraint(equalTo: rightCol.bottomAnchor),
         ])
 
-        // ── 组装：顶部分类行 + [左栏 | 竖分隔 | 右栏] ──
+        // ── 参数填写区：固定在命令窗口下方，不再逐个弹 NSAlert ──
+        paramFields.orientation = .horizontal
+        paramFields.alignment = .bottom
+        paramFields.spacing = 10
+        paramFields.translatesAutoresizingMaskIntoConstraints = false
+        let cancelParams = PillButton("取消", style: .secondary, hPad: 12, height: 24,
+                                      target: self, action: #selector(cancelParamsAction))
+        let sendParams = PillButton("发送", style: .primary, hPad: 14, height: 24,
+                                    target: self, action: #selector(confirmParamsAction))
+        let paramActions = NSStackView(views: [cancelParams, sendParams])
+        paramActions.orientation = .horizontal; paramActions.spacing = 6
+        paramActions.translatesAutoresizingMaskIntoConstraints = false
+        paramBox.addSubview(paramFields); paramBox.addSubview(paramActions)
+        paramBox.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            paramFields.leadingAnchor.constraint(equalTo: paramBox.leadingAnchor, constant: 10),
+            paramFields.topAnchor.constraint(equalTo: paramBox.topAnchor, constant: 7),
+            paramFields.bottomAnchor.constraint(equalTo: paramBox.bottomAnchor, constant: -7),
+            paramActions.trailingAnchor.constraint(equalTo: paramBox.trailingAnchor, constant: -10),
+            paramActions.bottomAnchor.constraint(equalTo: paramBox.bottomAnchor, constant: -8),
+            paramFields.trailingAnchor.constraint(lessThanOrEqualTo: paramActions.leadingAnchor, constant: -10),
+        ])
+        paramHeightC = paramBox.heightAnchor.constraint(equalToConstant: 0)
+        paramHeightC.isActive = true
+        paramBox.isHidden = true
+
+        // ── 组装：顶部分类行 + [左栏 | 竖分隔 | 右栏] + 参数区 ──
         let divider = DividerView()
         divider.wantsLayer = true; divider.layer?.backgroundColor = Theme.border.cgColor
         divider.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(groupFlow); addSubview(addBtn)
-        addSubview(leftCol); addSubview(divider); addSubview(rightCol)
+        addSubview(leftCol); addSubview(divider); addSubview(rightCol); addSubview(paramBox)
 
         rightWidthC = rightCol.widthAnchor.constraint(equalToConstant: Self.rightExpanded)
         NSLayoutConstraint.activate([
@@ -162,7 +200,7 @@ final class CommandPanel: NSView {
 
             leftCol.topAnchor.constraint(equalTo: groupFlow.bottomAnchor, constant: 8),
             leftCol.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            leftCol.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+            leftCol.bottomAnchor.constraint(equalTo: paramBox.topAnchor, constant: -6),
 
             divider.leadingAnchor.constraint(equalTo: leftCol.trailingAnchor, constant: 8),
             divider.widthAnchor.constraint(equalToConstant: 1),
@@ -174,6 +212,9 @@ final class CommandPanel: NSView {
             rightCol.topAnchor.constraint(equalTo: leftCol.topAnchor),
             rightCol.bottomAnchor.constraint(equalTo: leftCol.bottomAnchor),
             rightWidthC,
+            paramBox.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            paramBox.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            paramBox.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
         ])
     }
 
@@ -348,16 +389,75 @@ final class CommandPanel: NSView {
 
     /// 发送一条命令（含 ${参数} 逐个询问）—— 双击和左栏「发送」共用
     private func sendCommand(_ c: QuickCommand, to tgt: SendTarget) {
-        var text = store.render(c)
-        if CommandParams.hasUnresolved(text) {
-            var vals: [String: String] = [:]
-            for n in CommandParams.parse(text) {
-                guard let v = ask("参数 \(n)", "请输入 ${\(n)} 的值", defaultValue: "") else { return }
-                vals[n] = v
-            }
-            text = CommandParams.render(text, values: vals)
+        // 先解析原始模板。旧代码先套默认值，导致占位符消失，双击直接发送。
+        let names = CommandParams.parse(c.command)
+        if !names.isEmpty {
+            showParameterForm(for: c, target: tgt, names: names)
+            return
         }
-        onSendTo?(text + "\r", tgt)
+        onSendTo?(c.command + "\r", tgt)
+    }
+
+    private func showParameterForm(for command: QuickCommand, target: SendTarget, names: [String]) {
+        pendingTemplate = command.command
+        pendingTarget = target
+        paramInputs.removeAll()
+        paramFields.arrangedSubviews.forEach { paramFields.removeArrangedSubview($0); $0.removeFromSuperview() }
+        let history = UserDefaults.standard.dictionary(forKey: Self.paramHistoryKey) as? [String: [String]] ?? [:]
+        for name in names {
+            let declared = command.params?.first { $0.name == name }
+            let values = history[name] ?? []
+            let label = small(name + (declared?.required == true ? " *" : ""))
+            let combo = NSComboBox()
+            combo.font = Theme.ui(11)
+            combo.usesDataSource = false
+            combo.addItems(withObjectValues: values)
+            combo.stringValue = values.first ?? declared?.defaultValue ?? ""
+            combo.translatesAutoresizingMaskIntoConstraints = false
+            combo.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
+            let field = NSStackView(views: [label, combo])
+            field.orientation = .vertical; field.alignment = .leading; field.spacing = 3
+            paramFields.addArrangedSubview(field)
+            paramInputs[name] = combo
+        }
+        paramBox.isHidden = false
+        paramHeightC.constant = 60
+        needsLayout = true
+        window?.makeFirstResponder(paramInputs[names.first ?? ""])
+    }
+
+    @objc private func confirmParamsAction() {
+        guard let template = pendingTemplate else { return }
+        var values: [String: String] = [:]
+        for (name, input) in paramInputs {
+            values[name] = input.stringValue
+            rememberParam(name, value: input.stringValue)
+        }
+        let text = CommandParams.render(template, values: values)
+        let target = pendingTarget
+        hideParameterForm()
+        onSendTo?(text + "\r", target)
+    }
+
+    @objc private func cancelParamsAction() { hideParameterForm() }
+
+    private func hideParameterForm() {
+        pendingTemplate = nil
+        paramInputs.removeAll()
+        paramFields.arrangedSubviews.forEach { paramFields.removeArrangedSubview($0); $0.removeFromSuperview() }
+        paramBox.isHidden = true
+        paramHeightC.constant = 0
+        needsLayout = true
+    }
+
+    private func rememberParam(_ name: String, value: String) {
+        guard !value.isEmpty else { return }
+        var all = UserDefaults.standard.dictionary(forKey: Self.paramHistoryKey) as? [String: [String]] ?? [:]
+        var values = all[name] ?? []
+        values.removeAll { $0 == value }
+        values.insert(value, at: 0)
+        all[name] = Array(values.prefix(paramHistoryLimit))
+        UserDefaults.standard.set(all, forKey: Self.paramHistoryKey)
     }
 
     @objc private func gearClicked(_ sender: NSButton) {
@@ -389,6 +489,8 @@ final class CommandPanel: NSView {
         add("清空编辑器", #selector(clearEditor))
         add("把选中项载入编辑器", #selector(loadSelectedIntoEditor))
         m.addItem(.separator())
+        add("参数历史数量…（当前 \(paramHistoryLimit)）", #selector(setParamHistoryLimit))
+        m.addItem(.separator())
         add("存为新命令…", #selector(saveEditorAsCommand))
         m.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
     }
@@ -396,6 +498,16 @@ final class CommandPanel: NSView {
     @objc private func loadSelectedIntoEditor() {
         guard let id = selectedCmdId, let c = store.commands.first(where: { $0.id == id }) else { return }
         editor.string = c.command
+    }
+    @objc private func setParamHistoryLimit() {
+        guard let raw = ask("参数历史数量", "每个参数保存多少个历史值（1–500）",
+                            defaultValue: "\(paramHistoryLimit)"),
+              let parsed = Int(raw) else { return }
+        let value = min(500, max(1, parsed))
+        UserDefaults.standard.set(value, forKey: Self.paramHistoryLimitKey)
+        var all = UserDefaults.standard.dictionary(forKey: Self.paramHistoryKey) as? [String: [String]] ?? [:]
+        for (name, values) in all { all[name] = Array(values.prefix(value)) }
+        UserDefaults.standard.set(all, forKey: Self.paramHistoryKey)
     }
     @objc private func saveEditorAsCommand() {
         let text = editor.string.trimmingCharacters(in: .whitespacesAndNewlines)
