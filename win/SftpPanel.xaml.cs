@@ -74,6 +74,7 @@ public partial class SftpPanel : UserControl
     /// <summary>外部（命令框 cd）驱动切目录：不触发 OnUserNavigate。</summary>
     public void Navigate(string path)
     {
+        if (_shellFallback && _scpBackend != null) { LoadRemoteDetailScp(string.IsNullOrEmpty(path) ? "/" : path); return; }
         if (_shellFallback) { LoadRemoteDetailProc(string.IsNullOrEmpty(path) ? "/" : path); return; }
         if (_sftp is not { IsConnected: true }) return;
         LoadRemoteDetail(string.IsNullOrEmpty(path) ? "/" : path);
@@ -89,6 +90,7 @@ public partial class SftpPanel : UserControl
     private TerminalSession? _session;
     private SftpClient? _sftp;
     private ProcSftpClient? _procSftp;        // SFTP 失败后的 proc ssh fallback
+    private ScpBackend? _scpBackend;            // SCP 回退（Dropbear 原生，无需 openssh-sftp-server）
     private string _remoteDir = "/";
     private List<FsRow> _remoteEntries = new();
     /// <summary>SFTP 失败后启用 proc fallback 模式（Dropbear 无 openssh-sftp-server）。</summary>
@@ -133,6 +135,7 @@ public partial class SftpPanel : UserControl
     private int _connectGen;
     public void ConnectIfNeeded()
     {
+        if (_scpBackend is { Connected: true }) return;
         if (_procSftp is { Connected: true }) return;
         if (_sftp is { IsConnected: true }) return;
         if (_shellFallback) return;
@@ -206,8 +209,9 @@ public partial class SftpPanel : UserControl
                 if (!ReferenceEquals(_session, session)) { proc.Dispose(); return; }
                 if (err != null)
                 {
-                    StatusLabel.Text = "SFTP 不可用，请安装 openssh-sftp-server（与 Dropbear 可并存）";
-                    OnPathChange?.Invoke("SFTP 不可用");
+                    // SFTP exec 失败，回退到 SCP（Dropbear 原生支持）
+                    StatusLabel.Text = "SFTP 不可用，回退 SCP …";
+                    TryScpFallback(session, gen);
                     proc.Dispose();
                     return;
                 }
@@ -221,9 +225,28 @@ public partial class SftpPanel : UserControl
         });
     }
 
+    /// <summary>SCP 回退（Dropbear 原生，无 openssh-sftp-server 依赖）。</summary>
+    private void TryScpFallback(TerminalSession session, int gen)
+    {
+        var scp = new ScpBackend(session);
+        Dispatcher.InvokeAsync(() =>
+        {
+            if (gen != _connectGen) { scp.Close(); return; }
+            if (!ReferenceEquals(_session, session)) { scp.Close(); return; }
+            _scpBackend = scp;
+            _shellFallback = true;
+            _remoteDir = "/";
+            BuildTreeRoot();
+            LoadRemoteDetail("/");
+            StatusLabel.Text = "SCP 已连接（Dropbear）";
+        });
+    }
+
     private void DisconnectSftp()
     {
         _shellFallback = false;
+        try { _scpBackend?.Close(); } catch { }
+        _scpBackend = null;
         try { _procSftp?.Close(); } catch { }
         try { _procSftp?.Dispose(); } catch { }
         _procSftp = null;
@@ -314,11 +337,26 @@ public partial class SftpPanel : UserControl
         _remoteDir = dir;
     }
 
+    private async System.Threading.Tasks.Task LoadRemoteDetailScp(string dir)
+    {
+        OnPathChange?.Invoke(dir);
+        var entries = await System.Threading.Tasks.Task.Run(() => _scpBackend!.ListDirectory(dir));
+        _remoteEntries = entries;
+        RemoteList.ItemsSource = null;
+        RemoteList.ItemsSource = _remoteEntries;
+        _remoteDir = dir;
+    }
+
     // =====================================================================
     // 远端明细列表
     // =====================================================================
     private async void LoadRemoteDetail(string dir)
     {
+        if (_shellFallback && _scpBackend != null)
+        {
+            await LoadRemoteDetailScp(dir);
+            return;
+        }
         // Proc SFTP 回退模式
         if (_shellFallback)
         {

@@ -1044,6 +1044,16 @@ public sealed class TerminalSession : IDisposable
         return sftp;
     }
 
+    /// <summary>SCP 客户端（Dropbear 原生支持，无需 openssh-sftp-server）。</summary>
+    public ScpClient CreateScpClient()
+    {
+        if (!_connected) throw new InvalidOperationException("会话未连接");
+        if (_isLocal) throw new InvalidOperationException("本机终端无远端 SCP");
+        var info = BuildConnectionInfo(_host, _port, _user, _pass, _keyPath, _proxy);
+        info.Timeout = TimeSpan.FromSeconds(30);
+        return new ScpClient(info);
+    }
+
     /// <summary>展开 ~ 与环境变量，供私钥路径存在性检查与加载共用。</summary>
     internal static string ExpandKeyPath(string path)
     {
