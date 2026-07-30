@@ -180,17 +180,10 @@ extension AppDelegate {
             self.quickConnect?.reload()
         }
 
-        // 系统信息页（遮罩覆盖，默认隐藏）
-        sysInfo = SysInfoPanel(frame: .zero); sysInfo.isHidden = true
-        sysInfo.onClose = { [weak self] in self?.sysInfo.isHidden = true }
+        // 系统信息页（独立弹出窗口，不再贴满主窗）
+        sysInfo = SysInfoPanel(frame: .zero)
+        sysInfo.onClose = { [weak self] in self?.sysInfoWindow?.orderOut(nil) }
         sysInfo.onRefresh = { [weak self] in self?.openSysInfo() }
-        root.addSubview(sysInfo)
-        NSLayoutConstraint.activate([
-            sysInfo.topAnchor.constraint(equalTo: topBar.bottomAnchor),
-            sysInfo.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            sysInfo.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            sysInfo.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-        ])
         monitor.onSysInfo = { [weak self] in self?.openSysInfo() }
 
         // 密钥管理（独立弹出窗口，对齐 ConnManager）
@@ -879,14 +872,39 @@ extension AppDelegate {
         applyThemeKind(Theme.dark ? Theme.lightKind : .dark)
     }
 
-    // 系统信息：exec 采集命令 → 弹窗展示
+    // 系统信息：独立弹出窗口（对齐 ConnManager 模式）
     @objc func openSysInfo() {
         guard sessions.indices.contains(current), let ssh = sessions[current].ssh else {
             Log.warn("系统信息：无活动会话，忽略", "ui"); return
         }
         Log.info("打开系统信息，开始采集", "ui")
+        if sysInfoWindow == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
+                             styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
+                             backing: .buffered, defer: false)
+            w.titlebarAppearsTransparent = true
+            w.titleVisibility = .hidden
+            w.isMovableByWindowBackground = true
+            w.isReleasedWhenClosed = false
+            w.minSize = NSSize(width: 400, height: 320)
+            w.appearance = NSAppearance(named: Theme.dark ? .darkAqua : .aqua)
+            sysInfo.translatesAutoresizingMaskIntoConstraints = false
+            let host = NSView(frame: NSRect(x: 0, y: 0, width: 700, height: 560))
+            host.autoresizingMask = [.width, .height]
+            host.addSubview(sysInfo)
+            NSLayoutConstraint.activate([
+                sysInfo.topAnchor.constraint(equalTo: host.topAnchor),
+                sysInfo.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+                sysInfo.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+                sysInfo.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+            ])
+            w.contentView = host
+            sysInfoWindow = w
+        }
+        sysInfoWindow?.appearance = NSAppearance(named: Theme.dark ? .darkAqua : .aqua)
+        sysInfoWindow?.center()
+        sysInfoWindow?.makeKeyAndOrderFront(nil)
         sysInfo.show("采集中…")
-        sysInfo.superview?.addSubview(sysInfo)   // 置顶于其它弹层之上
         ssh.exec(SysInfoPanel.command) { [weak self] out in
             Log.info("系统信息采集完成（\(out.count) 字节）", "ui")
             self?.sysInfo.show(out)

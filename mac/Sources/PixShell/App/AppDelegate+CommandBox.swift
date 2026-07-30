@@ -131,7 +131,7 @@ extension AppDelegate: NSTextFieldDelegate {
         if let sp = sftpPanel, !sp.isHidden {
             // 保持坞可见结构，但远端内容已清空（disconnect 已 reload 空表 + "远端未连接"）
         }
-        sysInfo?.isHidden = true
+        sysInfoWindow?.orderOut(nil as Any?)
         stopMonitor()
     }
 

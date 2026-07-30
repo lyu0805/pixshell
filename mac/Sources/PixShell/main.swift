@@ -66,6 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     var monitor: MonitorSidebar!
     var connMgr: ConnManager!
     var sysInfo: SysInfoPanel!
+    var sysInfoWindow: NSWindow?      // 系统信息独立弹窗（可拖动/缩放）
+    var lastPingAt: Date = .distantPast
     var toolsPanel: ToolsPanel!        // 顶栏宫格 → 工具面板
     var backupPanel: BackupPanel!      // 备份选项独立弹窗（对齐 ConnManager）
     var editorPanel: EditorPanel!

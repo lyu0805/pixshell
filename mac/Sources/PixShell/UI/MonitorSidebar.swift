@@ -18,6 +18,14 @@ final class MonitorSidebar: NSView {
     private let netSpark = Sparkline(color: Theme.c("#30d158"))
     private let pingSpark = Sparkline(color: Theme.accent)
     private let stack = NSStackView()
+    private var copyBtn: NSButton?
+
+    init() {
+        super.init(frame: .zero)
+        netSpark.barMode = true
+        pingSpark.barMode = true
+        build()
+    }
 
     var onCopyIP: (() -> Void)?
     var onSysInfo: (() -> Void)?
@@ -40,6 +48,8 @@ final class MonitorSidebar: NSView {
 
     private func build() {
         wantsLayer = true; layer?.backgroundColor = Theme.side.cgColor
+        netSpark.barMode = true
+        pingSpark.barMode = true
 
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -89,9 +99,10 @@ final class MonitorSidebar: NSView {
             ipHit.bottomAnchor.constraint(equalTo: ipWrap.bottomAnchor),
         ])
         let ipLab = small("IP")
-        let copy = linkBtn("复制", #selector(copyIP))
+        let copy = PillButton("复制", style: .secondary, hPad: 8, height: 20, target: self, action: #selector(copyIP))
         copy.setContentHuggingPriority(.required, for: .horizontal)
         copy.setContentCompressionResistancePriority(.required, for: .horizontal)
+        copyBtn = copy
         let ipRow = hstack([ipLab, ipWrap, spacer(), copy], gap: 6)
         // pad 默认 trailing 是 ≤，spacer 撑不开；IP 行改成 = 才能把「复制」顶到右侧并吃到右内边距
         addRow(padEqual(ipRow, 6, 10, 6, 12), border: true)
@@ -117,14 +128,14 @@ final class MonitorSidebar: NSView {
         netTitle.font = Theme.ui(10); netTitle.textColor = Theme.muted
         addRow(pad(vstack([netTitle, netSpark], gap: 2), 6, 8, 6, 8), border: true)
         netSpark.widthAnchor.constraint(equalToConstant: 184).isActive = true
-        netSpark.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        netSpark.heightAnchor.constraint(equalToConstant: 22).isActive = true
 
         // 延迟
         secTitle("延迟")
-        pingTitle.font = Theme.ui(10); pingTitle.textColor = Theme.muted; pingTitle.stringValue = "网关"
+        pingTitle.font = Theme.ui(10); pingTitle.textColor = Theme.muted; pingTitle.stringValue = "延迟"
         addRow(pad(vstack([pingTitle, pingSpark], gap: 2), 6, 8, 6, 8), border: true)
         pingSpark.widthAnchor.constraint(equalToConstant: 184).isActive = true
-        pingSpark.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        pingSpark.heightAnchor.constraint(equalToConstant: 16).isActive = true
 
         // 磁盘
         secTitle("磁盘")
@@ -212,7 +223,7 @@ final class MonitorSidebar: NSView {
         [aL, bL, cL].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
         row.addSubview(aL); row.addSubview(bL); row.addSubview(cL)
         NSLayoutConstraint.activate([
-            row.heightAnchor.constraint(equalToConstant: 17),
+            row.heightAnchor.constraint(equalToConstant: 22),
             aL.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 6), aL.centerYAnchor.constraint(equalTo: row.centerYAnchor), aL.widthAnchor.constraint(equalToConstant: 48),
             bL.leadingAnchor.constraint(equalTo: aL.trailingAnchor), bL.centerYAnchor.constraint(equalTo: row.centerYAnchor), bL.widthAnchor.constraint(equalToConstant: 40),
             cL.leadingAnchor.constraint(equalTo: bL.trailingAnchor, constant: 4), cL.centerYAnchor.constraint(equalTo: row.centerYAnchor), cL.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -6),
@@ -220,20 +231,31 @@ final class MonitorSidebar: NSView {
         return row
     }
     private func diskHeader() -> NSView { diskRowV("路径", "可用/大小", header: true, even: false) }
-    private func diskRowV(_ p: String, _ s: String, header: Bool, even: Bool) -> NSView {
-        let row = NSView(); row.wantsLayer = true; row.layer?.backgroundColor = (header ? Theme.bg2 : Theme.side).cgColor
-        let pL = NSTextField(labelWithString: p); pL.font = header ? Theme.ui(10) : Theme.mono(10); pL.textColor = header ? Theme.muted : Theme.text
-        let sL = NSTextField(labelWithString: s); sL.font = header ? Theme.ui(10) : Theme.mono(10); sL.textColor = header ? Theme.muted : Theme.text
-        [pL, sL].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
-        row.addSubview(pL); row.addSubview(sL)
-        NSLayoutConstraint.activate([
-            row.heightAnchor.constraint(equalToConstant: header ? 20 : 17),
-            pL.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 8), pL.centerYAnchor.constraint(equalTo: row.centerYAnchor), pL.widthAnchor.constraint(equalToConstant: 74),
-            sL.leadingAnchor.constraint(equalTo: pL.trailingAnchor, constant: 4), sL.centerYAnchor.constraint(equalTo: row.centerYAnchor), sL.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor, constant: -8),
-        ])
-        return row
+	    private func diskRowV(_ p: String, _ s: String, header: Bool, even: Bool) -> NSView {
+        let bg = header ? Theme.bg2 : (even ? Theme.bg3 : Theme.side)
+	        let row = NSView(); row.wantsLayer = true; row.layer?.backgroundColor = bg.cgColor
+	        let pL = NSTextField(labelWithString: p); pL.font = header ? Theme.ui(10) : Theme.mono(11); pL.textColor = header ? Theme.muted : Theme.text; pL.lineBreakMode = .byTruncatingTail
+	        let sL = NSTextField(labelWithString: s); sL.font = header ? Theme.ui(10) : Theme.mono(11); sL.textColor = header ? Theme.muted : Theme.text; sL.alignment = .right
+	        [pL, sL].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
+	        row.addSubview(pL); row.addSubview(sL)
+	        NSLayoutConstraint.activate([
+	            row.heightAnchor.constraint(equalToConstant: header ? 22 : 24),
+	            pL.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 10), pL.centerYAnchor.constraint(equalTo: row.centerYAnchor), pL.widthAnchor.constraint(equalToConstant: 82),
+	            sL.leadingAnchor.constraint(equalTo: pL.trailingAnchor, constant: 4), sL.centerYAnchor.constraint(equalTo: row.centerYAnchor), sL.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
+	        ])
+	        return row
+	    }
+    @objc private func copyIP() {
+        onCopyIP?()
+        guard let btn = copyBtn else { return }
+        let origTitle = btn.title
+        let origColor = btn.attributedTitle.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor ?? Theme.text
+        btn.attributedTitle = NSAttributedString(string: "✓", attributes: [.foregroundColor: Theme.c("#30d158"), .font: Theme.ui(12, .semibold)])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            btn.attributedTitle = NSAttributedString(string: origTitle, attributes: [.foregroundColor: origColor, .font: Theme.ui(12, .regular)])
+            _ = self
+        }
     }
-    @objc private func copyIP() { onCopyIP?() }
     @objc private func sysInfoTap() { onSysInfo?() }
 
     // MARK: 数据更新
@@ -255,8 +277,8 @@ final class MonitorSidebar: NSView {
     }
     @objc private func toggleConn() { onToggleConnection?() }
     func update(_ m: [String: String]) {
-        uptime.stringValue = m["uptime"] ?? "-"
-        load.stringValue = m["load"] ?? "-"
+        uptime.stringValue = formatUptime(m["uptime"] ?? "-")
+        load.stringValue = formatLoad(m["load"] ?? "-")
         cpuBar.set(pct: dbl(m["cpu"]), size: "")
         if let mem = m["mem"] { let p = parts(mem); memBar.set(pct: p.0, size: p.1) }
         if let sw = m["swap"] { let p = parts(sw); swapBar.set(pct: p.0, size: p.1) }
@@ -316,16 +338,18 @@ final class MonitorSidebar: NSView {
             }
         }
 
-        // 延迟：网关 ping
-        let gw = m["pinghost"] ?? ""
+        // 延迟：本机→SSH 服务器（由本地 ping 填入）
         if let ms = m["pingms"], let d = Double(ms) {
-            pingTitle.stringValue = gw.isEmpty ? String(format: "网关 %.1f ms", d)
-                                              : String(format: "网关 %@ · %.1f ms", gw, d)
+            pingTitle.stringValue = String(format: "延迟 %.1f ms", d)
             pingSpark.push(d)
+        } else if _lastPingMs > 0 {
+            pingTitle.stringValue = String(format: "延迟 %.1f ms", _lastPingMs)
         } else {
-            pingTitle.stringValue = gw.isEmpty ? "网关 -" : "网关 \(gw) · 超时"
+            pingTitle.stringValue = "延迟 -"
         }
     }
+    private var _lastPingMs: Double = 0
+    func pushPingMs(_ ms: Double) { _lastPingMs = ms; pingSpark.push(ms); pingTitle.stringValue = String(format: "延迟 %.1f ms", ms) }
     private func formatRate(_ bytesPerSec: Double) -> String {
         if bytesPerSec < 0 || bytesPerSec.isNaN || bytesPerSec.isInfinite { return "0 B/s" }
         let units = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
@@ -345,6 +369,18 @@ final class MonitorSidebar: NSView {
     }
     private func dbl(_ s: String?) -> Double { Double((s ?? "").replacingOccurrences(of: "%", with: "")) ?? 0 }
     private func parts(_ s: String) -> (Double, String) { let f = s.split(separator: "|").map(String.init); return (Double(f.first ?? "0") ?? 0, f.count > 1 ? f[1] : "") }
+
+    /// "175d18h18m" → "175d  18h  18m"
+    private func formatUptime(_ raw: String) -> String {
+        raw.replacingOccurrences(of: "d", with: "d  ")
+            .replacingOccurrences(of: "h", with: "h  ")
+            .replacingOccurrences(of: "m", with: "m  ")
+            .trimmingCharacters(in: .whitespaces)
+    }
+    /// "0.00,0.18,0.16" → "0.00  0.18  0.16"
+    private func formatLoad(_ raw: String) -> String {
+        raw.replacingOccurrences(of: ",", with: "  ")
+    }
 }
 
 /// 满宽药丸渐变进度条(% 叠在条内左侧) —— 照抄 .lm-bar / .lm-bar-row。
@@ -416,10 +452,11 @@ final class Bar: NSView {
     }
 }
 
-/// 折线图（滚动窗口）。
+/// 迷你图（滚动窗口）：barMode=true 画柱状，false 画折线。
 final class Sparkline: NSView {
     private var values: [Double] = []
     private let color: NSColor
+    var barMode = false
     init(color: NSColor) { self.color = color; super.init(frame: .zero); wantsLayer = true; translatesAutoresizingMaskIntoConstraints = false }
     required init?(coder: NSCoder) { fatalError() }
     func push(_ v: Double) { values.append(v); if values.count > 60 { values.removeFirst() }; needsDisplay = true }
@@ -427,12 +464,29 @@ final class Sparkline: NSView {
         guard values.count > 1 else { return }
         let mn = values.min() ?? 0, mx = values.max() ?? 1
         let span = max(mx - mn, 1)
-        let path = NSBezierPath(); path.lineWidth = 1.5
-        for (i, v) in values.enumerated() {
-            let x = bounds.width * CGFloat(i) / CGFloat(values.count - 1)
-            let y = 3 + (bounds.height - 6) * CGFloat((v - mn) / span)
-            if i == 0 { path.move(to: NSPoint(x: x, y: y)) } else { path.line(to: NSPoint(x: x, y: y)) }
+        let w = bounds.width, h = bounds.height
+        if barMode {
+            let unit = w / CGFloat(values.count)
+            let barW = unit * 0.55
+            let gap = unit * 0.45
+            let maxH = h * 0.7
+            let barColor = color.withAlphaComponent(0.6)
+            barColor.setFill()
+            for (i, v) in values.enumerated() {
+                let ratio = CGFloat((v - mn) / span)
+                let barH = max(maxH * ratio, 1)
+                let x = CGFloat(i) * (barW + gap)
+                let y = h - barH
+                NSBezierPath(roundedRect: NSRect(x: x, y: y, width: barW, height: barH), xRadius: 1, yRadius: 1).fill()
+            }
+        } else {
+            let path = NSBezierPath(); path.lineWidth = 1.5
+            for (i, v) in values.enumerated() {
+                let x = w * CGFloat(i) / CGFloat(values.count - 1)
+                let y = 3 + (h - 6) * CGFloat((v - mn) / span)
+                if i == 0 { path.move(to: NSPoint(x: x, y: y)) } else { path.line(to: NSPoint(x: x, y: y)) }
+            }
+            color.setStroke(); path.stroke()
         }
-        color.setStroke(); path.stroke()
     }
 }

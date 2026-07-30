@@ -697,12 +697,38 @@ extension AppDelegate {
             ssh.exec(Self.monitorCommand) { [weak self] out in
                 guard let self = self, self.sessions.indices.contains(self.current), self.sessions[self.current] === sess else { return }
                 if out.contains("===mon===") { self.monitor?.update(self.parseMonitor(out)) }
+                // 本地 ping SSH 主机（本机→服务器延迟）
+                self.pingHost(sess.host.host)
             }
         }
         poll()
         monTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in poll() }
     }
     func stopMonitor() { monTimer?.invalidate(); monTimer = nil; monitor?.setConnected(false, ip: "") }
+    func pingHost(_ host: String) {
+        let now = Date()
+        if now.timeIntervalSince(lastPingAt) < 3 { return }
+        lastPingAt = now
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let task = Process()
+            task.launchPath = "/sbin/ping"
+            task.arguments = ["-c", "1", "-t", "1", host]
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            task.standardError = FileHandle.nullDevice
+            task.launch()
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let out = String(data: data, encoding: .utf8),
+               let range = out.range(of: "time=") {
+                let rest = out[range.upperBound...]
+                let msStr = rest.prefix { $0.isNumber || $0 == "." }
+                if let ms = Double(msStr) {
+                    DispatchQueue.main.async { self?.monitor?.pushPingMs(ms) }
+                }
+            }
+        }
+    }
 
     func parseMonitor(_ out: String) -> [String: String] {
         var m: [String: String] = [:]
@@ -727,8 +753,6 @@ extension AppDelegate {
     printf "disks="; df -h 2>/dev/null | awk '$1 ~ /^\\/dev/{printf "%s|%s|%s;",$6,$4,$2}'; echo
     printf "procs="; ps aux 2>/dev/null | sed 1d | sort -rk4 | awk 'NR<=5{c=$11; sub(/.*\\//,"",c); printf "%dM|%s|%s;",$6/1024,$3,c}'; echo
     cat /proc/net/dev 2>/dev/null | tr ':' ' ' | awk 'NR>2 && $1!="lo" && $1 !~ /^(docker|veth|br-)/{print "netif="$1; print "netval="$2+$10; print "netrx="$2; print "nettx="$10; exit}'
-    gw=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}'); [ -n "$gw" ] || gw=$(netstat -rn 2>/dev/null | awk '/^0.0.0.0|^default/{print $2; exit}')
-    if [ -n "$gw" ]; then echo "pinghost=$gw"; ping -c 1 -W 1 "$gw" 2>/dev/null | awk -F'time=' '/time=/{split($2,a," ");printf "pingms=%s\\n",a[1];exit}'; fi
     """
 
     // MARK: - SSHSessionDelegate（主线程）

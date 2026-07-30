@@ -6,8 +6,6 @@ final class SysInfoPanel: NSView {
     private let scroll = NSScrollView()
     private let doc = FlippedView()
     private let grid = NSStackView()
-    private var cardX: NSLayoutConstraint!
-    private var cardY: NSLayoutConstraint!
     var onClose: (() -> Void)?
     var onRefresh: (() -> Void)?
 
@@ -343,7 +341,7 @@ esac
     required init?(coder: NSCoder) { fatalError() }
 
     private func build() {
-        wantsLayer = true; layer?.backgroundColor = NSColor(white: 0, alpha: 0.35).cgColor
+        wantsLayer = true; layer?.backgroundColor = Theme.bg.cgColor
         translatesAutoresizingMaskIntoConstraints = false
         card.rounded(Theme.radiusLg, bg: Theme.bg, border: Theme.borderStrong)
         card.translatesAutoresizingMaskIntoConstraints = false
@@ -355,7 +353,6 @@ esac
         let close = PillButton("关闭", style: .secondary, hPad: 12, target: self, action: #selector(closeAction))
         let head = NSStackView(views: [title, NSView(), refresh, close]); head.spacing = 12; head.alignment = .centerY
         head.translatesAutoresizingMaskIntoConstraints = false
-        head.addGestureRecognizer(HeaderPanGesture(target: self, action: #selector(dragCard(_:))))
 
         scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
@@ -366,12 +363,12 @@ esac
         scroll.documentView = doc
 
         card.addSubview(head); card.addSubview(scroll)
-        cardX = card.centerXAnchor.constraint(equalTo: centerXAnchor)
-        cardY = card.topAnchor.constraint(equalTo: topAnchor, constant: 40)
+        // card 钉满窗口四边（不再居中固定尺寸），适配独立 NSWindow
         NSLayoutConstraint.activate([
-            cardX, cardY,
-            card.widthAnchor.constraint(equalToConstant: 700),
-            card.heightAnchor.constraint(equalToConstant: 600),
+            card.topAnchor.constraint(equalTo: topAnchor),
+            card.leadingAnchor.constraint(equalTo: leadingAnchor),
+            card.trailingAnchor.constraint(equalTo: trailingAnchor),
+            card.bottomAnchor.constraint(equalTo: bottomAnchor),
             head.topAnchor.constraint(equalTo: card.topAnchor, constant: 14),
             head.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
             head.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
@@ -400,13 +397,8 @@ esac
     }
     // Esc 关闭
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if !isHidden, event.keyCode == 53 { onClose?(); return true }
+        if event.keyCode == 53 { onClose?(); return true }
         return super.performKeyEquivalent(with: event)
-    }
-    @objc private func dragCard(_ g: NSPanGestureRecognizer) {
-        let t = g.translation(in: self)
-        cardX.constant += t.x; cardY.constant += t.y
-        g.setTranslation(.zero, in: self)
     }
 
     // MARK: - 数据入口
