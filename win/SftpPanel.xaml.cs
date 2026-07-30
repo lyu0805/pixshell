@@ -222,8 +222,8 @@ public partial class SftpPanel : UserControl
                 if (!ReferenceEquals(_session, session)) { proc.Dispose(); return; }
                 if (err != null)
                 {
-                    StatusLabel.Text = $"SFTP 不可用：{err}。在 OpenWrt 运行 opkg install openssh-sftp-server 后重试。";
-                    OnPathChange?.Invoke("SFTP 不可用（缺 sftp-server）");
+                    StatusLabel.Text = "SFTP 不可用，请安装 openssh-sftp-server（与 Dropbear 可并存）";
+                    OnPathChange?.Invoke("SFTP 不可用");
                     proc.Dispose();
                     return;
                 }
