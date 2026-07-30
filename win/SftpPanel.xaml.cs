@@ -196,7 +196,7 @@ public partial class SftpPanel : UserControl
         System.Threading.Tasks.Task.Run(() =>
         {
             var proc = new ProcSftpClient();
-            var host = session.HostName();
+            var host = session.HostName;
             var port = session.HostPort();
             var user = session.HostUser();
             var err = proc.Connect(host, port, user, null, session.HostKeyPath());
