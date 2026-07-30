@@ -355,8 +355,11 @@ print_cdhash() {
 
 if command -v codesign >/dev/null 2>&1; then
   SIGN_ID="-"
+  # CI 环境：跳过 keychain / openssl 证书生成（容易因熵不足/钥匙串权限卡死），直接 ad-hoc
+  if [ "${GITHUB_ACTIONS:-}" = "true" ] || [ "${CI:-}" = "true" ]; then
+    echo "CI 环境：跳过 PixShell Local 证书查找/生成，直接 ad-hoc 签名"
   # ensure 可能混进提示行：只取 40 位 hex 或字面名，避免 set -u / 多行污染
-  if RAW_ID="$(ensure_local_sign_identity 2>/tmp/pixshell-ensure-id.err)"; then
+  elif RAW_ID="$(ensure_local_sign_identity 2>/tmp/pixshell-ensure-id.err)"; then
     # BSD sed 不支持 GNU `t;` 链式分支；分两步：先抽 40 位 hex，否则 trim 后认字面名
     LOCAL_ID="$(printf '%s\n' "$RAW_ID" | sed -n 's/.*\([0-9A-Fa-f]\{40\}\).*/\1/p' | head -1)"
     if [ -z "$LOCAL_ID" ]; then
