@@ -1028,7 +1028,7 @@ public partial class SftpPanel : UserControl
     public void Cleanup() => DisconnectSftp();
 }
 
-internal sealed class FsRow
+public sealed class FsRow
 {
     public string Name { get; set; } = "";
     public bool IsDir { get; set; }
