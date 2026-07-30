@@ -152,6 +152,9 @@ public sealed class TerminalSession : IDisposable
     private MethodInfo? _windowChange;
     private volatile bool _connected;
     private volatile bool _isLocal;
+    // ExecAsync 命令追踪：Disconnect 前取消所有正在执行的 SshCommand，防止 SSH.NET CancelAsync 向
+    // 已断开连接发送 TERM 导致 "Client not connected" 异常从线程池回调逃逸 → 整程序闪退。
+    private CancellationTokenSource? _execCts;
 
     /// <summary>终端语义高亮开关（对齐 mac AppDelegate.highlightEnabled）。默认开。</summary>
     public static bool HighlightEnabled { get; set; } = true;
@@ -913,15 +916,23 @@ public sealed class TerminalSession : IDisposable
             }
         }
         if (_ssh is not { IsConnected: true }) return "";
+        _execCts?.Cancel(); _execCts?.Dispose();
+        _execCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var ct = _execCts.Token;
         try
         {
             return await Task.Run(() =>
             {
                 using var cmd = _ssh.CreateCommand(command);
                 cmd.CommandTimeout = TimeSpan.FromSeconds(20);
+                ct.ThrowIfCancellationRequested();
                 var result = cmd.Execute();
                 return string.IsNullOrEmpty(result) ? (cmd.Error ?? "") : result;
-            });
+            }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return "执行取消: 会话已断开";
         }
         catch (Exception ex)
         {
@@ -1370,6 +1381,10 @@ public sealed class TerminalSession : IDisposable
         try { _localProc?.Dispose(); } catch { }
         _localStdin = null;
         _localProc = null;
+        // 取消所有正在执行的 SshCommand（防止 SSH.NET CancelAsync 在连接已断开后回调）
+        try { _execCts?.Cancel(); } catch { }
+        try { _execCts?.Dispose(); } catch { }
+        _execCts = null;
         // SSH
         try { _shell?.Dispose(); } catch { }
         try { _ssh?.Disconnect(); } catch { }
