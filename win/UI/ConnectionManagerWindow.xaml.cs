@@ -26,6 +26,7 @@ public partial class ConnectionManagerWindow : Window
 
     /// <summary>已折叠的分组名（对齐 mac ConnManager.collapsed）。</summary>
     private readonly HashSet<string> _collapsed = new(StringComparer.Ordinal);
+    private bool _firstLoad = true;
 
     public ConnectionManagerWindow()
     {
@@ -47,6 +48,13 @@ public partial class ConnectionManagerWindow : Window
                 Foreground = (Brush)Application.Current.Resources["BrushMuted"], Margin = new Thickness(4, 12, 0, 0)
             });
             return;
+        }
+        // 首次打开：所有分组默认收起（对齐 mac ConnManager）
+        if (_firstLoad)
+        {
+            _firstLoad = false;
+            var names = hosts.Select(h => string.IsNullOrWhiteSpace(h.Group) ? "默认" : h.Group).Distinct();
+            foreach (var n in names) _collapsed.Add(n);
         }
         foreach (var group in hosts.GroupBy(h => string.IsNullOrWhiteSpace(h.Group) ? "默认" : h.Group)
                                    .OrderBy(g => g.Key == "默认" ? 1 : 0)

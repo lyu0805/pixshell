@@ -30,12 +30,10 @@
                        TextTrimming="CharacterEllipsis"/>
         </DockPanel>
 
-        <!-- Visible：轨道常显，内容溢出时滑块可拖（用户反复要求分组/整窗滑块） -->
+        <!-- ScrollViewer：内容溢出时显示垂直滑块 -->
         <ScrollViewer Grid.Row="1"
-                      VerticalScrollBarVisibility="Auto"
-                      HorizontalScrollBarVisibility="Disabled"
-                      CanContentScroll="False"
-                      PanningMode="VerticalOnly">
+                      VerticalScrollBarVisibility="Visible"
+                      HorizontalScrollBarVisibility="Disabled">
             <StackPanel x:Name="ListPanel"/>
         </ScrollViewer>
     </Grid>

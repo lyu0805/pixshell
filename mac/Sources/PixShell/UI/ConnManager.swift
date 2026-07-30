@@ -9,6 +9,7 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
     private let countLabel = NSTextField(labelWithString: "")
     private let searchField = NSTextField()
     private var collapsed = Set<String>()
+    private var firstLoad = true
 
     var hostsProvider: (() -> [Host])?
     var onConnect: ((Host) -> Void)?
@@ -184,6 +185,11 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
         let names = groups.keys.sorted { $0 == "默认" ? false : ($1 == "默认" ? true : $0 < $1) }
         countLabel.stringValue = query.isEmpty ? "\(allHosts.count) 台 · \(names.count) 组" : "\(hosts.count)/\(allHosts.count) 台 · \(names.count) 组"
         listStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        // 首次打开：所有分组默认收起（对齐 Win ConnectionManagerWindow）
+        if firstLoad {
+            firstLoad = false
+            for n in names { collapsed.insert(n) }
+        }
         if hosts.isEmpty, !query.isEmpty {
             let empty = NSTextField(labelWithString: "没有匹配的主机")
             empty.font = Theme.ui(12); empty.textColor = Theme.muted
