@@ -11,6 +11,7 @@ using System.Windows.Media;
 using Microsoft.Win32;
 using PixShell.Logging;
 using PixShell.Sftp;
+using PixShell.Sftp.RemoteFs;
 using Renci.SshNet;
 using Renci.SshNet.Sftp;
 
@@ -74,9 +75,6 @@ public partial class SftpPanel : UserControl
     /// <summary>外部（命令框 cd）驱动切目录：不触发 OnUserNavigate。</summary>
     public void Navigate(string path)
     {
-        if (_shellFallback && _scpBackend != null) { LoadRemoteDetailScp(string.IsNullOrEmpty(path) ? "/" : path); return; }
-        if (_shellFallback) { LoadRemoteDetailProc(string.IsNullOrEmpty(path) ? "/" : path); return; }
-        if (_sftp is not { IsConnected: true }) return;
         LoadRemoteDetail(string.IsNullOrEmpty(path) ? "/" : path);
     }
 
@@ -88,13 +86,9 @@ public partial class SftpPanel : UserControl
     }
 
     private TerminalSession? _session;
-    private SftpClient? _sftp;
-    private ProcSftpClient? _procSftp;        // SFTP 失败后的 proc ssh fallback
-    private ScpBackend? _scpBackend;            // SCP 回退（Dropbear 原生，无需 openssh-sftp-server）
+    private IRemoteFs? _remoteFs;
     private string _remoteDir = "/";
     private List<FsRow> _remoteEntries = new();
-    /// <summary>SFTP 失败后启用 proc fallback 模式（Dropbear 无 openssh-sftp-server）。</summary>
-    private bool _shellFallback;
 
     private string _localDir;
     private List<FsRow> _localEntries = new();
@@ -118,7 +112,7 @@ public partial class SftpPanel : UserControl
     }
 
     // =====================================================================
-    // 会话 / 连接
+    // 会话 / 连接 — 统一后端 RemoteFs
     // =====================================================================
     public void SetSession(TerminalSession? session)
     {
@@ -130,133 +124,49 @@ public partial class SftpPanel : UserControl
         OnPathChange?.Invoke("远端未连接");
     }
 
-    /// <summary>供 MainWindow 在切到「文件」tab 时调用：若尚未为当前会话建立 SFTP 连接则自动建立。
-    /// Batch 34：Connect + WorkingDirectory 下放到线程池，避免 UI 卡死（Win10 切文件 tab 卡顿）。</summary>
     private int _connectGen;
     public void ConnectIfNeeded()
     {
-        if (_scpBackend is { Connected: true }) return;
-        if (_procSftp is { Connected: true }) return;
-        if (_sftp is { IsConnected: true }) return;
-        if (_shellFallback) return;
+        if (_remoteFs is { Connected: true }) return;
         if (_session is not { Connected: true }) { OnPathChange?.Invoke("远端未连接"); return; }
-        // 本机终端无远端 SFTP
-        if (_session.SourceHost?.IsLocal == true)
-        {
-            OnPathChange?.Invoke("本机终端（无远端）");
-            StatusLabel.Text = "本机终端无 SFTP";
-            return;
-        }
+        if (_session.SourceHost?.IsLocal == true) { OnPathChange?.Invoke("本机终端（无远端）"); StatusLabel.Text = "本机终端无 SFTP"; return; }
         var session = _session;
         var gen = System.Threading.Interlocked.Increment(ref _connectGen);
         OnPathChange?.Invoke("连接中…");
-        StatusLabel.Text = "SFTP 连接中…";
-        System.Threading.Tasks.Task.Run(() =>
+        StatusLabel.Text = "连接中…";
+        System.Threading.Tasks.Task.Run(async () =>
         {
+            IRemoteFs? fs = null;
+            string label = "";
             try
             {
-                var client = session.CreateSftpClient();
-                var dir = client.WorkingDirectory;
-                Dispatcher.InvokeAsync(() =>
-                {
-                    if (gen != _connectGen) { try { client.Dispose(); } catch { } return; }
-                    if (!ReferenceEquals(_session, session)) { try { client.Dispose(); } catch { } return; }
-                    // 期间可能已连上
-                    if (_sftp is { IsConnected: true }) { try { client.Dispose(); } catch { } return; }
-                    _sftp = client;
-                    _remoteDir = dir;
-                    BuildTreeRoot();
-                    LoadRemoteDetail(_remoteDir);
-                    StatusLabel.Text = "SFTP 已连接";
-                });
+                fs = await RemoteFsFactory.Connect(session);
+                label = fs is ScpAdapter ? "SCP" : (fs is ProcAdapter ? "SFTP(exec)" : "SFTP");
             }
             catch (Exception ex)
             {
-                Dispatcher.InvokeAsync(() =>
-                {
-                    if (gen != _connectGen) return;
-                    var msg = ex.Message;
-                    var isChannelClosed = msg.Contains("Channel was closed")
-                        || msg.Contains("channel") || msg.Contains("closed");
-                    if (isChannelClosed)
-                    {
-                        // 尝试 ProcSftpClient（对齐 Mac OpenSSH 回落：ssh exec sftp-server）
-                        TryProcSftpFallback(session, gen);
-                    }
-                    else
-                    {
-                        StatusLabel.Text = "SFTP 连接失败: " + ex.Message;
-                        OnPathChange?.Invoke("远端未连接");
-                    }
-                });
+                Dispatcher.InvokeAsync(() => { if (gen == _connectGen) { StatusLabel.Text = "连接失败: " + ex.Message; OnPathChange?.Invoke("远端未连接"); } });
+                return;
             }
-        });
-    }
-
-    private void TryProcSftpFallback(TerminalSession session, int gen)
-    {
-        StatusLabel.Text = "SFTP 回落 exec sftp-server …";
-        System.Threading.Tasks.Task.Run(() =>
-        {
-            var proc = new ProcSftpClient();
-            var host = session.HostName;
-            var port = session.HostPort();
-            var user = session.HostUser();
-            var err = proc.Connect(host, port, user, null, session.HostKeyPath());
             Dispatcher.InvokeAsync(() =>
             {
-                if (gen != _connectGen) { proc.Dispose(); return; }
-                if (!ReferenceEquals(_session, session)) { proc.Dispose(); return; }
-                if (err != null)
-                {
-                    // SFTP exec 失败，回退到 SCP（Dropbear 原生支持）
-                    StatusLabel.Text = "SFTP 不可用，回退 SCP …";
-                    TryScpFallback(session, gen);
-                    proc.Dispose();
-                    return;
-                }
-                _procSftp = proc;
-                _shellFallback = true;
-                _remoteDir = "/";
+                if (gen != _connectGen) { fs?.Dispose(); return; }
+                if (!ReferenceEquals(_session, session)) { fs?.Dispose(); return; }
+                if (_remoteFs is { Connected: true }) { fs?.Dispose(); return; }
+                _remoteFs = fs;
+                _remoteDir = fs.WorkingDirectory;
                 BuildTreeRoot();
-                LoadRemoteDetail("/");
-                StatusLabel.Text = "SFTP 已连接 (ssh exec)";
+                LoadRemoteDetail(_remoteDir);
+                StatusLabel.Text = $"{label} 已连接";
             });
-        });
-    }
-
-    /// <summary>SCP 回退（Dropbear 原生，无 openssh-sftp-server 依赖）。</summary>
-    private void TryScpFallback(TerminalSession session, int gen)
-    {
-        var scp = new ScpBackend(session);
-        Dispatcher.InvokeAsync(() =>
-        {
-            if (gen != _connectGen) { scp.Close(); return; }
-            if (!ReferenceEquals(_session, session)) { scp.Close(); return; }
-            _scpBackend = scp;
-            _shellFallback = true;
-            _remoteDir = "/";
-            BuildTreeRoot();
-            LoadRemoteDetail("/");
-            StatusLabel.Text = "SCP 已连接（Dropbear）";
         });
     }
 
     private void DisconnectSftp()
     {
-        _shellFallback = false;
-        try { _scpBackend?.Close(); } catch { }
-        _scpBackend = null;
-        try { _procSftp?.Close(); } catch { }
-        try { _procSftp?.Dispose(); } catch { }
-        _procSftp = null;
-        try { if (_sftp is { IsConnected: true }) _sftp.Disconnect(); } catch { }
-        try { _sftp?.Dispose(); } catch { }
-        _sftp = null;
-        Dispatcher.InvokeAsync(() => {
-            RemoteTree.Items.Clear();
-            RemoteList.Items.Clear();
-        });
+        try { _remoteFs?.Dispose(); } catch { }
+        _remoteFs = null;
+        Dispatcher.InvokeAsync(() => { RemoteTree.Items.Clear(); RemoteList.Items.Clear(); });
     }
 
     // =====================================================================
@@ -297,18 +207,18 @@ public partial class SftpPanel : UserControl
         if (sender is not TreeViewItem item || item.Tag is not SftpNode node) return;
         if (node.Loaded) return;
         node.Loaded = true;
-        var sftp = _sftp;
-        if (sftp is not { IsConnected: true }) { item.Items.Clear(); return; }
+        var fs = _remoteFs;
+        if (fs is not { Connected: true } || !fs.SupportsTree) { item.Items.Clear(); return; }
         var path = node.Path;
         System.Threading.Tasks.Task.Run(() =>
         {
-            List<ISftpFile>? dirs = null;
-            try { dirs = sftp.ListDirectory(path).Where(f => f.IsDirectory && f.Name != "." && f.Name != "..").OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList(); }
+            List<FsRow>? dirs = null;
+            try { dirs = fs.ListTreeChildren(path); }
             catch { }
             Dispatcher.BeginInvoke(new Action(() =>
             {
                 item.Items.Clear();
-                foreach (var d in dirs ?? new List<ISftpFile>())
+                foreach (var d in dirs ?? new())
                     item.Items.Add(MakeTreeItem(new SftpNode(JoinRemote(path, d.Name), d.Name)));
             }));
         });
@@ -321,81 +231,22 @@ public partial class SftpPanel : UserControl
     }
 
     // =====================================================================
-    // Proc SFTP 回退：用系统 ssh.exe exec sftp-server（对齐 Mac OpenSSHSFTPSession）
-    // =====================================================================
-    private async System.Threading.Tasks.Task LoadRemoteDetailProc(string dir)
-    {
-        OnPathChange?.Invoke(dir);
-        var entries = await System.Threading.Tasks.Task.Run(() =>
-        {
-            try { return _procSftp!.ListDirectory(dir); }
-            catch (Exception ex) { StatusLabel.Text = "列表失败: " + ex.Message; return new List<FsRow>(); }
-        });
-        _remoteEntries = entries;
-        RemoteList.ItemsSource = null;
-        RemoteList.ItemsSource = _remoteEntries;
-        _remoteDir = dir;
-    }
-
-    private async System.Threading.Tasks.Task LoadRemoteDetailScp(string dir)
-    {
-        OnPathChange?.Invoke(dir);
-        var entries = await System.Threading.Tasks.Task.Run(() => _scpBackend!.ListDirectory(dir));
-        _remoteEntries = entries;
-        RemoteList.ItemsSource = null;
-        RemoteList.ItemsSource = _remoteEntries;
-        _remoteDir = dir;
-    }
-
-    // =====================================================================
-    // 远端明细列表
+    // 远端明细列表 — 统一用 IRemoteFs
     // =====================================================================
     private async void LoadRemoteDetail(string dir)
     {
-        if (_shellFallback && _scpBackend != null)
-        {
-            await LoadRemoteDetailScp(dir);
-            return;
-        }
-        // Proc SFTP 回退模式
-        if (_shellFallback)
-        {
-            await LoadRemoteDetailProc(dir);
-            return;
-        }
-        var sftp = _sftp;
-        if (sftp is not { IsConnected: true }) return;
+        var fs = _remoteFs;
+        if (fs is not { Connected: true }) return;
         OnPathChange?.Invoke(dir);
-        System.Threading.Tasks.Task.Run(() =>
+        _remoteDir = dir;
+        var entries = await System.Threading.Tasks.Task.Run(() =>
         {
-            List<FsRow>? rows = null;
-            string? err = null;
-            try
-            {
-                var listing = sftp.ListDirectory(dir).Where(f => f.Name != "." && f.Name != "..").ToList();
-                rows = listing
-                    .OrderByDescending(f => f.IsDirectory)
-                    .ThenBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
-                    .Select(f => new FsRow
-                    {
-                        Name = f.Name,
-                        IsDir = f.IsDirectory,
-                        IsLink = f.IsSymbolicLink,
-                        Size = f.Length,
-                        Mtime = f.LastWriteTime,
-                        Perms = ReadPerms(f),
-                    })
-                    .ToList();
-            }
-            catch (Exception ex) { err = ex.Message; }
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                if (err != null) { StatusLabel.Text = "列目录失败: " + err; return; }
-                _remoteDir = dir;
-                _remoteEntries = rows ?? new List<FsRow>();
-                RemoteList.ItemsSource = _remoteEntries;
-            }));
+            try { return fs.ListDirectory(dir); }
+            catch (Exception ex) { Dispatcher.InvokeAsync(() => StatusLabel.Text = "列目录失败: " + ex.Message); return new List<FsRow>(); }
         });
+        RemoteList.ItemsSource = null;
+        RemoteList.ItemsSource = entries;
+        _remoteEntries = entries;
     }
 
     private void RemoteList_DoubleClick(object sender, MouseButtonEventArgs e)
@@ -410,8 +261,8 @@ public partial class SftpPanel : UserControl
     // =====================================================================
     private async void OpenRemoteFileForEdit(FsRow r)
     {
-        var sftp = _sftp;
-        if (sftp is not { IsConnected: true }) return;
+        var fs = _remoteFs;
+        if (fs is not { Connected: true }) return;
         if (r.Size > 4 * 1024 * 1024) { StatusLabel.Text = "文件过大（>4MB），请先下载"; return; }
         var remote = JoinRemote(_remoteDir, r.Name);
         var tmp = Path.Combine(Path.GetTempPath(), "pixshell_edit_" + r.Name);
@@ -420,7 +271,7 @@ public partial class SftpPanel : UserControl
         {
             await Task.Run(() =>
             {
-                using (var fs = File.Create(tmp)) sftp.DownloadFile(remote, fs);
+                using (var localFs = File.Create(tmp)) fs.DownloadFile(remote, localFs);
             });
             string text;
             try { text = File.ReadAllText(tmp, Encoding.UTF8); }
@@ -440,11 +291,10 @@ public partial class SftpPanel : UserControl
         }
     }
 
-    /// <summary>编辑器保存 → 写回远端（MainWindow 把 EditorWindow.OnSave 接到这里）。</summary>
     public async void SaveRemoteFile(string remotePath, string text, Action<string?> done)
     {
-        var sftp = _sftp;
-        if (sftp is not { IsConnected: true }) { done("远端未连接"); return; }
+        var fs = _remoteFs;
+        if (fs is not { Connected: true }) { done("远端未连接"); return; }
         var tmp = "";
         try
         {
@@ -452,7 +302,7 @@ public partial class SftpPanel : UserControl
             await Task.Run(() =>
             {
                 File.WriteAllText(tmp, text, new UTF8Encoding(false));
-                using (var fs = File.OpenRead(tmp)) sftp.UploadFile(fs, remotePath, true);
+                using (var localFs = File.OpenRead(tmp)) fs.UploadFile(localFs, remotePath);
             });
             done(null);
             if (remotePath.StartsWith(_remoteDir)) LoadRemoteDetail(_remoteDir);
@@ -481,13 +331,13 @@ public partial class SftpPanel : UserControl
 
     public async void Mkdir()
     {
-        var sftp = _sftp;
-        if (sftp is not { IsConnected: true }) return;
+        var fs = _remoteFs;
+        if (fs is not { Connected: true }) return;
         var name = Prompt("新建远端目录名：");
         if (string.IsNullOrWhiteSpace(name)) return;
         try
         {
-            await Task.Run(() => sftp.CreateDirectory(JoinRemote(_remoteDir, name)));
+            await Task.Run(() => fs.MakeDirectory(JoinRemote(_remoteDir, name)));
             LoadRemoteDetail(_remoteDir);
         }
         catch (Exception ex) { StatusLabel.Text = "新建失败: " + ex.Message; }
@@ -498,8 +348,8 @@ public partial class SftpPanel : UserControl
 
     public async void Delete()
     {
-        var sftp = _sftp;
-        if (sftp is not { IsConnected: true }) return;
+        var fs = _remoteFs;
+        if (fs is not { Connected: true }) return;
         var rows = TargetRemoteRows();
         if (rows.Count == 0) return;
         var preview = string.Join("\n", rows.Take(6).Select(r => r.Name));
@@ -508,22 +358,17 @@ public partial class SftpPanel : UserControl
         {
             foreach (var r in rows)
             {
-                try
-                {
-                    var p = JoinRemote(_remoteDir, r.Name);
-                    if (r.IsDir) sftp.DeleteDirectory(p); else sftp.DeleteFile(p);
-                }
-                catch (Exception ex) { StatusLabel.Text = "删除失败: " + ex.Message; }
+                try { fs.Delete(JoinRemote(_remoteDir, r.Name), r.IsDir); }
+                catch (Exception ex) { Dispatcher.InvokeAsync(() => StatusLabel.Text = "删除失败: " + ex.Message); }
             }
         });
         LoadRemoteDetail(_remoteDir);
     }
 
-    /// <summary>F2 / 右键"重命名…"：只对第一个选中项生效。</summary>
     public async void Rename()
     {
-        var sftp = _sftp;
-        if (sftp is not { IsConnected: true }) return;
+        var fs = _remoteFs;
+        if (fs is not { Connected: true }) return;
         var rows = TargetRemoteRows();
         if (rows.Count == 0) return;
         var r = rows[0];
@@ -531,7 +376,7 @@ public partial class SftpPanel : UserControl
         if (string.IsNullOrWhiteSpace(name) || name == r.Name) return;
         try
         {
-            await Task.Run(() => sftp.RenameFile(JoinRemote(_remoteDir, r.Name), JoinRemote(_remoteDir, name)));
+            await Task.Run(() => fs.Rename(JoinRemote(_remoteDir, r.Name), JoinRemote(_remoteDir, name)));
             LoadRemoteDetail(_remoteDir);
         }
         catch (Exception ex) { StatusLabel.Text = "重命名失败: " + ex.Message; }
@@ -567,7 +412,7 @@ public partial class SftpPanel : UserControl
     /// <summary>上传：单个小文件直传；多选 / 目录 / ≥8MB 走本地打包 → 上传 → 远端解压（对齐 mac native-102）。</summary>
     public void Upload()
     {
-        if (_sftp is not { IsConnected: true }) { StatusLabel.Text = "请先连接远端"; return; }
+        if (_remoteFs is not { Connected: true }) { StatusLabel.Text = "请先连接远端"; return; }
         // 本地栏已选（可多选/含目录）→ 用之；否则弹文件选择器（Windows 原生对话框不支持文件+目录混选，仅单/多文件）。
         var paths = new List<string>();
         if (!_localHidden)
@@ -585,7 +430,7 @@ public partial class SftpPanel : UserControl
     /// 打包开 + 多项/目录/≥8MB → tar；否则逐项直传（目录跳过并提示，对齐 mac）。</summary>
     public void UploadItems(List<string> paths)
     {
-        if (_sftp is not { IsConnected: true } sftp || paths.Count == 0) return;
+        if (_remoteFs is not { Connected: true } fs || paths.Count == 0) return;
         bool autoNeed = paths.Count > 1 || paths.Any(p =>
         {
             if (Directory.Exists(p)) return true;
@@ -595,7 +440,7 @@ public partial class SftpPanel : UserControl
         var needPack = PackTransferEnabled && autoNeed;
         if (!needPack)
         {
-            UploadDirect(paths, sftp);
+            UploadDirect(paths, fs);
             return;
         }
         if (ExecRunner == null) { StatusLabel.Text = "需要 SSH 会话才能打包上传"; return; }
@@ -603,7 +448,7 @@ public partial class SftpPanel : UserControl
     }
 
     /// <summary>关闭打包时：逐项直传上传（目录跳过并提示）。</summary>
-    private async void UploadDirect(List<string> paths, SftpClient sftp)
+    private async void UploadDirect(List<string> paths, IRemoteFs fs)
     {
         var skippedDirs = 0;
         var uploaded = 0;
@@ -620,10 +465,10 @@ public partial class SftpPanel : UserControl
                 try
                 {
                     var remote = JoinRemote(_remoteDir, Path.GetFileName(one));
-                    using var fs = File.OpenRead(one);
+                    using var localFs = File.OpenRead(one);
                     StatusLabel.Text = $"上传 {Path.GetFileName(one)} …";
                     Log.Info($"直传上传 {one} → {remote}", "sftp");
-                    sftp.UploadFile(fs, remote, true);
+                    fs.UploadFile(localFs, remote);
                     uploaded++;
                 }
                 catch (Exception ex)
@@ -642,7 +487,7 @@ public partial class SftpPanel : UserControl
 
     private async Task UploadItemsPackedAsync(List<string> paths)
     {
-        if (_sftp is not { IsConnected: true } sftp || ExecRunner == null) return;
+        if (_remoteFs is not { Connected: true } fs || ExecRunner == null) return;
         var st = SftpTransfer.Stamp();
         var localArchive = Path.Combine(Path.GetTempPath(), $"pixshell_up_{st}.tar.gz");
         var remoteArchive = $"/tmp/pixshell_up_{st}.tar.gz";
@@ -653,7 +498,7 @@ public partial class SftpPanel : UserControl
         try
         {
             StatusLabel.Text = "上传压缩包 …";
-            using (var fs = File.OpenRead(localArchive)) sftp.UploadFile(fs, remoteArchive, true);
+            using (var localFs = File.OpenRead(localArchive)) fs.UploadFile(localFs, remoteArchive);
         }
         catch (Exception ex)
         {
@@ -681,7 +526,7 @@ public partial class SftpPanel : UserControl
     /// <summary>下载：打包开且（多选/目录/≥8MB）走远端 tar；否则逐项直传（对齐 mac）。</summary>
     public void Download()
     {
-        if (_sftp is not { IsConnected: true } sftp) { StatusLabel.Text = "请先连接远端"; return; }
+        if (_remoteFs is not { Connected: true } fs) { StatusLabel.Text = "请先连接远端"; return; }
         var rows = TargetRemoteRows();
         if (rows.Count == 0) { StatusLabel.Text = "请选择远端文件"; return; }
         var destDir = _localHidden
@@ -691,7 +536,7 @@ public partial class SftpPanel : UserControl
         var needPack = PackTransferEnabled && SftpTransfer.ShouldPack(rows.Count, rows[0].IsDir, rows[0].Size);
         if (!needPack)
         {
-            DownloadDirect(rows, destDir, sftp);
+            DownloadDirect(rows, destDir, fs);
             return;
         }
         if (ExecRunner == null) { StatusLabel.Text = "需要 SSH 会话才能打包下载"; return; }
@@ -699,7 +544,7 @@ public partial class SftpPanel : UserControl
     }
 
     /// <summary>关闭打包时：逐项直传下载（目录跳过并提示）。</summary>
-    private async void DownloadDirect(List<FsRow> rows, string destDir, SftpClient sftp)
+    private async void DownloadDirect(List<FsRow> rows, string destDir, IRemoteFs fs)
     {
         var skippedDirs = 0;
         var downloaded = 0;
@@ -717,11 +562,11 @@ public partial class SftpPanel : UserControl
                 try
                 {
                     var local = Path.Combine(destDir, r.Name);
-                    using var fs = File.Create(local);
+                    using var localFs = File.Create(local);
                     StatusLabel.Text = $"下载 {r.Name} …";
                     Log.Info($"直传下载 {JoinRemote(_remoteDir, r.Name)} → {local}", "sftp");
                     task = DownloadTasks.Start(r.Name, local);
-                    sftp.DownloadFile(JoinRemote(_remoteDir, r.Name), fs);
+                    fs.DownloadFile(JoinRemote(_remoteDir, r.Name), localFs);
                     DownloadTasks.Finish(task.Value, ok: true);
                     downloaded++;
                 }
@@ -743,7 +588,7 @@ public partial class SftpPanel : UserControl
     /// <summary>远端打包 → 下载 → 本地解压 → 两端清理。</summary>
     private async Task PackedDownloadAsync(List<FsRow> items, string destDir)
     {
-        if (_sftp is not { IsConnected: true } sftp || ExecRunner == null) return;
+        if (_remoteFs is not { Connected: true } fs || ExecRunner == null) return;
         var st = SftpTransfer.Stamp();
         var remoteArchive = $"/tmp/pixshell_dl_{st}.tar.gz";
         var localArchive = Path.Combine(Path.GetTempPath(), $"pixshell_dl_{st}.tar.gz");
@@ -765,7 +610,7 @@ public partial class SftpPanel : UserControl
         try
         {
             Directory.CreateDirectory(destDir);
-            using (var fs = File.Create(localArchive)) sftp.DownloadFile(remoteArchive, fs);
+            using (var localFs = File.Create(localArchive)) fs.DownloadFile(remoteArchive, localFs);
         }
         catch (Exception ex)
         {
@@ -966,7 +811,7 @@ public partial class SftpPanel : UserControl
     /// <summary>右键「文件权限…」：对齐 mac ctxChmod → ChmodWindow。</summary>
     private void CtxChmod()
     {
-        if (_sftp is not { IsConnected: true })
+        if (_remoteFs is not { Connected: true })
         {
             StatusLabel.Text = "请先连接远端";
             return;
@@ -1047,7 +892,7 @@ public partial class SftpPanel : UserControl
     /// <summary>拖文件到面板上传（对齐 mac draggingEntered/performDragOperation，暂不支持拖目录）。</summary>
     private void Panel_DragEnter(object sender, DragEventArgs e)
     {
-        e.Effects = (_sftp is { IsConnected: true } && e.Data.GetDataPresent(DataFormats.FileDrop))
+        e.Effects = (_remoteFs is { Connected: true } && e.Data.GetDataPresent(DataFormats.FileDrop))
             ? DragDropEffects.Copy : DragDropEffects.None;
         e.Handled = true;
     }
@@ -1055,7 +900,7 @@ public partial class SftpPanel : UserControl
     /// <summary>拖文件/目录到面板上传：走智能打包同一条路径（对齐 mac performDragOperation → uploadItems）。</summary>
     private void Panel_Drop(object sender, DragEventArgs e)
     {
-        if (_sftp is not { IsConnected: true } || !e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+        if (_remoteFs is not { Connected: true } || !e.Data.GetDataPresent(DataFormats.FileDrop)) return;
         var files = ((string[])e.Data.GetData(DataFormats.FileDrop)!).ToList();
         if (files.Count == 0) return;
         Log.Info("拖拽上传 " + string.Join(", ", files.Select(Path.GetFileName)), "sftp");
