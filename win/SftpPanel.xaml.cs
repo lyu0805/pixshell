@@ -26,7 +26,7 @@ public partial class SftpPanel : UserControl
 {
     // WPF {Binding Xxx} 只认属性，不认字段。Name 曾是 public 字段 → 图标能显示（Icon 是属性）
     // 但文件名永远空白。全部改成属性，禁止再写字段。
-    private sealed class FsRow
+    internal sealed class FsRow
     {
         public string Name { get; set; } = "";
         public bool IsDir { get; set; }

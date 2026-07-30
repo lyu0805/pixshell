@@ -212,52 +212,45 @@ public class ProcSftpClient : IDisposable
         lock (_lock)
         {
             var id = ++_reqId;
-            // OPENDIR: id(4) + path(string)
             using var ms = new MemoryStream();
-            WriteIdAndPath(ms, id, path);
+            WriteU32(ms, id);
+            WriteSFTPString(ms, path);
             SendPacket(11, ms.ToArray()); // SSH_FXP_OPENDIR
 
-            var resp = ReadResponse(id);
-            if (resp.Length < 5) return new List<FsRow>();
-            var handle = ExtractBytes(resp, 4);
+            var resp = ReadResponseRaw();
+            if (resp.Length < 10) return new List<FsRow>(); // type(1)+id(4)+handle_len(4)+handle(>=1)
+            var handle = ExtractBytes(resp, 5); // type(1)+id(4)=5
 
             var entries = new List<FsRow>();
             while (true)
             {
                 var rid = ++_reqId;
-                // READDIR: id(4) + handle
                 var dirMs = new MemoryStream();
-                WriteU32(dirMs, id);
+                WriteU32(dirMs, rid);
                 WriteBytes(dirMs, handle);
                 SendPacket(12, dirMs.ToArray());
 
-                var r = ReadResponse(rid);
-                if (r.Length == 0) break;
+                var r = ReadResponseRaw();
+                if (r.Length < 5) break; // type(1)+id(4)
 
-                // Check for STATUS (EOF)
-                if (r.Length >= 4 + 4) // id(4) + code(4)
+                var rtyp = r[0];
+                if (rtyp == 101) // SSH_FXP_STATUS
                 {
-                    var rtyp = ReadU8BE(r, 0);
-                    var statusCode = ReadU32BE(r, 1);
-                    if (rtyp == 101) // SSH_FXP_STATUS
-                    {
-                        if (statusCode == 1) break; // SSH_FX_EOF
-                        continue; // skip errors for individual entries
-                    }
+                    var stCode = ReadU32BE(r, 5); // type(1)+id(4)=5
+                    if (stCode == 1) break; // SSH_FX_EOF
+                    continue;
                 }
 
-                // Parse NAME response (type 104)
-                if (r.Length >= 4 + 4) // id(4) + count(4)
+                if (rtyp == 104) // SSH_FXP_NAME
                 {
-                    var count = ReadU32BE(r, 4);
-                    var offset = 8;
+                    var count = (int)ReadU32BE(r, 5); // type(1)+id(4)=5
+                    var offset = 9; // type(1)+id(4)+count(4)=9
                     for (var i = 0; i < count && offset + 4 <= r.Length; i++)
                     {
                         var (filename, next1) = ReadSFTPString(r, offset);
                         offset = next1;
-                        var (longname, next2) = ReadSFTPString(r, offset);
+                        var (_, next2) = ReadSFTPString(r, offset); // longname
                         offset = next2;
-
                         var (attrs, next3) = ReadAttrs(r, offset);
                         offset = next3;
 
@@ -276,12 +269,11 @@ public class ProcSftpClient : IDisposable
             }
 
             // CLOSE handle
-            var cid = ++_reqId;
             var cMs = new MemoryStream();
             WriteU32(cMs, id);
             WriteBytes(cMs, handle);
             SendPacket(4, cMs.ToArray());
-            ReadResponse(cid); // discard
+            ReadResponseRaw(); // discard
 
             return entries;
         }
@@ -292,17 +284,16 @@ public class ProcSftpClient : IDisposable
         if (_stdin == null || _stdout == null) throw new InvalidOperationException("未连接");
         lock (_lock)
         {
-            var openId = ++_reqId;
+            var id = ++_reqId;
             var oMs = new MemoryStream();
-            WriteU32(oMs, openId);
+            WriteU32(oMs, id);
             WriteSFTPString(oMs, remotePath);
-            WriteU32BE(oMs, 0, 1); // SSH_FXF_READ
-            // no attrs
-            WriteU32BE(oMs, 4, 0); // empty attrs
+            WriteU32BE(oMs, 4, 1); // SSH_FXF_READ
+            WriteU32BE(oMs, 8, 0); // empty attrs
             SendPacket(3, oMs.ToArray()); // SSH_FXP_OPEN
 
-            var openResp = ReadResponse(openId);
-            var handle = ExtractBytes(openResp, 4);
+            var openResp = ReadResponseRaw();
+            var handle = ExtractBytes(openResp, 5); // type(1)+id(4)=5
 
             long offset = 0;
             while (true)
@@ -312,38 +303,32 @@ public class ProcSftpClient : IDisposable
                 WriteU32(rMs, rid);
                 WriteBytes(rMs, handle);
                 WriteU64BE(rMs, (ulong)offset);
-                WriteU32BE(rMs, 0, 32768u); // 32KB chunk
+                WriteU32BE(rMs, 0, 32768u);
                 SendPacket(5, rMs.ToArray()); // SSH_FXP_READ
 
-                var r = ReadResponse(rid);
-                if (r.Length == 0) break;
+                var r = ReadResponseRaw();
+                if (r.Length < 5) break;
 
-                if (r.Length >= 4 && ReadU8BE(r, 0) == 101)
+                var rtyp = r[0];
+                if (rtyp == 101 && ReadU32BE(r, 5) == 1) break; // STATUS EOF
+                if (rtyp == 103) // SSH_FXP_DATA
                 {
-                    if (ReadU32BE(r, 1) == 1) break; // EOF
-                    throw new IOException($"SFTP READ status: {ReadU32BE(r, 1)}");
-                }
-
-                // DATA response
-                if (r.Length > 8)
-                {
-                    var (data, _) = ReadSFTPBytes(r, 8); // skip id(4) + len(4)
+                    var (data, _) = ReadSFTPBytes(r, 5); // type(1)+id(4)=5
                     if (data != null && data.Length > 0)
                     {
                         localStream.Write(data, 0, data.Length);
                         offset += data.Length;
                     }
-                    if (data == null || data.Length < 32768) break; // partial read = EOF
+                    if (data == null || data.Length < 32768) break;
                 }
             }
 
             // CLOSE
-            var cid = ++_reqId;
             var cMs = new MemoryStream();
             WriteU32(cMs, id);
             WriteBytes(cMs, handle);
             SendPacket(4, cMs.ToArray());
-            ReadResponse(cid);
+            ReadResponseRaw();
         }
     }
 
@@ -352,18 +337,20 @@ public class ProcSftpClient : IDisposable
         if (_stdin == null || _stdout == null) throw new InvalidOperationException("未连接");
         lock (_lock)
         {
-            var openId = ++_reqId;
+            var id = ++_reqId;
             var oMs = new MemoryStream();
-            WriteU32(oMs, openId);
+            WriteU32(oMs, id);
             WriteSFTPString(oMs, remotePath);
-            WriteU32BE(oMs, 0, 0x1A); // FXF_WRITE | FXF_CREAT | FXF_TRUNC
-            // attrs
-            WriteU32BE(oMs, 4, 4); // ATTR_PERMISSIONS
-            WriteU32BE(oMs, 8, 0x1A4); // 0644
+            // FXF_WRITE | FXF_CREAT | FXF_TRUNC = 0x1A
+            var attrOff = 4; // id(4)
+            WriteU32BE(oMs, attrOff, 0x1A);
+            // attrs: flags(4) + permissions(4)
+            WriteU32BE(oMs, attrOff + 4, 4); // ATTR_PERMISSIONS
+            WriteU32BE(oMs, attrOff + 8, 0x1A4); // 0644
             SendPacket(3, oMs.ToArray()); // SSH_FXP_OPEN
 
-            var openResp = ReadResponse(openId);
-            var handle = ExtractBytes(openResp, 4);
+            var openResp = ReadResponseRaw();
+            var handle = ExtractBytes(openResp, 5); // type(1)+id(4)=5
 
             var buf = new byte[32768];
             long offset = 0;
@@ -378,19 +365,18 @@ public class ProcSftpClient : IDisposable
                 WriteRawBytes(wMs, buf, 0, n);
                 SendPacket(6, wMs.ToArray()); // SSH_FXP_WRITE
 
-                var status = ReadResponse(wid);
-                if (status.Length >= 4 && ReadU8BE(status, 0) == 101 && ReadU32BE(status, 1) != 0)
-                    throw new IOException($"SFTP WRITE status: {ReadU32BE(status, 1)}");
+                var status = ReadResponseRaw();
+                if (status.Length >= 9 && status[0] == 101 && ReadU32BE(status, 5) != 0)
+                    throw new IOException($"SFTP WRITE status: {ReadU32BE(status, 5)}");
                 offset += n;
             }
 
             // CLOSE
-            var cid = ++_reqId;
             var cMs = new MemoryStream();
             WriteU32(cMs, id);
             WriteBytes(cMs, handle);
             SendPacket(4, cMs.ToArray());
-            ReadResponse(cid);
+            ReadResponseRaw();
         }
     }
 
@@ -430,15 +416,14 @@ public class ProcSftpClient : IDisposable
         return buf;
     }
 
-    private byte[] ReadResponse(uint id)
+    private byte[] ReadResponseRaw()
     {
         try
         {
-            var header = ReadExact(4); // length
+            var header = ReadExact(4);
             var pktLen = (int)ReadU32BE(header, 0);
             if (pktLen < 1 || pktLen > 1024 * 1024) return Array.Empty<byte>();
-            var body = ReadExact(pktLen);
-            return body;
+            return ReadExact(pktLen);
         }
         catch
         {
