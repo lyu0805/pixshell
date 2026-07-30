@@ -859,13 +859,17 @@ public partial class MainWindow : Window
     private void OnTabSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!ReferenceEquals(e.Source, Sessions)) return;
+        // 旧 Tab WebView2 → 藏；新 Tab → 亮。只操作两个，不遍历全部。
+        if (e.RemovedItems.Count > 0 && e.RemovedItems[0] is TabItem { Tag: TerminalSession oldS })
+            oldS.View.Visibility = Visibility.Collapsed;
+        if (e.AddedItems.Count > 0 && e.AddedItems[0] is TabItem { Tag: TerminalSession newS })
+            newS.View.Visibility = Visibility.Visible;
         // GitHub #1：旧 PlayRippleTransition 对 MainArea 做 RenderTargetBitmap。
         // WebView2 是 HwndHost，RTB 拍不到 HWND → 全黑遮罩 0.6–0.85s 闪黑/抖动。
         // 终端会话一律 WebView2，切 tab 禁止再走 RTB 涟漪（TransitionImage 保留给非 HWND 场景）。
         if (_showingQuickConnect) LeaveQuickConnect();
         RefreshConnState();
         SyncDockSession();
-        // 切 tab 不立刻重跑 mon：3s 定时器会来；防抖 1.2s 避免与 tick 叠飞
         KickPollMonitorDebounced();
     }
 
@@ -954,28 +958,19 @@ public partial class MainWindow : Window
         }
     }
 
-    // 终端可见性：SessionContent + 各 WebView2 必须一起收/放。
+    // 终端可见性：只切换当前选中 Tab 的 WebView2 HWND 可见性，其余保持 Collapsed。
     // WebView2 是 HWND 空气空间，仅叠 QC 仍会穿透，点不着落地页。
+    // 性能：不再遍历所有 Tab，避免 N 个 WebView2 Visibility 写触发布局重排。
     private void SetSessionViewsVisible(bool vis)
     {
         var v = vis ? Visibility.Visible : Visibility.Collapsed;
-        // 无变化跳过：切 tab 高频路径，避免 N 个 WebView2 Visibility 写同一值触发布局
-        if (SessionContent.Visibility == v)
-        {
-            var anyDiff = false;
-            foreach (var obj in Sessions.Items)
-            {
-                if (obj is TabItem { Tag: TerminalSession s } && s.View.Visibility != v)
-                { anyDiff = true; break; }
-            }
-            if (!anyDiff) return;
-        }
+        if (SessionContent.Visibility == v) return;
         SessionContent.Visibility = v;
-        foreach (var obj in Sessions.Items)
-            if (obj is TabItem { Tag: TerminalSession s })
-            {
-                if (s.View.Visibility != v) s.View.Visibility = v;
-            }
+        // 仅改当前选中 Tab 关联的 WebView2；其余 Tab 的 view 自 StartLocalCheck/OpenSessionTab 起即为 Collapsed
+        if (Sessions.SelectedItem is TabItem { Tag: TerminalSession s })
+        {
+            if (s.View.Visibility != v) s.View.Visibility = v;
+        }
     }
 
     /// <summary>
@@ -1092,25 +1087,28 @@ public partial class MainWindow : Window
         {
             WorkCenter.SetResourceReference(BackgroundProperty, "BrushTerm");
         }
-        // 已开会话：再 fit + 右键菜单配色跟主题
-        foreach (var obj in Sessions.Items)
+        // 已开会话：异步通知主题变化（避免同步 COM 调用阻塞 UI 线程）
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
         {
-            if (obj is TabItem { Tag: TerminalSession s })
+            foreach (var obj in Sessions.Items)
             {
-                try
+                if (obj is TabItem { Tag: TerminalSession s })
                 {
-                    if (s.View.CoreWebView2 != null)
+                    try
                     {
-                        s.View.CoreWebView2.Profile.PreferredColorScheme = ThemeManager.IsDark
-                            ? Microsoft.Web.WebView2.Core.CoreWebView2PreferredColorScheme.Dark
-                            : Microsoft.Web.WebView2.Core.CoreWebView2PreferredColorScheme.Light;
+                        if (s.View.CoreWebView2 != null)
+                        {
+                            s.View.CoreWebView2.Profile.PreferredColorScheme = ThemeManager.IsDark
+                                ? Microsoft.Web.WebView2.Core.CoreWebView2PreferredColorScheme.Dark
+                                : Microsoft.Web.WebView2.Core.CoreWebView2PreferredColorScheme.Light;
+                        }
                     }
+                    catch { }
+                    try { _ = s.View.CoreWebView2?.ExecuteScriptAsync("try{window.pixFit&&window.pixFit()}catch(e){}"); }
+                    catch { }
                 }
-                catch { /* 旧 runtime */ }
-                try { _ = s.View.CoreWebView2?.ExecuteScriptAsync("try{window.pixFit&&window.pixFit()}catch(e){}"); }
-                catch { }
             }
-        }
+        }));
     }
 
     /// <summary>顶栏宫格：点一下呼出、再点收起。

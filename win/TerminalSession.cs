@@ -227,6 +227,8 @@ public sealed class TerminalSession : IDisposable
 
     public TerminalSession(string label, string htmlPath)
     {
+        View = CreateView();
+        View.Visibility = System.Windows.Visibility.Collapsed; // 默认隐藏，切到此 tab 时由 OnTabSelectionChanged 亮起
         WireTerminalView();
         Title = label;
         _htmlPath = htmlPath;
