@@ -62,6 +62,7 @@ public partial class MainWindow : Window
     private int _cliStatusKey = -1;
     // 切 tab 后 PollMonitor 防抖：避免 SelectionChanged 立刻再 Exec mon 叠 3s tick
     private DateTime _lastPollKick = DateTime.MinValue;
+    private DateTime _lastPingAt = DateTime.MinValue;
     // 公开给 TerminalSession：拖坞期间跳过 pixFit（避免 SizeChanged 风暴）
     internal bool SuppressTerminalFit;
 
@@ -1713,6 +1714,23 @@ public partial class MainWindow : Window
             var outp = await session.ExecAsync(UI.MonitorSidebar.MonitorCommand);
             if (!IsActiveSession(session)) return; // 轮询期间用户切走了
             if (outp != null && outp.Contains("===mon===")) Monitor.Update(UI.MonitorSidebar.ParseMonitor(outp));
+            // 本地→SSH 延迟：TCP 22 端口测时，3s 节流
+            if ((DateTime.UtcNow - _lastPingAt).TotalSeconds >= 3)
+            {
+                _lastPingAt = DateTime.UtcNow;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
+                        using var tcp = new System.Net.Sockets.TcpClient();
+                        await tcp.ConnectAsync(host, 22).WaitAsync(TimeSpan.FromSeconds(2));
+                        sw.Stop();
+                        Monitor.PushPing(sw.Elapsed.TotalMilliseconds);
+                    }
+                    catch { /* 超时/不通 — 跳过，下次重试 */ }
+                });
+            }
         }
         finally
         {

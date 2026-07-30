@@ -66,6 +66,8 @@ public partial class MonitorSidebar : UserControl
         SwapBar.Kind = MetricBar.BarKind.Swap; SwapBar.SetLabel("交换");
         NetSpark.SetColor(Color.FromRgb(0x30, 0xD1, 0x58));
         PingSpark.SetColor(Color.FromRgb(0x0A, 0x84, 0xFF));
+        NetSpark.BarMode = true;
+        PingSpark.BarMode = true;
     }
 
     private void CopyIp_Click(object sender, RoutedEventArgs e) => OnCopyIp?.Invoke();
@@ -211,24 +213,19 @@ public partial class MonitorSidebar : UserControl
             NetSpark.Push(rxRate + txRate);
         }
 
-        // 延迟：网关 ping
-        var gw = m.GetValueOrDefault("pinghost", "");
-        string pt;
-        if (double.TryParse(m.GetValueOrDefault("pingms"), out var ms))
-        {
-            pt = string.IsNullOrEmpty(gw) ? $"网关 {ms:F1} ms" : $"网关 {gw} · {ms:F1} ms";
-            if (pt != _lastPingTitle) { PingTitle.Text = pt; _lastPingTitle = pt; }
-            PingSpark.Push(ms);
-        }
-        else
-        {
-            pt = string.IsNullOrEmpty(gw) ? "网关 -" : $"网关 {gw} · 超时";
-            if (pt != _lastPingTitle) { PingTitle.Text = pt; _lastPingTitle = pt; }
-        }
+        // 延���：由 MainWindow 本地 TCP 测时推送，这里设默认值
+        if (_lastPingTitle != "延迟 -") { PingTitle.Text = "延迟 -"; _lastPingTitle = "延迟 -"; }
     }
 
-    /// <summary>网关延迟(ms)推送：给外部（如 MainWindow 自己测 TCP 时延）额外喂点用。</summary>
-    public void PushPing(double ms) => PingSpark.Push(ms);
+    /// <summary>本地→SSH 延迟(ms)推送：更新柱状图 + 标题。</summary>
+    public void PushPing(double ms)
+    {
+        Dispatcher.InvokeAsync(() =>
+        {
+            PingSpark.Push(ms);
+            PingTitle.Text = $"延迟 {ms:F1} ms";
+        });
+    }
 
     /// <summary>字节/秒 → 人类可读速率（B/s · KB/s · MB/s · GB/s）。</summary>
     private static string FormatRate(double bytesPerSec)
@@ -291,8 +288,6 @@ free -m 2>/dev/null | awk '/^Swap:/{if($2>0)printf ""swap=%.0f|%.1fG/%.1fG\n"",$
 printf ""disks=""; df -h 2>/dev/null | awk '$1 ~ /^\/dev/{printf ""%s|%s|%s;"",$6,$4,$2}'; echo
 printf ""procs=""; ps aux 2>/dev/null | sed 1d | sort -rk4 | awk 'NR<=5{c=$11; sub(/.*\//,"""",c); printf ""%dM|%s|%s;"",$6/1024,$3,c}'; echo
 cat /proc/net/dev 2>/dev/null | tr ':' ' ' | awk 'NR>2 && $1!=""lo"" && $1 !~ /^(docker|veth|br-)/{print ""netif=""$1; print ""netrx=""$2; print ""nettx=""$10; print ""netval=""$2+$10; exit}'
-gw=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}'); [ -n ""$gw"" ] || gw=$(netstat -rn 2>/dev/null | awk '/^0.0.0.0|^default/{print $2; exit}')
-if [ -n ""$gw"" ]; then echo ""pinghost=$gw""; ping -c 1 -W 1 ""$gw"" 2>/dev/null | awk -F'time=' '/time=/{split($2,a,"" "");printf ""pingms=%s\n"",a[1];exit}'; fi
 ";
 
     /// <summary>解析 ===mon=== 之后的 KEY=value 输出行（对齐 mac parseMonitor）。</summary>
