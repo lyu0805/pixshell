@@ -92,15 +92,7 @@ public partial class QuickConnectView : UserControl
     {
         var hosts = HostsProvider?.Invoke() ?? new List<HostEntry>();
         TitleText.Text = $"快速连接（历史 · {hosts.Count}）";
-        foreach (var child in CardsPanel.Children)
-        {
-            if (child is Border box)
-            {
-                box.MouseEnter = null;
-                box.MouseLeave = null;
-                box.MouseLeftButtonDown = null;
-            }
-        }
+        // Children.Clear() 会从视觉树移除旧 Border，WPF 自动清理关联的路由事件
         CardsPanel.Children.Clear();
         for (int i = 0; i < hosts.Count; i++)
             CardsPanel.Children.Add(BuildCard(hosts[i], i + 1));
