@@ -90,7 +90,7 @@ public partial class SftpPanel : UserControl
     /// <summary>外部（命令框 cd）驱动切目录：不触发 OnUserNavigate。</summary>
     public void Navigate(string path)
     {
-        if (_shellFallback) { LoadRemoteDetail(string.IsNullOrEmpty(path) ? "/" : path); return; }
+        if (_shellFallback) { LoadRemoteDetailProc(string.IsNullOrEmpty(path) ? "/" : path); return; }
         if (_sftp is not { IsConnected: true }) return;
         LoadRemoteDetail(string.IsNullOrEmpty(path) ? "/" : path);
     }
@@ -104,9 +104,10 @@ public partial class SftpPanel : UserControl
 
     private TerminalSession? _session;
     private SftpClient? _sftp;
+    private ProcSftpClient? _procSftp;        // SFTP 失败后的 proc ssh fallback
     private string _remoteDir = "/";
     private List<FsRow> _remoteEntries = new();
-    /// <summary>SFTP 失败后启用 Shell 回退模式（Dropbear 无 openssh-sftp-server）。</summary>
+    /// <summary>SFTP 失败后启用 proc fallback 模式（Dropbear 无 openssh-sftp-server）。</summary>
     private bool _shellFallback;
 
     private string _localDir;
@@ -148,8 +149,9 @@ public partial class SftpPanel : UserControl
     private int _connectGen;
     public void ConnectIfNeeded()
     {
+        if (_procSftp is { Connected: true }) return;
         if (_sftp is { IsConnected: true }) return;
-        if (_shellFallback) return;  // 已在 Shell 模式下，不重试 SFTP
+        if (_shellFallback) return;
         if (_session is not { Connected: true }) { OnPathChange?.Invoke("远端未连接"); return; }
         // 本机终端无远端 SFTP
         if (_session.SourceHost?.IsLocal == true)
@@ -186,33 +188,61 @@ public partial class SftpPanel : UserControl
                 Dispatcher.InvokeAsync(() =>
                 {
                     if (gen != _connectGen) return;
-                    // Dropbear 不提供 SFTP 子系统：给用户明确的修复指引
                     var msg = ex.Message;
                     var isChannelClosed = msg.Contains("Channel was closed")
                         || msg.Contains("channel") || msg.Contains("closed");
                     if (isChannelClosed)
                     {
-                        StatusLabel.Text = "SFTP 不可用：设备未安装 openssh-sftp-server。在 OpenWrt 运行 opkg install openssh-sftp-server 后重试。";
-                        OnPathChange?.Invoke("SFTP 不可用（缺 sftp-server）");
-                        Log.Warn($"SFTP 失败（可能 Dropbear 无 sftp-server）: {msg}", "sftp");
-                        // 自动启用 Shell 回退模式
-                        _shellFallback = true;
-                        Navigate("/");
+                        // 尝试 ProcSftpClient（对齐 Mac OpenSSH 回落：ssh exec sftp-server）
+                        TryProcSftpFallback(session, gen);
                     }
                     else
                     {
                         StatusLabel.Text = "SFTP 连接失败: " + ex.Message;
                         OnPathChange?.Invoke("远端未连接");
-                        Log.Warn($"SFTP 连接失败: {msg}", "sftp");
                     }
                 });
             }
         });
     }
 
+    private void TryProcSftpFallback(TerminalSession session, int gen)
+    {
+        StatusLabel.Text = "SFTP 回落 exec sftp-server …";
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            var proc = new ProcSftpClient();
+            var host = session.HostName();
+            var port = session.HostPort();
+            var user = session.HostUser();
+            var err = proc.Connect(host, port, user, null, session.HostKeyPath());
+            Dispatcher.InvokeAsync(() =>
+            {
+                if (gen != _connectGen) { proc.Dispose(); return; }
+                if (!ReferenceEquals(_session, session)) { proc.Dispose(); return; }
+                if (err != null)
+                {
+                    StatusLabel.Text = $"SFTP 不可用：{err}。在 OpenWrt 运行 opkg install openssh-sftp-server 后重试。";
+                    OnPathChange?.Invoke("SFTP 不可用（缺 sftp-server）");
+                    proc.Dispose();
+                    return;
+                }
+                _procSftp = proc;
+                _shellFallback = true;
+                _remoteDir = "/";
+                BuildTreeRoot();
+                LoadRemoteDetail("/");
+                StatusLabel.Text = "SFTP 已连接 (ssh exec)";
+            });
+        });
+    }
+
     private void DisconnectSftp()
     {
         _shellFallback = false;
+        try { _procSftp?.Close(); } catch { }
+        try { _procSftp?.Dispose(); } catch { }
+        _procSftp = null;
         try { if (_sftp is { IsConnected: true }) _sftp.Disconnect(); } catch { }
         try { _sftp?.Dispose(); } catch { }
         _sftp = null;
@@ -284,46 +314,20 @@ public partial class SftpPanel : UserControl
     }
 
     // =====================================================================
-    // Shell 回退模式：无 SFTP 时用 SSH exec 跑 POSIX 命令
+    // Proc SFTP 回退：用系统 ssh.exe exec sftp-server（对齐 Mac OpenSSHSFTPSession）
     // =====================================================================
-    private async System.Threading.Tasks.Task LoadRemoteDetailShell(string dir)
+    private async System.Threading.Tasks.Task LoadRemoteDetailProc(string dir)
     {
         OnPathChange?.Invoke(dir);
-        StatusLabel.Text = $"Shell 模式 @ {dir}";
-        try
+        var entries = await System.Threading.Tasks.Task.Run(() =>
         {
-            var raw = await _session!.ExecAsync($"ls -la {EscapeShellArg(dir)} 2>&1");
-            var lines = raw.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            var list = new List<FsRow>();
-            foreach (var line in lines)
-            {
-                if (line.StartsWith("total ")) continue;
-                var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length < 9) continue;
-                var perms = parts[0];
-                var isDir = perms.StartsWith("d");
-                var name = parts[^1];
-                if (name == "." || name == "..") continue;
-                long size = 0;
-                long.TryParse(parts[^4], out size);
-                list.Add(new FsRow { Name = name, IsDir = isDir, Size = size });
-            }
-            _remoteEntries = list;
-            RemoteList.ItemsSource = null;
-            RemoteList.ItemsSource = _remoteEntries;
-            _remoteDir = dir;
-            RemoteTree.Items.Clear();
-            RemoteTree.Items.Add(MakeTreeItem(new SftpNode("/", "/")));
-        }
-        catch (Exception ex)
-        {
-            StatusLabel.Text = "Shell 列表失败: " + ex.Message;
-        }
-    }
-
-    private static string EscapeShellArg(string s)
-    {
-        return "'" + s.Replace("'", "'\\''") + "'";
+            try { return _procSftp!.ListDirectory(dir); }
+            catch (Exception ex) { StatusLabel.Text = "列表失败: " + ex.Message; return new List<FsRow>(); }
+        });
+        _remoteEntries = entries;
+        RemoteList.ItemsSource = null;
+        RemoteList.ItemsSource = _remoteEntries;
+        _remoteDir = dir;
     }
 
     // =====================================================================
@@ -331,10 +335,10 @@ public partial class SftpPanel : UserControl
     // =====================================================================
     private async void LoadRemoteDetail(string dir)
     {
-        // Shell 回退模式：用 SSH exec 跑 POSIX 命令模拟文件列表
+        // Proc SFTP 回退模式
         if (_shellFallback)
         {
-            await LoadRemoteDetailShell(dir);
+            await LoadRemoteDetailProc(dir);
             return;
         }
         var sftp = _sftp;

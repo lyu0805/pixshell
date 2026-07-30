@@ -210,6 +210,12 @@ public sealed class TerminalSession : IDisposable
 
     /// <summary>会话主机名（SFTP 面板显示用）。</summary>
     public string HostName => _host;
+    /// <summary>会话端口。</summary>
+    public int HostPort() => _port;
+    /// <summary>会话用户名。</summary>
+    public string HostUser() => _user;
+    /// <summary>会话私钥路径。</summary>
+    public string? HostKeyPath() => _keyPath;
 
     /// <summary>发起本会话连接时使用的主机条目（供自定义加速/重连/监控 IP 复用）。</summary>
     public HostEntry? SourceHost { get; set; }
