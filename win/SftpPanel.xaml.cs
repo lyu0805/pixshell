@@ -430,7 +430,7 @@ public partial class SftpPanel : UserControl
         var rows = TargetRemoteRows();
         if (rows.Count == 0) return;
         var r = rows[0];
-        var name = Prompt($"重命名"{r.Name}"为：", r.Name);
+        var name = Prompt($"重命名\"{r.Name}\"为：", r.Name);
         if (string.IsNullOrWhiteSpace(name) || name == r.Name) return;
         try
         {
