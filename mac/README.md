@@ -23,7 +23,7 @@ bash scripts/package-mac.sh debug   # 打包成可双击的 dist/PixShell.app
 - **SFTP 双栏**:本地(FileManager) | 远端(自研 SFTP v3 over swift-nio-ssh),列目录/进入/上传/下载/新建/删除。**上传+下载往返已真机自测通过**。
 - **命令板**:发送命令 + 快捷命令到当前会话。
 - **侧栏折叠**。
-- **Web SSH 网页终端**：本地桥 `GET /webssh`（或 `/v1/app/webssh`）提供浏览器 xterm.js 终端；菜单「工具 → Web SSH 网页终端…」打开 `http://127.0.0.1:8766/webssh?token=…`。轮询 `/v1/app/stream`、输入 `/v1/app/shell`，支持 `?session=` / `?host_id=`。
+- **Web 连接（应用内嵌）**：新建连接选「Web（应用内终端）」，主机字段/凭据与 SSH 相同；连接后 **WKWebView 标签** 加载本地桥 `GET /webssh?host_id=`（xterm.js），页面调 `/v1/app/connect` 建底层 SSH 并镜像；**禁止**外开系统浏览器。帮助菜单深处保留「桥接镜像页 / 系统浏览器」仅供调试。
 
 ## 目录结构
 

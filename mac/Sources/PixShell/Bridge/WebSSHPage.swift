@@ -2,9 +2,10 @@ import Foundation
 
 /// 浏览器内 Web SSH 终端页（xterm.js + 本地桥 `/v1/app/screen|stream|shell`）。
 /// 由 `GET /webssh` / `GET /v1/app/webssh` 返回；鉴权 token 走 query / header。
+/// xterm 资源走本机 `GET /web/*`（Bundle Resources），**无 CDN**，离线可用。
 enum WebSSHPage {
     static func html() -> String {
-        // 内联完整页面，零本地静态资源依赖；xterm 从 jsDelivr CDN 加载。
+        // 内联页面骨架；xterm / fit 走本机桥 `/web/*`（Bundle Resources，无 CDN）。
         // token/session/host_id 由前端从 location.search 解析。
         return #"""
 <!DOCTYPE html>
@@ -12,8 +13,9 @@ enum WebSSHPage {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"/>
 <title>PixShell Web SSH</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css"/>
+<link rel="stylesheet" href="/web/xterm.css"/>
 <style>
   :root {
     --bg: #0d1117;
@@ -98,9 +100,8 @@ enum WebSSHPage {
     <span id="footHint"></span>
   </footer>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+<script src="/web/xterm.js"></script>
+<script src="/web/addon-fit.js"></script>
 <script>
 (function () {
   const qs = new URLSearchParams(location.search);
@@ -124,7 +125,7 @@ enum WebSSHPage {
   }
 
   if (!TOKEN) {
-    setStatus('err', '缺少 token。请用菜单「Web SSH 网页终端…」打开，或附加 ?token=…');
+    setStatus('err', '缺少 token。请从「新建连接 → Web」连接，或附加 ?token=…');
     return;
   }
 
@@ -152,7 +153,7 @@ enum WebSSHPage {
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
-  term.loadAddon(new WebLinksAddon.WebLinksAddon());
+  // 不挂 WebLinks：离线包无 addon；终端内链点击由宿主策略处理
   term.open($('term'));
   fit.fit();
 

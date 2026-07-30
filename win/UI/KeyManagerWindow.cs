@@ -42,11 +42,11 @@ public sealed class KeyManagerWindow
         _count = new TextBlock { FontSize = 12, Foreground = B("BrushMuted"), Margin = new Thickness(0, 0, 0, 8) };
         _list = new StackPanel();
 
-        var genBtn = new Button { Content = "＋生成密钥", Style = (Style)Application.Current.Resources["PillButton"], Tag = "Primary", Margin = new Thickness(0, 0, 6, 0) };
+        var genBtn = new Button { Content = L10n.T("keys.generate"), Style = (Style)Application.Current.Resources["PillButton"], Tag = "Primary", Margin = new Thickness(0, 0, 6, 0) };
         genBtn.Click += (_, _) => GenerateFlow();
-        var refBtn = new Button { Content = "刷新", Style = (Style)Application.Current.Resources["PillButton"], Margin = new Thickness(0, 0, 6, 0) };
+        var refBtn = new Button { Content = L10n.T("keys.refresh"), Style = (Style)Application.Current.Resources["PillButton"], Margin = new Thickness(0, 0, 6, 0) };
         refBtn.Click += (_, _) => Reload();
-        var closeBtn = new Button { Content = "关闭", Style = (Style)Application.Current.Resources["PillButton"] };
+        var closeBtn = new Button { Content = L10n.T("common.close"), Style = (Style)Application.Current.Resources["PillButton"] };
         closeBtn.Click += (_, _) => _window!.Hide();
 
         var head = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
@@ -56,7 +56,7 @@ public sealed class KeyManagerWindow
         head.Children.Add(btns);
         head.Children.Add(new TextBlock
         {
-            Text = "密钥管理", FontSize = 15, FontWeight = FontWeights.SemiBold,
+            Text = L10n.T("keys.title"), FontSize = 15, FontWeight = FontWeights.SemiBold,
             Foreground = B("BrushText"), VerticalAlignment = VerticalAlignment.Center,
         });
 
@@ -71,7 +71,7 @@ public sealed class KeyManagerWindow
 
         _window = new Window
         {
-            Title = "密钥管理", Owner = owner,
+            Title = L10n.T("keys.title"), Owner = owner,
             Width = 420, Height = 360, MinWidth = 320, MinHeight = 240,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             WindowStyle = WindowStyle.ToolWindow,
@@ -88,7 +88,7 @@ public sealed class KeyManagerWindow
     {
         _keys = SshKeys.List();
         _count!.Text = _keys.Count == 0
-            ? "~/.ssh 下没有找到密钥 —— 点「＋生成密钥」新建一个"
+            ? L10n.T("keys.empty")
             : $"{_keys.Count} 个密钥 · {SshKeys.SshDir}";
         _list!.Children.Clear();
         foreach (var k in _keys) _list.Children.Add(Row(k));
@@ -125,13 +125,13 @@ public sealed class KeyManagerWindow
             Margin = new Thickness(0, 2, 0, 6), TextTrimming = TextTrimming.CharacterEllipsis,
         };
 
-        var useBtn = new Button { Content = "用于此主机", Style = (Style)Application.Current.Resources["PillButton"], Tag = "Primary", FontSize = 11, Margin = new Thickness(0, 0, 6, 0) };
+        var useBtn = new Button { Content = L10n.T("keys.useForHost"), Style = (Style)Application.Current.Resources["PillButton"], Tag = "Primary", FontSize = 11, Margin = new Thickness(0, 0, 6, 0) };
         useBtn.Click += (_, _) => { Logging.Log.Info($"选用密钥 {k.Name} → 当前主机", "keys"); OnUseKey?.Invoke(k.Path); _window!.Hide(); };
-        var copyBtn = new Button { Content = "复制公钥", Style = (Style)Application.Current.Resources["PillButton"], FontSize = 11, Margin = new Thickness(0, 0, 6, 0) };
+        var copyBtn = new Button { Content = L10n.T("keys.copyPub"), Style = (Style)Application.Current.Resources["PillButton"], FontSize = 11, Margin = new Thickness(0, 0, 6, 0) };
         copyBtn.Click += (_, _) => CopyPublic(k);
         var showBtn = new Button { Content = "在资源管理器中显示", Style = (Style)Application.Current.Resources["PillButton"], FontSize = 11, Margin = new Thickness(0, 0, 6, 0) };
         showBtn.Click += (_, _) => Reveal(k);
-        var delBtn = new Button { Content = "删除", Style = (Style)Application.Current.Resources["PillButton"], FontSize = 11 };
+        var delBtn = new Button { Content = L10n.T("keys.delete"), Style = (Style)Application.Current.Resources["PillButton"], FontSize = 11 };
         delBtn.Click += (_, _) => DeleteFlow(k);
 
         var row = new StackPanel { Orientation = Orientation.Horizontal };
@@ -182,14 +182,14 @@ public sealed class KeyManagerWindow
         var dlg = new Window
         {
 
-            Title = "生成 SSH 密钥", Owner = _window, Width = 380, SizeToContent = SizeToContent.Height,
+            Title = L10n.T("keys.genTitle"), Owner = _window, Width = 380, SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize,
             Background = B("BrushBg"),
         };
         var sp = new StackPanel { Margin = new Thickness(14) };
         sp.Children.Add(new TextBlock
         {
-            Text = "会在 ~/.ssh 下用系统 ssh-keygen 生成标准密钥对。",
+            Text = L10n.T("keys.genBody"),
             Foreground = B("BrushMuted"), FontSize = 11, Margin = new Thickness(0, 0, 0, 10), TextWrapping = TextWrapping.Wrap,
         });
 
@@ -213,8 +213,8 @@ public sealed class KeyManagerWindow
         var passBox = new PasswordBox();
         sp.Children.Add(passBox);
 
-        var ok = new Button { Content = "生成", Width = 80, IsDefault = true, Margin = new Thickness(0, 0, 8, 0) };
-        var cancel = new Button { Content = "取消", Width = 80, IsCancel = true };
+        var ok = new Button { Content = L10n.T("keys.gen"), Width = 80, IsDefault = true, Margin = new Thickness(0, 0, 8, 0) };
+        var cancel = new Button { Content = L10n.T("common.cancel"), Width = 80, IsCancel = true };
         var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
         btnRow.Children.Add(ok); btnRow.Children.Add(cancel);
         sp.Children.Add(btnRow);

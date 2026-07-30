@@ -10,21 +10,23 @@ APP="$ROOT/dist/PixShell.app"
 VERSION="${VERSION:-0.1.1}"
 VERSION="${VERSION#v}"
 
+# set -u 下空数组 "${BUILD_ARGS[@]}" 会炸；用显式参数列表。
+BUILD_CMD=(swift build)
 if [ "$CONFIG" = "release" ]; then
-  BUILD_ARGS=(-c release)
+  BUILD_CMD+=(-c release)
 elif [ "$CONFIG" = "debug" ]; then
-  BUILD_ARGS=()
+  : # debug = 默认配置，不加 -c
 else
   echo "用法: bash scripts/package-mac.sh [debug|release]" >&2
   exit 2
 fi
 
 if [ -n "${ARCH:-}" ]; then
-  BUILD_ARGS+=("--arch" "$ARCH")
+  BUILD_CMD+=(--arch "$ARCH")
 fi
 
 echo "定位 SwiftPM $CONFIG 输出目录 ..."
-BIN_DIR="$(cd "$ROOT" && swift build "${BUILD_ARGS[@]}" --show-bin-path)"
+BIN_DIR="$(cd "$ROOT" && "${BUILD_CMD[@]}" --show-bin-path)"
 BIN="$BIN_DIR/PixShell"
 
 if [ ! -x "$BIN" ]; then
@@ -180,16 +182,94 @@ shopt -u nullglob
 #   2) 每个 *.bundle 单独签
 #   3) .app 级签名允许失败；本地网络 TCC 主要跟主可执行文件身份走
 # 稳定 codesign 身份：优先复用 login keychain 里的 "PixShell Local" 自签证书。
-# ad-hoc（codesign -s -）每次 CDHash 都变 → 钥匙串每次弹登录密码。
+# ad-hoc（codesign -s -）每次 CDHash 都变 → 本地网络 TCC 授权每次 rebuild 丢失。
 # 自签证书跨 rebuild CDHash 稳定（同一证书），Keychain ACL / TCC 才能记住。
+#
+# 注意：自签未进 trust settings 时，`security find-identity -v` 会报
+# CSSMERR_TP_NOT_TRUSTED → "0 valid identities"，但 `codesign --sign <SHA-1>`
+# 仍可用（无需 sudo / 用户交互 trust）。多份 "PixShell Local" 时以
+# identity.hash 锁定同一份，避免 rebuild 换证书。
+# 清理重复证书（Keychain Access 手动删多余项）可选，本脚本不自动删除。
 ensure_local_sign_identity() {
   local name="PixShell Local"
-  if security find-identity -v -p codesigning 2>/dev/null | grep -q "$name"; then
+  local dir="${HOME}/Library/Application Support/PixShell/codesign"
+  local hash_file="$dir/identity.hash"
+  local identity_list hashes preferred h line
+  mkdir -p "$dir"
+
+  # 收集所有 "PixShell Local" 的 SHA-1（含 untrusted；-v 只列 valid，会漏）。
+  # 行格式:  1) HASH "PixShell Local" [(CSSMERR_...)]
+  identity_list="$(security find-identity -p codesigning 2>/dev/null || true)"
+  hashes=()
+  while IFS= read -r line; do
+    case "$line" in
+      *\"$name\"*)
+        h="$(printf '%s\n' "$line" | sed -n 's/.*\([0-9A-Fa-f]\{40\}\).*/\1/p')"
+        if [ -n "$h" ]; then
+          hashes+=("$h")
+        fi
+        ;;
+    esac
+  done <<< "$identity_list"
+
+  # 1) 有效身份（-v）：若有同名 valid，优先用名字（系统认可）。
+  if security find-identity -v -p codesigning 2>/dev/null | grep -F "\"$name\"" >/dev/null 2>&1; then
+    # 仍把 hash 持久化（多份 valid 时锁定）
+    preferred=""
+    if [ -f "$hash_file" ]; then
+      preferred="$(tr -d '[:space:]' < "$hash_file" | tr '[:lower:]' '[:upper:]')"
+    fi
+    if [ -n "$preferred" ]; then
+      for h in "${hashes[@]+"${hashes[@]}"}"; do
+        if [ "$(printf '%s' "$h" | tr '[:lower:]' '[:upper:]')" = "$preferred" ]; then
+          printf '%s\n' "$h" > "$hash_file"
+          echo "$h"
+          return 0
+        fi
+      done
+    fi
+    if [ "${#hashes[@]}" -gt 0 ]; then
+      h="${hashes[0]}"
+      printf '%s\n' "$h" > "$hash_file"
+      echo "$h"
+      return 0
+    fi
+    # 有 valid 名字但解析不出 hash：回落用名字（codesign 能解析 common name）
     echo "$name"
     return 0
   fi
-  local dir="${HOME}/Library/Application Support/PixShell/codesign"
-  mkdir -p "$dir"
+
+  # 2) 无 valid：用 SHA-1 签 untrusted 自签（已验证 codesign --sign HASH 成功）。
+  if [ "${#hashes[@]}" -gt 0 ]; then
+    preferred=""
+    if [ -f "$hash_file" ]; then
+      preferred="$(tr -d '[:space:]' < "$hash_file" | tr '[:lower:]' '[:upper:]')"
+    fi
+    if [ -n "$preferred" ]; then
+      for h in "${hashes[@]}"; do
+        if [ "$(printf '%s' "$h" | tr '[:lower:]' '[:upper:]')" = "$preferred" ]; then
+          printf '%s\n' "$h" > "$hash_file"
+          # bash 3.2: 用 ${h}，避免 $h 紧贴全角括号被误解析
+          echo "提示: 使用持久化 identity.hash=${h} (CSSMERR_TP_NOT_TRUSTED 仍可 hash 签名)" >&2
+          echo "$h"
+          return 0
+        fi
+      done
+      echo "提示: identity.hash=${preferred} 不在当前 keychain，改选可用 PixShell Local" >&2
+    fi
+    # 多份时取列表第一条（find-identity 顺序稳定即可；不自动删重复）
+    h="${hashes[0]}"
+    if [ "${#hashes[@]}" -gt 1 ]; then
+      echo "提示: 发现 ${#hashes[@]} 个 PixShell Local 证书（重复未自动删除）。锁定: ${h}" >&2
+      echo "      可选清理: Keychain Access -> 登录 -> 证书 -> 删多余 PixShell Local；保留 identity.hash 对应项。" >&2
+    fi
+    printf '%s\n' "$h" > "$hash_file"
+    echo "提示: 使用 SHA-1 身份 ${h} 签名（未 trust 的自签；无需 sudo）" >&2
+    echo "$h"
+    return 0
+  fi
+
+  # 3) 没有现成身份：生成自签 p12 并导入 login keychain，再取 hash。
   local key="$dir/pixshell-local.key"
   local crt="$dir/pixshell-local.crt"
   local p12="$dir/pixshell-local.p12"
@@ -215,23 +295,84 @@ EOF
   fi
   security import "$p12" -k ~/Library/Keychains/login.keychain-db \
     -P pixshell-local -T /usr/bin/codesign -T /usr/bin/security >/dev/null 2>&1 || true
-  # 允许 codesign 不弹钥匙串（尽量）
+  # 允许 codesign 不弹钥匙串（尽量；空密码 keychain 才有效）
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" \
     ~/Library/Keychains/login.keychain-db >/dev/null 2>&1 || true
-  if security find-identity -v -p codesigning 2>/dev/null | grep -q "$name"; then
+
+  identity_list="$(security find-identity -p codesigning 2>/dev/null || true)"
+  hashes=()
+  while IFS= read -r line; do
+    case "$line" in
+      *\"$name\"*)
+        h="$(printf '%s\n' "$line" | sed -n 's/.*\([0-9A-Fa-f]\{40\}\).*/\1/p')"
+        if [ -n "$h" ]; then
+          hashes+=("$h")
+        fi
+        ;;
+    esac
+  done <<< "$identity_list"
+
+  if [ "${#hashes[@]}" -gt 0 ]; then
+    preferred=""
+    if [ -f "$hash_file" ]; then
+      preferred="$(tr -d '[:space:]' < "$hash_file" | tr '[:lower:]' '[:upper:]')"
+    fi
+    if [ -n "$preferred" ]; then
+      for h in "${hashes[@]}"; do
+        if [ "$(printf '%s' "$h" | tr '[:lower:]' '[:upper:]')" = "$preferred" ]; then
+          printf '%s\n' "$h" > "$hash_file"
+          echo "$h"
+          return 0
+        fi
+      done
+    fi
+    h="${hashes[0]}"
+    printf '%s\n' "$h" > "$hash_file"
+    echo "$h"
+    return 0
+  fi
+
+  # 最后：若 valid 列表里有名字（罕见），仍回落名字
+  if security find-identity -v -p codesigning 2>/dev/null | grep -F "\"$name\"" >/dev/null 2>&1; then
     echo "$name"
     return 0
   fi
   return 1
 }
 
+print_cdhash() {
+  local target="$1"
+  local label="${2:-}"
+  local info cdhash
+  info="$(codesign -dv --verbose=2 "$target" 2>&1 || true)"
+  cdhash="$(printf '%s\n' "$info" | sed -n 's/^CDHash=//p' | head -1)"
+  if [ -n "$cdhash" ]; then
+    echo "CDHash${label:+ ($label)}: $cdhash"
+  else
+    echo "CDHash${label:+ ($label)}: (未读到)" >&2
+  fi
+}
+
 if command -v codesign >/dev/null 2>&1; then
   SIGN_ID="-"
-  if LOCAL_ID="$(ensure_local_sign_identity)"; then
-    SIGN_ID="$LOCAL_ID"
-    echo "codesign 使用稳定身份: $SIGN_ID（钥匙串/TCC 可跨启动记住）"
+  # ensure 可能混进提示行：只取 40 位 hex 或字面名，避免 set -u / 多行污染
+  if RAW_ID="$(ensure_local_sign_identity 2>/tmp/pixshell-ensure-id.err)"; then
+    # BSD sed 不支持 GNU `t;` 链式分支；分两步：先抽 40 位 hex，否则 trim 后认字面名
+    LOCAL_ID="$(printf '%s\n' "$RAW_ID" | sed -n 's/.*\([0-9A-Fa-f]\{40\}\).*/\1/p' | head -1)"
+    if [ -z "$LOCAL_ID" ]; then
+      LOCAL_ID="$(printf '%s\n' "$RAW_ID" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -Fx 'PixShell Local' | head -1 || true)"
+    fi
+    if [ -n "$LOCAL_ID" ]; then
+      SIGN_ID="$LOCAL_ID"
+      echo "codesign 使用稳定身份: ${SIGN_ID} (钥匙串/TCC 可跨 rebuild 记住)"
+      cat /tmp/pixshell-ensure-id.err 2>/dev/null || true
+    else
+      echo "警告: ensure 返回无法解析: $(printf '%s' "$RAW_ID" | tr '\n' ' ')" >&2
+      cat /tmp/pixshell-ensure-id.err 2>/dev/null || true
+    fi
   else
-    echo "警告: 无法创建 PixShell Local 证书，回退 ad-hoc（钥匙串可能每次弹窗）" >&2
+    echo "警告: 无法创建/定位 PixShell Local 证书，回退 ad-hoc" >&2
+    cat /tmp/pixshell-ensure-id.err 2>/dev/null || true
   fi
   sign_ok=1
 
@@ -243,6 +384,9 @@ if command -v codesign >/dev/null 2>&1; then
     cp "$tmp_bin" "$APP/Contents/MacOS/PixShell"
     chmod +x "$APP/Contents/MacOS/PixShell"
     echo "主可执行签名 OK (id=com.pixshell.mac, identity=$SIGN_ID)"
+    if [ "$SIGN_ID" != "-" ]; then
+      print_cdhash "$APP/Contents/MacOS/PixShell" "main"
+    fi
   else
     echo "警告: 可执行文件签名失败，尝试 ad-hoc…" >&2
     cat /tmp/pixshell-codesign.err >&2 || true
@@ -271,6 +415,9 @@ if command -v codesign >/dev/null 2>&1; then
 
   if codesign --force --sign "$SIGN_ID" --timestamp=none "$APP" 2>/tmp/pixshell-codesign.err; then
     echo ".app 级签名 OK ($SIGN_ID)"
+    if [ "$SIGN_ID" != "-" ]; then
+      print_cdhash "$APP" "app"
+    fi
   else
     echo "提示: .app 级签名跳过（根级 SwiftPM .bundle 导致 unsealed；主二进制已单独签）" >&2
     head -5 /tmp/pixshell-codesign.err >&2 || true
@@ -286,8 +433,25 @@ if command -v codesign >/dev/null 2>&1; then
   else
     echo "警告: 部分签名失败" >&2
   fi
+
+  if [ "${SIGN_ID:--}" = "-" ]; then
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
+    echo "!! 警告: codesign 最终为 ad-hoc（SIGN_ID=-）" >&2
+    echo "!! adhoc CDHash 每次 rebuild 会变，本地网络授权会丢" >&2
+    echo "!! 修复: 确保 login keychain 有 \"PixShell Local\" 并保留" >&2
+    echo "!!   ~/Library/Application Support/PixShell/codesign/identity.hash" >&2
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
+    if [ "${REQUIRE_STABLE_SIGN:-0}" = "1" ]; then
+      echo "REQUIRE_STABLE_SIGN=1：拒绝 ad-hoc，退出 1" >&2
+      exit 1
+    fi
+  fi
 else
   echo "警告: 无 codesign，跳过签名" >&2
+  if [ "${REQUIRE_STABLE_SIGN:-0}" = "1" ]; then
+    echo "REQUIRE_STABLE_SIGN=1：无 codesign，退出 1" >&2
+    exit 1
+  fi
 fi
 
 echo "完成: $APP (version ${VERSION})"

@@ -4,7 +4,7 @@
              Visibility="Collapsed" IsHitTestVisible="False">
     <!-- 连接动画（覆盖终端区）。连接过程属于 App 自己的 UI，不该往终端里写字
          —— 终端里只应该有远端的真实输出（对齐 mac UI/ConnectOverlay.swift）。
-         观感参考 Termius：脉冲圆点 + 主机名 + 分步状态 + 不确定进度条。 -->
+         脉冲圆点 + 主机名 + 分步状态 + 不确定进度条。 -->
     <Grid x:Name="Root" Background="{DynamicResource BrushTerm}" Opacity="0.96">
         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
 

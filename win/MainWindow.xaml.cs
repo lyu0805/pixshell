@@ -36,13 +36,19 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<HostEntry> _hosts = new();
     private string _htmlPath = "";
     /// <summary>与 csproj / mac CFBundleShortVersionString 对齐的展示与更新比较版本。</summary>
-    private const string AppVersion = "0.1.1";
+    private const string AppVersion = "0.1.3";
 
     private bool _sideCollapsed;
     private double _sidebarWidth = UiStore.Load().SidebarWidth;
     private bool _dockCollapsed;
     private bool _showingQuickConnect;
-    private double _dockHeight = Math.Max(160, UiStore.Load().BottomHeight > 0 ? UiStore.Load().BottomHeight : 230);
+    // 底部坞高度：对齐 mac pixshell.bottomHeight（默认 230，下限 200）
+    private double _dockHeight = Math.Max(200, UiStore.Load().BottomHeight > 0 ? UiStore.Load().BottomHeight : 230);
+    /// <summary>GitHub #2：GridSplitter 夹在 Auto 命令栏与坞之间，PreviousAndNext 拖不动终端↔坞。
+    /// 改 Mac 式：在分隔条上自管拖高，直接改 DockRow 高度。</summary>
+    private bool _dockDragging;
+    private double _dockDragStartY;
+    private double _dockDragStartH;
 
     private string _downloadDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
@@ -50,6 +56,14 @@ public partial class MainWindow : Window
     private HashSet<string> _backupEnabled = new();
 
     private readonly DispatcherTimer _monitorTimer = new() { Interval = TimeSpan.FromSeconds(3) };
+    /// <summary>PollMonitor 单飞：3s tick + 切 tab 可能重叠，避免并发 Exec mon 卡顿（GitHub #2 流畅度）。</summary>
+    private int _pollMonitorBusy;
+    // CLI 状态 dirty-check（避免 3s 无意义刷 brush/Text）
+    private int _cliStatusKey = -1;
+    // 切 tab 后 PollMonitor 防抖：避免 SelectionChanged 立刻再 Exec mon 叠 3s tick
+    private DateTime _lastPollKick = DateTime.MinValue;
+    // 公开给 TerminalSession：拖坞期间跳过 pixFit（避免 SizeChanged 风暴）
+    internal static bool SuppressTerminalFit;
 
     // 本地 CLI/AI-Agent 桥（对齐 mac AppDelegate.agentBridge + bridgeTimer）。
     private Bridge.AgentBridge? _agentBridge;
@@ -71,8 +85,8 @@ public partial class MainWindow : Window
         Log.Banner(AppVersion);
         ThemeManager.Initialize();   // 读回上次选的主题（之前 Windows 端主题完全没持久化）
         HighlightColors.Load();
-        // 恢复上次坞高度（GridLength 默认 230，这里覆盖成 prefs）
-        if (_dockHeight >= 160)
+        // 恢复上次坞高度（GridLength 默认 230，这里覆盖成 prefs；下限 200 对齐 mac）
+        if (_dockHeight >= 200)
             DockRow.Height = new GridLength(_dockHeight);
         SourceInitialized += MainWindow_SourceInitialized;
 
@@ -107,13 +121,10 @@ public partial class MainWindow : Window
         // logo → 应用内本机终端（不弹 wt/cmd）
         QuickConnectPanel.OnLocalTerminal = () => _ = OpenLocalTerminalSession();
         // 有会话时从 QC 返回当前终端（对齐 mac QuickConnect.onBack）
+        // 离 QC 只走 LeaveQuickConnect：先收 QC 再亮 HWND，禁止单独 SetSessionViewsVisible(true)
         QuickConnectPanel.OnBack = () =>
         {
-            _showingQuickConnect = false;
-            SetSessionViewsVisible(true);
-            QuickConnectPanel.Visibility = Visibility.Collapsed;
-            QuickConnectPanel.SetShowsBack(false);
-            UpdateWorkCenterVisibility();
+            LeaveQuickConnect();
             if (Sessions.SelectedItem is TabItem { Tag: TerminalSession s })
             {
                 try { s.View.Focus(); } catch { /* ignore */ }
@@ -296,6 +307,10 @@ public partial class MainWindow : Window
         var listening = _agentBridge.IsRunning;
         var last = _agentBridge.LastClientAt;
         var paired = listening && last.HasValue && (DateTime.UtcNow - last.Value) < TimeSpan.FromMinutes(5);
+        // 0 未开 / 1 已开 / 2 已对接
+        var key = paired ? 2 : listening ? 1 : 0;
+        if (key == _cliStatusKey) return;
+        _cliStatusKey = key;
 
         if (paired)
         {
@@ -372,6 +387,8 @@ public partial class MainWindow : Window
         if (host.IsLocal) { _ = OpenLocalTerminalSession(host); return; }
         // RDP 类型不走 SSH：直接拉起系统远程桌面 mstsc（对齐老仓库 app.js connectionType===200 分支）。
         if (host.IsRdp) { LaunchRdp(host); return; }
+        // Web 连接：和 SSH 同一入口，开应用内 Web 终端标签（host_id 自动连）。
+        if (host.IsWebSsh) { _ = OpenWebHostSessionAsync(host); return; }
         var pass = CredentialStore.GetPassword(host.Id);
         if (pass == null)
         {
@@ -670,8 +687,7 @@ public partial class MainWindow : Window
                     s.Disconnect();
                     var proxy = ProxyStore.Find(host.ProxyId);
                     await s.ConnectAsync(host.Host, host.Port, host.Username, entered, host.KeyPath, proxy);
-                    _showingQuickConnect = false;
-                    SetSessionViewsVisible(true);
+                    LeaveQuickConnect(); // 重试成功：先收 QC 再亮 HWND
                     SyncDockSession();
                     Monitor.SetConnected(true, host.Host);
                     RefreshConnState();
@@ -719,14 +735,8 @@ public partial class MainWindow : Window
         // 点击 tab（哪怕是已选中的同一个）都要把强制显示的快速连接落地页收起——
         // WPF 的 SelectionChanged 只在选中项真正变化时触发，重选同一 tab 不会触发，
         // 而 mac 版每个 tab 按钮点击都直接调用 selectSession，行为不同，这里补上。
-        item.PreviewMouseLeftButtonDown += (_, _) =>
-        {
-            _showingQuickConnect = false;
-            SetSessionViewsVisible(true);
-            QuickConnectPanel.Visibility = Collapsed;
-            QuickConnectPanel.SetShowsBack(false);
-            UpdateWorkCenterVisibility();
-        };
+        // LeaveQuickConnect：先 Collapsed QC 再亮 WebView2 HWND，避免空气空间穿层。
+        item.PreviewMouseLeftButtonDown += (_, _) => { if (_showingQuickConnect) LeaveQuickConnect(); };
     }
 
     /// <summary>标签右键菜单：切换到此标签 / 重新连接 / 再开一个同主机会话 / 关闭 / 关闭其他
@@ -756,6 +766,23 @@ public partial class MainWindow : Window
         if (item.Tag is not TerminalSession session || session.SourceHost is not { } host) return;
         Sessions.SelectedItem = item;
 
+        // 应用内 Web 终端：只刷新 WebView，不建 SSH
+        if (host.IsWebSsh || session.IsWebSsh)
+        {
+            try
+            {
+                await session.ReloadWebSshAsync().ConfigureAwait(true);
+                SetStatus("Web 终端已刷新");
+                RefreshConnState();
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Web 终端刷新失败: {ex.Message}", "webssh");
+                SetStatus("Web 终端刷新失败: " + ex.Message);
+            }
+            return;
+        }
+
         // 本机终端：原地重启本地 shell，不弹密码。
         if (host.IsLocal)
         {
@@ -764,8 +791,7 @@ public partial class MainWindow : Window
                 session.Disconnect();
                 ConnectAnim.Begin("本机终端");
                 await session.ConnectLocalAsync();
-                _showingQuickConnect = false;
-                SetSessionViewsVisible(true);
+                LeaveQuickConnect(); // 本机重连成功：先收 QC 再亮 HWND
                 SyncDockSession();
                 Monitor.SetConnected(true, "local");
                 ConnectAnim.Succeed();
@@ -797,8 +823,7 @@ public partial class MainWindow : Window
             ConnectAnim.Begin($"{host.Username}@{host.Host}:{host.Port}");
             var proxy = ProxyStore.Find(host.ProxyId);
             await session.ConnectAsync(host.Host, host.Port, host.Username, pass ?? "", host.KeyPath, proxy);
-            _showingQuickConnect = false;
-            SetSessionViewsVisible(true);
+            LeaveQuickConnect(); // SSH 重连成功：先收 QC 再亮 HWND
             SyncDockSession();
             Monitor.SetConnected(true, host.Host);
             ConnectAnim.Succeed();
@@ -817,6 +842,8 @@ public partial class MainWindow : Window
     private void TabMenuDuplicate(TabItem item)
     {
         if (item.Tag is not TerminalSession session || session.SourceHost is not { } host) return;
+        // Web 主机：再走一遍 ConnectToHost（和 SSH 同路径），不要退回菜单硬开空标签
+        if (host.IsWebSsh || session.IsWebSsh) { ConnectToHost(host); return; }
         var pass = session.Password;
         if (!string.IsNullOrEmpty(pass)) _ = OpenSessionTab(host, pass); else ConnectToHost(host);
     }
@@ -850,46 +877,24 @@ public partial class MainWindow : Window
     private void OnTabSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!ReferenceEquals(e.Source, Sessions)) return;
-        if (IsLoaded && e.RemovedItems.Count > 0) PlayRippleTransition();
-        _showingQuickConnect = false;
-        SetSessionViewsVisible(true);
+        // GitHub #1：旧 PlayRippleTransition 对 MainArea 做 RenderTargetBitmap。
+        // WebView2 是 HwndHost，RTB 拍不到 HWND → 全黑遮罩 0.6–0.85s 闪黑/抖动。
+        // 终端会话一律 WebView2，切 tab 禁止再走 RTB 涟漪（TransitionImage 保留给非 HWND 场景）。
+        if (_showingQuickConnect) LeaveQuickConnect();
         RefreshConnState();
         SyncDockSession();
-        UpdateWorkCenterVisibility();
-        _ = PollMonitor();
+        // 切 tab 不立刻重跑 mon：3s 定时器会来；防抖 1.2s 避免与 tick 叠飞
+        KickPollMonitorDebounced();
     }
 
+    /// <summary>
+    /// 主题切换等非 HWND 场景可用的软过渡。切 SSH 标签页<strong>不要</strong>调用——
+    /// MainArea 含 WebView2，RenderTargetBitmap 会得到黑洞（GitHub #1）。
+    /// </summary>
     private void PlayRippleTransition()
     {
-        try
-        {
-            var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap((int)MainArea.ActualWidth, (int)MainArea.ActualHeight, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
-            rtb.Render(MainArea);
-            TransitionImage.Source = rtb;
-            TransitionImage.Visibility = Visibility.Visible;
-            TransitionImage.Opacity = 1;
-
-            var brush = new System.Windows.Media.RadialGradientBrush { Center = new System.Windows.Point(0.5, 0.5), GradientOrigin = new System.Windows.Point(0.5, 0.5) };
-            var stop1 = new System.Windows.Media.GradientStop(System.Windows.Media.Colors.Transparent, 0);
-            var stop2 = new System.Windows.Media.GradientStop(System.Windows.Media.Colors.Black, 0.05);
-            brush.GradientStops.Add(stop1);
-            brush.GradientStops.Add(stop2);
-            TransitionImage.OpacityMask = brush;
-
-            var duration = ThemeManager.Current.ToString() == "Ink" ? 0.85 : 0.6;
-            var ease = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut };
-            
-            var anim1 = new System.Windows.Media.Animation.DoubleAnimation(0, 1.5, TimeSpan.FromSeconds(duration)) { EasingFunction = ease };
-            var anim2 = new System.Windows.Media.Animation.DoubleAnimation(0.05, 1.55, TimeSpan.FromSeconds(duration)) { EasingFunction = ease };
-            anim2.Completed += (_, _) => { TransitionImage.Visibility = Visibility.Collapsed; TransitionImage.Source = null; TransitionImage.OpacityMask = null; };
-
-            stop1.BeginAnimation(System.Windows.Media.GradientStop.OffsetProperty, anim1);
-            stop2.BeginAnimation(System.Windows.Media.GradientStop.OffsetProperty, anim2);
-            
-            var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0, TimeSpan.FromSeconds(duration)) { EasingFunction = ease };
-            TransitionImage.BeginAnimation(UIElement.OpacityProperty, fade);
-        }
-        catch { }
+        // 故意空实现保留符号，避免外部/菜单误调旧路径再引入闪黑。
+        // 若将来有纯 WPF 页可在此做轻量 Opacity 淡入，仍禁止 RTB(MainArea)。
     }
 
     private void SyncDockSession()
@@ -950,14 +955,42 @@ public partial class MainWindow : Window
     private void SetSessionViewsVisible(bool vis)
     {
         var v = vis ? Visibility.Visible : Visibility.Collapsed;
+        // 无变化跳过：切 tab 高频路径，避免 N 个 WebView2 Visibility 写同一值触发布局
+        if (SessionContent.Visibility == v)
+        {
+            var anyDiff = false;
+            foreach (var obj in Sessions.Items)
+            {
+                if (obj is TabItem { Tag: TerminalSession s } && s.View.Visibility != v)
+                { anyDiff = true; break; }
+            }
+            if (!anyDiff) return;
+        }
         SessionContent.Visibility = v;
         foreach (var obj in Sessions.Items)
             if (obj is TabItem { Tag: TerminalSession s })
-                s.View.Visibility = v;
+            {
+                if (s.View.Visibility != v) s.View.Visibility = v;
+            }
+    }
+
+    /// <summary>
+    /// 离开快速连接落地页的唯一出口。
+    /// 顺序硬约束：先清 flag → UpdateWorkCenterVisibility 内先 Collapsed QC 再亮 HWND。
+    /// 禁止在重连/重试/OnBack/SelectionChanged 里单独 SetSessionViewsVisible(true) 不收 QC
+    /// （否则 flag=false 但 QC 仍 Visible + WebView2 Visible → HWND 从落地页底下打穿）。
+    /// </summary>
+    private void LeaveQuickConnect()
+    {
+        _showingQuickConnect = false;
+        QuickConnectPanel.SetShowsBack(false);
+        UpdateWorkCenterVisibility();
     }
 
     // 背景一律走主题令牌：空态 BrushBg，有会话 BrushTerm。禁止 Transparent/White 硬编码，
     // 否则深色下白屏、浅色下透黑边。
+    // 离 QC 分支顺序：先 Collapsed QC，再 SetSessionViewsVisible(true)——WPF 画在 HWND 下，
+    // 反序会有几帧终端黑底从落地页穿出。
     private void UpdateWorkCenterVisibility()
     {
         bool empty = Sessions.Items.Count == 0;
@@ -976,6 +1009,7 @@ public partial class MainWindow : Window
         }
         else
         {
+            // 先收 QC，再亮 HWND（顺序不可反）
             QuickConnectPanel.Visibility = Visibility.Collapsed;
             WorkCenter.SetResourceReference(BackgroundProperty, "BrushTerm");
             SetSessionViewsVisible(true);
@@ -1014,6 +1048,8 @@ public partial class MainWindow : Window
     // ＋快速连接：始终显示落地页（覆盖当前终端），并收起侧栏+坞，对齐 mac showQuickConnect/collapseChrome。
     private void QuickConnect_Click(object sender, RoutedEventArgs e)
     {
+        // 连接中/失败淡出未完时 ConnectAnim Z=20 会盖死落地页 → 先强制收
+        try { ConnectAnim.HideNow(); } catch { /* ignore */ }
         _showingQuickConnect = true;
         QuickConnectPanel.Visibility = Visible;
         QuickConnectPanel.SetResourceReference(BackgroundProperty, "BrushBg");
@@ -1023,6 +1059,7 @@ public partial class MainWindow : Window
         QuickConnectPanel.Reload();
         SetSidebarCollapsed(true);
         SetDockCollapsed(true);
+        // 必须藏 WebView2 HWND，否则空气空间挡落地页点击
         SetSessionViewsVisible(false);
     }
 
@@ -1289,19 +1326,71 @@ public partial class MainWindow : Window
         Log.Info(collapsed ? "折叠底栏" : "展开底栏", "ui");
         _dockCollapsed = collapsed;
         DockRow.Height = collapsed ? new GridLength(0) : new GridLength(_dockHeight);
-        DockSplitterRow.Height = collapsed ? new GridLength(0) : new GridLength(4);
+        // 分隔条加高到 6px，Win10 更好点中（GitHub #2）
+        DockSplitterRow.Height = collapsed ? new GridLength(0) : new GridLength(6);
         DockBorder.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
         DockSplitter.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
         DockToggleBtn.Content = collapsed ? "▴" : "▾";
         DockToggleBtn.ToolTip = collapsed ? "显示文件/命令" : "隐藏文件/命令";
     }
 
-    /// <summary>拖完坞分隔条后，把实际高度写回 _dockHeight 并持久化（对齐 mac dragDockHeight）。</summary>
-    private void DockSplitter_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
+    /// <summary>
+    /// GitHub #2：底部文件夹/SFTP 坞可拖高。
+    /// GridSplitter PreviousAndNext 只会动相邻的 Auto 命令栏 + 坞，终端 * 行不参与 → 拖不动。
+    /// 对齐 mac dragDockHeight：分隔条上自管拖高，直接改 DockRow，松手持久化 BottomHeight。
+    /// </summary>
+    private void DockSplitter_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         if (_dockCollapsed) return;
-        var h = DockRow.ActualHeight;
-        if (h < 160) h = 160;
+        _dockDragStartY = e.GetPosition(this).Y;
+        _dockDragStartH = DockRow.ActualHeight > 0 ? DockRow.ActualHeight : _dockHeight;
+        // Capture 失败不置 _dockDragging，避免粘住（GitHub #2 对抗审遗留）
+        if (!DockSplitter.CaptureMouse()) return;
+        _dockDragging = true;
+        SuppressTerminalFit = true; // 拖坞期间跳过 WebView2 pixFit 风暴
+        e.Handled = true;
+    }
+
+    private void DockSplitter_PreviewMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (!_dockDragging) return;
+        // 鼠标上移 → 坞变高（对齐 mac translation.y）
+        var dy = _dockDragStartY - e.GetPosition(this).Y;
+        var h = _dockDragStartH + dy;
+        var max = Math.Max(240, ActualHeight - 220);
+        if (h < 200) h = 200;
+        if (h > max) h = max;
+        _dockHeight = h;
+        DockRow.Height = new GridLength(_dockHeight);
+        e.Handled = true;
+    }
+
+    private void DockSplitter_PreviewMouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (!_dockDragging) return;
+        _dockDragging = false;
+        SuppressTerminalFit = false;
+        try { DockSplitter.ReleaseMouseCapture(); } catch { /* ignore */ }
+        PersistDockHeight();
+        // 松手后一次性 fit，对齐最终高度
+        FitActiveTerminal();
+        e.Handled = true;
+    }
+
+    private void DockSplitter_LostMouseCapture(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (!_dockDragging) return;
+        _dockDragging = false;
+        SuppressTerminalFit = false;
+        PersistDockHeight();
+        FitActiveTerminal();
+    }
+
+    private void PersistDockHeight()
+    {
+        if (_dockCollapsed) return;
+        var h = DockRow.ActualHeight > 0 ? DockRow.ActualHeight : _dockHeight;
+        if (h < 200) h = 200;
         var max = Math.Max(240, ActualHeight - 220);
         if (h > max) h = max;
         _dockHeight = h;
@@ -1312,7 +1401,7 @@ public partial class MainWindow : Window
             prefs.BottomHeight = _dockHeight;
             UiStore.Save(prefs);
         }
-        catch { /* 持久化失败不挡 UI */ }
+        catch { /* ignore */ }
         Log.Info($"底栏高度 → {(int)_dockHeight}", "ui");
     }
 
@@ -1600,19 +1689,55 @@ public partial class MainWindow : Window
     // =====================================================================
     // 监控轮询（对齐 mac AppDelegate+Sessions.startMonitor，3 秒一次）
     // =====================================================================
+    /// <summary>
+    /// 侧栏监控轮询。GitHub #2 流畅度：侧栏折叠跳过；单飞防 3s tick + 切 tab 并发 Exec mon。
+    /// </summary>
+    private void KickPollMonitorDebounced()
+    {
+        // 切 tab 1.2s 内不强制 kick；定时器仍会跑
+        if ((DateTime.UtcNow - _lastPollKick).TotalSeconds < 1.2) return;
+        _ = PollMonitor();
+    }
+
+    private void FitActiveTerminal()
+    {
+        try
+        {
+            if (ActiveSession is { } s)
+                _ = s.View.CoreWebView2?.ExecuteScriptAsync("try{window.pixFit&&window.pixFit()}catch(e){}");
+        }
+        catch { /* ignore */ }
+    }
+
     private async Task PollMonitor()
     {
-        var session = ActiveSession;
-        if (session is not { Connected: true })
+        if (_sideCollapsed) return;
+        // 最小化/隐藏：停掉远端 mon 与 UI 重建
+        if (WindowState == WindowState.Minimized || !IsVisible) return;
+        if (System.Threading.Interlocked.CompareExchange(ref _pollMonitorBusy, 1, 0) != 0) return;
+        try
         {
-            Monitor.SetConnected(false, "");
-            return;
+            var session = ActiveSession;
+            // 本机 / 无 SSH / WebSSH：不跑 Linux mon 脚本
+            if (session is not { Connected: true }
+                || session.SourceHost?.IsLocal == true
+                || session.IsWebSsh)
+            {
+                Monitor.SetConnected(session is { Connected: true }, session?.SourceHost?.Host ?? session?.HostName ?? "");
+                return;
+            }
+            var host = session.SourceHost?.Host ?? session.HostName;
+            Monitor.SetConnected(true, host);
+            _lastPollKick = DateTime.UtcNow;
+            // 跑监控脚本；输出里要有 ===mon=== 标记才解析，避免把普通命令输出当监控数据。
+            var outp = await session.ExecAsync(UI.MonitorSidebar.MonitorCommand);
+            if (!IsActiveSession(session)) return; // 轮询期间用户切走了
+            if (outp != null && outp.Contains("===mon===")) Monitor.Update(UI.MonitorSidebar.ParseMonitor(outp));
         }
-        var host = session.SourceHost?.Host ?? session.HostName;
-        Monitor.SetConnected(true, host);
-        var outp = await session.ExecAsync(UI.MonitorSidebar.MonitorCommand);
-        if (!IsActiveSession(session)) return; // tab 可能在等待期间已切走
-        if (outp.Contains("===mon===")) Monitor.Update(UI.MonitorSidebar.ParseMonitor(outp));
+        finally
+        {
+            System.Threading.Interlocked.Exchange(ref _pollMonitorBusy, 0);
+        }
     }
 
     // =====================================================================
@@ -1727,13 +1852,15 @@ public partial class MainWindow : Window
         ai.Items.Add(Item("重新安装 CLI / MCP", ReinstallCLIBridge));
         menu.Items.Add(ai);
 
-        // Web SSH：本机浏览器打开桥上的 xterm 页（走 /v1/app/screen + /v1/app/shell）
-        menu.Items.Add(Item("Web SSH 网页终端…", OpenWebSshInBrowser));
+        // Web 主路径：新建连接 → 类型 Web；此处仅调试入口
+        menu.Items.Add(Item("打开桥接镜像页（调试）…", () => _ = OpenWebSshEmbeddedAsync()));
 
         menu.Items.Add(new Separator());
         var help = new MenuItem { Header = "帮助" };
         help.Items.Add(Item("关于 PixShell", () => MessageBox.Show(this, $"PixShell {AppVersion}\nWindows 原生 SSH / SFTP 客户端\nWPF + WebView2/xterm.js + SSH.NET\nhttps://github.com/lyu0805/pixshell", "关于")));
         help.Items.Add(Item("接入 AI 工具…", OpenAIIntegration));
+        help.Items.Add(Item("打开桥接镜像页（调试）…", () => _ = OpenWebSshEmbeddedAsync()));
+        help.Items.Add(Item("在系统浏览器打开桥接页…", OpenWebSshInSystemBrowser));
         help.Items.Add(new Separator());
         help.Items.Add(Item("项目仓库", () => { try { Process.Start(new ProcessStartInfo("https://github.com/lyu0805/pixshell") { UseShellExecute = true }); } catch { } }));
         menu.Items.Add(help);
@@ -1798,15 +1925,160 @@ public partial class MainWindow : Window
         SetStatus($"已重新安装 CLI / MCP（端口 {_agentBridge?.Port ?? 0}）");
     }
 
-    /// <summary>汉堡菜单「Web SSH 网页终端…」：默认浏览器打开 http://127.0.0.1:8766/webssh?token=…&amp;session=…</summary>
-    private void OpenWebSshInBrowser()
+    /// <summary>
+    /// Web 主机连接：开应用内 Web 标签（WebView2）。
+    /// - 外部 URL（WebUrl / Host 为 http(s)，如 noVNC）→ 直接 Navigate，不经本地桥、不弹 SSH 密码
+    /// - 否则 → 本地桥 /webssh?host_id=；先确保密码/私钥可用，页面再 connect 建底层 SSH
+    /// **禁止** Process.Start 外开系统浏览器。
+    /// </summary>
+    private async Task OpenWebHostSessionAsync(HostEntry host)
+    {
+        // 外部 Web/VNC：无 SSH 凭据闸门，直接开页
+        if (host.IsExternalWeb && host.ResolvedWebUrl is Uri external)
+        {
+            await OpenWebHostSessionReadyAsync(host, externalUrl: external.AbsoluteUri, allowExternal: true)
+                .ConfigureAwait(true);
+            return;
+        }
+
+        // 本地桥 WebSSH：凭据闸门对齐 SSH
+        var pass = CredentialStore.GetPassword(host.Id);
+        if (string.IsNullOrEmpty(pass) && !HasUsablePrivateKey(host))
+        {
+            var (entered, remember) = PromptPassword(host);
+            if (entered == null) return;
+            // 桥 connect 只读 CredentialStore；本次即使不勾「记住」也要写一次，否则页面 401
+            CredentialStore.SetPassword(host.Id, entered);
+            _ = remember; // 仍写入；用户未勾记住时也必须让桥能读到
+        }
+
+        if (_agentBridge == null || !_agentBridge.IsRunning) StartAgentBridge();
+        for (var i = 0; i < 8 && (_agentBridge == null || !_agentBridge.IsRunning); i++)
+            await Task.Delay(200).ConfigureAwait(true);
+        if (_agentBridge == null || !_agentBridge.IsRunning)
+        {
+            MessageBox.Show(this,
+                "本地桥未启动（端口可能被占用）。Web 连接依赖 127.0.0.1 桥接服务。",
+                "Web 连接", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var url = _agentBridge.BuildWebSshUrl(session: null, hostId: host.Id);
+        await OpenWebHostSessionReadyAsync(host, externalUrl: url, allowExternal: false)
+            .ConfigureAwait(true);
+    }
+
+    /// <summary>真正开 Web 标签。allowExternal=true 时放行同站跳转（noVNC）；否则仅回环。</summary>
+    private async Task OpenWebHostSessionReadyAsync(HostEntry host, string externalUrl, bool allowExternal)
+    {
+        RecentsStore.NoteRecent(host.Id);
+        QuickConnectPanel.Reload();
+
+        var session = new TerminalSession(host.Display, _htmlPath) { SourceHost = host };
+        session.StatusChanged += (s, msg) => { if (IsActiveSession(s)) SetStatus(msg); };
+
+        var item = new TabItem { Tag = session, Content = session.View };
+        BuildTabHeader(item, session);
+        Sessions.Items.Add(item);
+        Sessions.SelectedItem = item;
+        _showingQuickConnect = false;
+        UpdateWorkCenterVisibility();
+
+        try
+        {
+            await session.InitWebSshAsync(externalUrl, allowExternalHosts: allowExternal).ConfigureAwait(true);
+            SetStatus(allowExternal
+                ? $"已打开 Web · {host.Subtitle}"
+                : $"已连接 Web · {host.Subtitle}");
+            Log.Info($"Web {(allowExternal ? "外部页" : "连接")} host_id={host.Id} {host.Subtitle}", "webssh");
+            RefreshConnState();
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Web 连接打开失败: {ex.Message}", "webssh");
+            SetStatus("Web 连接打开失败: " + ex.Message);
+            MessageBox.Show(this, "无法打开 Web 连接：\n" + ex.Message, "Web 连接",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            CloseTab(item);
+        }
+    }
+
+    /// <summary>
+    /// 调试：应用内打开桥接镜像页（绑定当前会话，不走 host_id）。
+    /// 主路径是「新建连接 → 类型 Web → 连接」，此函数仅帮助菜单。
+    /// </summary>
+    private async Task OpenWebSshEmbeddedAsync()
+    {
+        if (_agentBridge == null || !_agentBridge.IsRunning) StartAgentBridge();
+        for (var i = 0; i < 8 && (_agentBridge == null || !_agentBridge.IsRunning); i++)
+            await Task.Delay(200).ConfigureAwait(true);
+        if (_agentBridge == null || !_agentBridge.IsRunning)
+        {
+            MessageBox.Show(this,
+                "本地桥未启动（端口可能被占用）。",
+                "桥接镜像", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        int? bindSession = null;
+        if (Sessions.Items.Count > 0)
+        {
+            var cur = Sessions.SelectedIndex >= 0 ? Sessions.SelectedIndex : 0;
+            if (Sessions.Items[cur] is TabItem { Tag: TerminalSession curS } && curS.IsWebSsh)
+            {
+                for (int i = Sessions.Items.Count - 1; i >= 0; i--)
+                {
+                    if (Sessions.Items[i] is TabItem { Tag: TerminalSession s } && !s.IsWebSsh)
+                    {
+                        bindSession = i;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                bindSession = cur;
+            }
+        }
+
+        var url = _agentBridge.BuildWebSshUrl(bindSession);
+        var host = HostEntry.WebSshTerminal(bindSession);
+        var session = new TerminalSession(host.Display, _htmlPath) { SourceHost = host };
+        session.StatusChanged += (s, msg) => { if (IsActiveSession(s)) SetStatus(msg); };
+
+        var item = new TabItem { Tag = session, Content = session.View };
+        BuildTabHeader(item, session);
+        Sessions.Items.Add(item);
+        Sessions.SelectedItem = item;
+        _showingQuickConnect = false;
+        UpdateWorkCenterVisibility();
+
+        try
+        {
+            await session.InitWebSshAsync(url).ConfigureAwait(true);
+            SetStatus($"已打开桥接镜像页 · 127.0.0.1:{_agentBridge.Port}");
+            Log.Info($"桥接镜像 session={bindSession?.ToString() ?? "-"}", "webssh");
+            RefreshConnState();
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"桥接镜像打开失败: {ex.Message}", "webssh");
+            SetStatus("桥接镜像打开失败: " + ex.Message);
+            MessageBox.Show(this, "无法打开桥接镜像：\n" + ex.Message, "桥接镜像",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            CloseTab(item);
+        }
+    }
+
+    /// <summary>开发者/调试：在系统浏览器打开桥接页（**不**作为主入口）。</summary>
+    private void OpenWebSshInSystemBrowser()
     {
         if (_agentBridge == null || !_agentBridge.IsRunning) StartAgentBridge();
         if (_agentBridge == null || !_agentBridge.IsRunning)
         {
             MessageBox.Show(this,
-                "本地桥未启动（端口可能被占用）。Web SSH 依赖 127.0.0.1 桥接服务。",
-                "Web SSH", MessageBoxButton.OK, MessageBoxImage.Warning);
+                "本地桥未启动（端口可能被占用）。",
+                "桥接页", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         int? sid = null;
@@ -1815,12 +2087,12 @@ public partial class MainWindow : Window
         try
         {
             Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-            SetStatus("已在浏览器打开 Web SSH");
-            Log.Info($"打开 Web SSH 浏览器页 session={sid?.ToString() ?? "-"}", "bridge");
+            SetStatus("已在系统浏览器打开桥接页（调试）");
+            Log.Info($"调试外开桥接页 session={sid?.ToString() ?? "-"}", "bridge");
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, "无法打开浏览器：" + ex.Message, "Web SSH",
+            MessageBox.Show(this, "无法打开浏览器：" + ex.Message, "桥接页",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }

@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
 <title>PixShell Web SSH</title>
 <link rel="stylesheet" href="/web/xterm.css">
 <style>
@@ -116,7 +117,7 @@
     <div id="gate">
       <div class="card">
         <h1>需要本地桥 Token</h1>
-        <p>本页只绑定 127.0.0.1，且每个 API 都要 token（与 CLI 相同，来自 %APPDATA%\PixShell\agent_token）。请从 PixShell 菜单「Web SSH 网页终端…」打开，或手动粘贴 token。</p>
+        <p>本页只绑定 127.0.0.1，且每个 API 都要 token（与 CLI 相同，来自 %APPDATA%\PixShell\agent_token）。请从「新建连接 → 类型 Web」连接（应用内嵌），或手动粘贴 token。</p>
         <input id="tokenInput" type="password" placeholder="粘贴 agent token" autocomplete="off" spellcheck="false">
         <div class="row">
           <button id="btnToken" class="primary" type="button">进入终端</button>

@@ -1,4 +1,5 @@
 import AppKit
+import SwiftTerm
 
 // 系统菜单栏 + 全局快捷键（老仓库 hotkeys2 的原生对应）。
 // 之前完全没有菜单栏 —— mac 应用必须有，且这是「查看/选项」等动作的键盘入口。
@@ -89,11 +90,9 @@ extension AppDelegate {
         sesMenu.addItem(mi("关闭当前标签", #selector(closeCurrentTab), "w"))
         sesItem.submenu = sesMenu; main.addItem(sesItem)
 
-        // 工具 / Web SSH / AI SSH 注册
+        // 工具 / AI SSH 注册（Web 连接主入口在「新建连接 → 类型 Web」，不在菜单硬开）
         let toolsItem = NSMenuItem(); let toolsMenu = NSMenu(title: "工具")
         toolsMenu.addItem(mi("工具面板", #selector(openTools)))
-        toolsMenu.addItem(.separator())
-        toolsMenu.addItem(mi("Web SSH 网页终端…", #selector(openWebSSH)))
         toolsMenu.addItem(.separator())
         toolsMenu.addItem(mi("接入 AI 工具…", #selector(openAIIntegration)))
         toolsMenu.addItem(mi("一键注册 AI 默认 SSH…", #selector(openAiSshBridge)))
@@ -103,10 +102,13 @@ extension AppDelegate {
         let helpItem = NSMenuItem(); let helpMenu = NSMenu(title: "帮助")
         helpMenu.addItem(mi("接入 AI 工具…", #selector(openAIIntegration)))
         helpMenu.addItem(mi("一键注册 AI 默认 SSH…", #selector(openAiSshBridge)))
-        helpMenu.addItem(mi("Web SSH 网页终端…", #selector(openWebSSH)))
         helpMenu.addItem(.separator())
         helpMenu.addItem(mi("授权本地网络…", #selector(menuLocalNetworkAuth)))
         helpMenu.addItem(mi("打开本地网络设置", #selector(menuOpenLocalNetworkSettings)))
+        helpMenu.addItem(.separator())
+        // 开发者：桥接镜像页 / 外开浏览器仅调试，主路径是「新建连接 → Web」
+        helpMenu.addItem(mi("打开桥接镜像页（调试）…", #selector(openWebSSHEmbedded)))
+        helpMenu.addItem(mi("在系统浏览器打开桥接页…", #selector(openWebSSHInSystemBrowser)))
         helpMenu.addItem(.separator())
         helpMenu.addItem(mi("备份选项配置…", #selector(openBackup)))
         helpMenu.addItem(.separator())
@@ -134,7 +136,7 @@ extension AppDelegate {
     }
     @objc func focusTerminal() {
         guard sessions.indices.contains(current) else { return }
-        window.makeFirstResponder(sessions[current].termView)
+        window.makeFirstResponder(sessions[current].contentView)
     }
 
     // MARK: 标签快捷键
@@ -234,14 +236,20 @@ extension AppDelegate {
         setStatus("已复制 Desktop MCP 配置")
     }
 
-    /// 帮助菜单：再触发一次本地网络授权弹窗（系统级，不能静默写 TCC）。
+    /// 帮助菜单：再触发本地网络授权；「我已允许」必须真的重连，否则按钮等于摆设。
     @objc func menuLocalNetworkAuth() {
-        LocalNetworkAuth.presentGrantHelp(from: window)
+        LocalNetworkAuth.presentGrantHelp(from: window) { [weak self] in
+            guard let self else { return }
+            self.setStatus("本地网络授权后重连…")
+            self.reconnectCurrent()
+        }
     }
 
     @objc func menuOpenLocalNetworkSettings() {
         _ = LocalNetworkAuth.openSystemSettings()
-        setStatus("已打开系统设置 · 本地网络")
+        // 打开设置同时再扫一次 Bonjour，尽量弹出系统授权框
+        LocalNetworkAuth.requestAuthorizationIfNeeded(force: true, bypassDebounce: true)
+        setStatus("已打开系统设置 · 本地网络（请打开 PixShell 开关后重连）")
     }
 
     @objc func openCLIBinDir() {
@@ -261,25 +269,74 @@ extension AppDelegate {
         setStatus("已重新安装 CLI / MCP（端口 \(agentBridge?.port ?? 0)）")
     }
 
-    /// 在默认浏览器打开本机 Web SSH 终端（xterm.js → 本地桥 screen/shell/stream）。
-    @objc func openWebSSH() {
+    /// 调试：应用内打开桥接镜像页（绑定当前会话，不走 host_id）。
+    /// 主路径是「新建连接 → 类型 Web → 连接」（见 openWebHostSession）。
+    @objc func openWebSSHEmbedded() {
         if agentBridge == nil || agentBridge?.isRunning != true {
             startAgentBridge()
         }
         guard let bridge = agentBridge else {
-            setStatus("本地桥未启动，无法打开 Web SSH")
+            setStatus("本地桥未启动，无法打开桥接镜像")
             return
         }
-        // 等监听就绪（start 异步）；最多 ~1.5s
+        // 绑定「当前原生会话」索引：Web 页轮询 /stream 读的就是它；无会话时仍可开空页。
+        let bindSession: Int? = sessions.isEmpty ? nil : {
+            // 若当前已是 Web 标签，绑到它镜像的前一个原生会话；否则绑 current
+            let cur = max(0, current)
+            if sessions.indices.contains(cur), sessions[cur].isWebSSH {
+                return sessions.enumerated().reversed().first(where: { !$0.element.isWebSSH })?.offset
+            }
+            return cur
+        }()
+
+        func tryOpen(attempt: Int) {
+            guard bridge.isRunning, let url = bridge.webSSHURL(session: bindSession) else {
+                if attempt >= 6 {
+                    setStatus("本地桥未就绪，稍后重试桥接镜像")
+                    return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    tryOpen(attempt: attempt + 1)
+                }
+                return
+            }
+            // 占位 TerminalView：Web 标签不渲染它，但 TermSession 构造仍要一份（与其它路径一致）
+            let dummy = TerminalView(frame: .zero)
+            dummy.terminalDelegate = self
+            let web = WebSSHView(frame: termContainer.bounds)
+            let host = Host.webSSHTerminal(sessionIndex: bindSession)
+            let sess = TermSession(host: host, termView: dummy, webSSHView: web)
+            sess.title = host.display
+            sessions.append(sess)
+            selectSession(sessions.count - 1)
+            web.load(url: url)
+            setStatus("已打开桥接镜像页 · 127.0.0.1:\(bridge.port)")
+            Log.info("桥接镜像 session=\(bindSession.map(String.init) ?? "-")", "webssh")
+        }
+        tryOpen(attempt: 0)
+    }
+
+    /// 兼容旧 selector 名：一律走应用内嵌。
+    @objc func openWebSSH() { openWebSSHEmbedded() }
+
+    /// 开发者/调试：在系统浏览器打开桥接页（**不**作为主入口；仅帮助菜单深处）。
+    @objc func openWebSSHInSystemBrowser() {
+        if agentBridge == nil || agentBridge?.isRunning != true {
+            startAgentBridge()
+        }
+        guard let bridge = agentBridge else {
+            setStatus("本地桥未启动")
+            return
+        }
         func tryOpen(attempt: Int) {
             if bridge.isRunning, let url = bridge.webSSHURL(session: sessions.isEmpty ? nil : max(0, current)) {
                 NSWorkspace.shared.open(url)
-                setStatus("已在浏览器打开 Web SSH · 127.0.0.1:\(bridge.port)")
-                Log.info("打开 Web SSH \(url.absoluteString.replacingOccurrences(of: bridge.currentToken, with: "***"))", "bridge")
+                setStatus("已在系统浏览器打开桥接页（调试）· :\(bridge.port)")
+                Log.info("调试外开桥接页 \(url.absoluteString.replacingOccurrences(of: bridge.currentToken, with: "***"))", "bridge")
                 return
             }
             if attempt >= 6 {
-                setStatus("本地桥未就绪，稍后重试 Web SSH")
+                setStatus("本地桥未就绪")
                 return
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {

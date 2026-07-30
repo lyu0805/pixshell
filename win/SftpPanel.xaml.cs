@@ -140,7 +140,9 @@ public partial class SftpPanel : UserControl
         OnPathChange?.Invoke("远端未连接");
     }
 
-    /// <summary>供 MainWindow 在切到「文件」tab 时调用：若尚未为当前会话建立 SFTP 连接则自动建立。</summary>
+    /// <summary>供 MainWindow 在切到「文件」tab 时调用：若尚未为当前会话建立 SFTP 连接则自动建立。
+    /// Batch 34：Connect + WorkingDirectory 下放到线程池，避免 UI 卡死（Win10 切文件 tab 卡顿）。</summary>
+    private int _connectGen;
     public void ConnectIfNeeded()
     {
         if (_sftp is { IsConnected: true }) return;
@@ -152,20 +154,39 @@ public partial class SftpPanel : UserControl
             StatusLabel.Text = "本机终端无 SFTP";
             return;
         }
-        try
+        var session = _session;
+        var gen = System.Threading.Interlocked.Increment(ref _connectGen);
+        OnPathChange?.Invoke("连接中…");
+        StatusLabel.Text = "SFTP 连接中…";
+        System.Threading.Tasks.Task.Run(() =>
         {
-            OnPathChange?.Invoke("连接中…");
-            _sftp = _session.CreateSftpClient();
-            _remoteDir = _sftp.WorkingDirectory;
-            BuildTreeRoot();
-            LoadRemoteDetail(_remoteDir);
-            StatusLabel.Text = "SFTP 已连接";
-        }
-        catch (Exception ex)
-        {
-            StatusLabel.Text = "SFTP 连接失败: " + ex.Message;
-            OnPathChange?.Invoke("远端未连接");
-        }
+            try
+            {
+                var client = session.CreateSftpClient();
+                var dir = client.WorkingDirectory;
+                Dispatcher.InvokeAsync(() =>
+                {
+                    if (gen != _connectGen) { try { client.Dispose(); } catch { } return; }
+                    if (!ReferenceEquals(_session, session)) { try { client.Dispose(); } catch { } return; }
+                    // 期间可能已连上
+                    if (_sftp is { IsConnected: true }) { try { client.Dispose(); } catch { } return; }
+                    _sftp = client;
+                    _remoteDir = dir;
+                    BuildTreeRoot();
+                    LoadRemoteDetail(_remoteDir);
+                    StatusLabel.Text = "SFTP 已连接";
+                });
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.InvokeAsync(() =>
+                {
+                    if (gen != _connectGen) return;
+                    StatusLabel.Text = "SFTP 连接失败: " + ex.Message;
+                    OnPathChange?.Invoke("远端未连接");
+                });
+            }
+        });
     }
 
     private void DisconnectSftp()
@@ -509,11 +530,18 @@ public partial class SftpPanel : UserControl
             return;
         }
         TryDelete(localArchive);
-        var dst = SftpTransfer.Quote(_remoteDir);
-        var arc = SftpTransfer.Quote(remoteArchive);
-        var outp = await ExecRunner($"tar -xzf {arc} -C {dst} 2>&1; rm -f {arc}");
-        StatusLabel.Text = string.IsNullOrWhiteSpace(outp) ? $"已上传并解压 {paths.Count} 项" : "远端解压: " + outp;
-        Log.Info("打包上传完成 → " + _remoteDir, "sftp");
+        var outp = await ExecRunner(SftpTransfer.ExtractCommand(remoteArchive, _remoteDir));
+        var (rc, msg) = SftpTransfer.ParseRemoteRC(outp ?? "");
+        if (rc != 0)
+        {
+            Log.Error($"远端解压失败 rc={rc}: {msg}", "sftp");
+            StatusLabel.Text = string.IsNullOrWhiteSpace(msg) ? $"远端解压失败 (rc={rc})" : "远端解压: " + msg;
+        }
+        else
+        {
+            StatusLabel.Text = $"已上传并解压 {paths.Count} 项";
+            Log.Info("打包上传完成 → " + _remoteDir, "sftp");
+        }
         LoadRemoteDetail(_remoteDir);
     }
 
@@ -587,6 +615,16 @@ public partial class SftpPanel : UserControl
         StatusLabel.Text = $"远端打包 {items.Count} 项 …";
         Log.Info("智能打包下载 " + string.Join(", ", paths), "sftp");
         var out1 = await ExecRunner(SftpTransfer.PackCommand(remoteArchive, paths));
+        var (packRc, packMsg) = SftpTransfer.ParseRemoteRC(out1 ?? "");
+        if (packRc != 0)
+        {
+            Log.Error($"远端打包失败 rc={packRc}: {packMsg}", "sftp");
+            StatusLabel.Text = string.IsNullOrWhiteSpace(packMsg)
+                ? $"远端打包失败 (rc={packRc})"
+                : "打包失败: " + packMsg;
+            _ = ExecRunner($"rm -f {SftpTransfer.Quote(remoteArchive)}");
+            return;
+        }
         StatusLabel.Text = "下载压缩包 …";
         try
         {

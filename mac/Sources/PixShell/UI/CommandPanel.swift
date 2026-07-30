@@ -93,11 +93,11 @@ final class CommandPanel: NSView {
         ])
 
         // ── 右栏：命令编辑器（可收起）──
-        collapseBtn = PillButton("⟩ 收起", style: .ghost, hPad: 8, height: 20,
+        collapseBtn = PillButton(L10n.t("cmd.collapse"), style: .ghost, hPad: 8, height: 20,
                                  target: self, action: #selector(toggleEditor))
         let edLabel = NSTextField(labelWithString: "命令编辑器")
         edLabel.font = Theme.ui(11, .medium); edLabel.textColor = Theme.muted
-        let optBtnTop = PillButton("选项", style: .ghost, hPad: 8, height: 20,
+        let optBtnTop = PillButton(L10n.t("cmd.options"), style: .ghost, hPad: 8, height: 20,
                                    font: Theme.ui(11), target: self, action: #selector(editorOptions))
         let edHead = NSStackView(views: [edLabel, NSView(), optBtnTop, collapseBtn])
         edHead.spacing = 8; edHead.alignment = .centerY
@@ -110,7 +110,7 @@ final class CommandPanel: NSView {
         edTargetPopup.translatesAutoresizingMaskIntoConstraints = false
         edTargetPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 160).isActive = true
         let edSendLab = small("发送到")
-        let edHist = PillButton("历史", style: .secondary, hPad: 12, height: 24, target: self, action: #selector(showHistory))
+        let edHist = PillButton(L10n.t("cmd.history"), style: .secondary, hPad: 12, height: 24, target: self, action: #selector(showHistory))
         let edSend = PillButton("发送", style: .primary, hPad: 14, height: 24,
                                 target: self, action: #selector(sendEditor))
         let edSendBar = NSStackView(views: [NSView(), edHist, edSendLab, edTargetPopup, edSend])
@@ -120,7 +120,7 @@ final class CommandPanel: NSView {
         // 收起态：占满窄栏的展开按钮（竖着的「‹ 编辑器」）
         expandStrip = PillButton("‹", style: .secondary, hPad: 2, height: 24,
                                  font: Theme.ui(11, .semibold), target: self, action: #selector(expandEditor))
-        expandStrip.toolTip = "展开命令编辑器"
+        expandStrip.toolTip = L10n.t("cmd.expand")
         expandStrip.isHidden = true
         expandStrip.translatesAutoresizingMaskIntoConstraints = false
 
@@ -193,8 +193,8 @@ final class CommandPanel: NSView {
         for p in [edTargetPopup] {
             let keep = p.indexOfSelectedItem
             p.removeAllItems()
-            p.addItem(withTitle: "当前会话")
-            p.addItem(withTitle: "所有已连接会话")
+            p.addItem(withTitle: L10n.t("cmd.current"))
+            p.addItem(withTitle: L10n.t("cmd.allConnected"))
             for s in (sessionsProvider?() ?? []) where s.connected {
                 p.addItem(withTitle: s.title)
             }
@@ -223,7 +223,7 @@ final class CommandPanel: NSView {
     /// 分类做成**文件夹样式**并自动换行（老仓库就是一排 📁 排满折行）
     private func reloadGroups() {
         var items: [NSView] = []
-        let all = folderChip("全部", key: "", on: selectedGroup == nil)
+        let all = folderChip(L10n.t("cmd.all"), key: "", on: selectedGroup == nil)
         items.append(all)
         for g in store.groups() {
             items.append(folderChip(g, key: g, on: selectedGroup == g))

@@ -10,6 +10,7 @@ namespace PixShell.UI;
 /// <summary>
 /// 服务器监控仪表盘侧栏（对齐 mac UI/MonitorSidebar.swift）。
 /// MainWindow 用一个 3 秒定时器执行 <see cref="MonitorCommand"/>，把输出交给 <see cref="Update"/> 解析展示。
+/// Batch 34：无 sleep 1（客户端 jiffies Δ）、SetConnected/列表 dirty-check、冻结 brush。
 /// </summary>
 public partial class MonitorSidebar : UserControl
 {
@@ -22,6 +23,40 @@ public partial class MonitorSidebar : UserControl
     private DateTime _lastNetAt;
     private bool _netInited;
     private string _lastNetIp = "";
+
+    // 连接态 dirty
+    private bool _connOn;
+    private string _connIp = "\0"; // sentinel ≠ any real ip on first call
+    private bool _connInited;
+
+    // 列表 dirty（字符串全等则跳过 Clear+重建）
+    private string _lastProcs = "\0";
+    private string _lastDisks = "\0";
+    private string _lastUptime = "\0";
+    private string _lastLoad = "\0";
+    private string _lastNetTitle = "\0";
+    private string _lastPingTitle = "\0";
+
+    // CPU jiffies 客户端差分（去掉远端 sleep 1）
+    private long _cpuIdlePrev = -1;
+    private long _cpuTotalPrev = -1;
+
+    // 冻结行背景 / 前景，避免每 tick new SolidColorBrush
+    private static readonly SolidColorBrush EvenRowBg;
+    private static readonly SolidColorBrush OddRowBg;
+    private static readonly SolidColorBrush MemFg;
+    private static readonly SolidColorBrush CpuFg;
+    private static readonly SolidColorBrush ConnOnBrush;
+    private static readonly SolidColorBrush ConnOffBrush;
+    static MonitorSidebar()
+    {
+        EvenRowBg = new SolidColorBrush(Color.FromArgb(12, 255, 255, 255)); EvenRowBg.Freeze();
+        OddRowBg = new SolidColorBrush(Color.FromArgb(0, 255, 255, 255)); OddRowBg.Freeze();
+        MemFg = new SolidColorBrush(Color.FromRgb(0x0A, 0x84, 0xFF)); MemFg.Freeze();
+        CpuFg = new SolidColorBrush(Color.FromRgb(0xFF, 0x45, 0x3A)); CpuFg.Freeze();
+        ConnOnBrush = new SolidColorBrush(Color.FromRgb(0x30, 0xD1, 0x58)); ConnOnBrush.Freeze();
+        ConnOffBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0x45, 0x3A)); ConnOffBrush.Freeze();
+    }
 
     public MonitorSidebar()
     {
@@ -48,8 +83,14 @@ public partial class MonitorSidebar : UserControl
 
     public void SetConnected(bool on, string ip)
     {
-        // 红绿灯：绿=已连接 / 红=已断开（原来断开是黄色，和"警告"混淆，改成红绿灯语义）
-        ConnDot.Fill = new SolidColorBrush(on ? Color.FromRgb(0x30, 0xD1, 0x58) : Color.FromRgb(0xFF, 0x45, 0x3A));
+        ip ??= "";
+        // 每 tick 调一次：无变化直接 return，避免刷 brush/Text
+        if (_connInited && on == _connOn && ip == _connIp) return;
+        _connInited = true;
+        _connOn = on;
+        _connIp = ip;
+
+        ConnDot.Fill = on ? ConnOnBrush : ConnOffBrush;
         ConnText.Text = on ? "已连接" : "已断开";
         ConnToggleBtn.Content = on ? "断开" : "连接";
         IpValue.Text = string.IsNullOrEmpty(ip) ? "-" : ip;
@@ -62,32 +103,77 @@ public partial class MonitorSidebar : UserControl
             _netInited = false;
             _lastRx = _lastTx = 0;
             _lastNetIp = "";
+            _lastProcs = _lastDisks = "\0";
+            _lastUptime = _lastLoad = "\0";
+            _lastNetTitle = _lastPingTitle = "\0";
+            _cpuIdlePrev = _cpuTotalPrev = -1;
+            NetSpark.Clear();
+            PingSpark.Clear();
         }
     }
 
     /// <summary>解析 KEY=value 文本(见 MonitorCommand 输出)并刷新各控件。</summary>
     public void Update(Dictionary<string, string> m)
     {
-        UptimeValue.Text = m.GetValueOrDefault("uptime", "-");
-        LoadValue.Text = m.GetValueOrDefault("load", "-");
-        CpuBar.SetValue(ParseDouble(m.GetValueOrDefault("cpu")), "");
+        var up = m.GetValueOrDefault("uptime", "-");
+        if (up != _lastUptime) { UptimeValue.Text = up; _lastUptime = up; }
+        var ld = m.GetValueOrDefault("load", "-");
+        if (ld != _lastLoad) { LoadValue.Text = ld; _lastLoad = ld; }
+
+        // CPU：优先客户端 jiffies 差分（无 sleep 1）；回落旧 cpu= 字段
+        double cpuPct;
+        if (long.TryParse(m.GetValueOrDefault("cpu_idle"), out var idle)
+            && long.TryParse(m.GetValueOrDefault("cpu_total"), out var total)
+            && total > 0)
+        {
+            if (_cpuIdlePrev >= 0 && _cpuTotalPrev >= 0 && total > _cpuTotalPrev)
+            {
+                var di = idle - _cpuIdlePrev;
+                var dt = total - _cpuTotalPrev;
+                cpuPct = dt > 0 ? Math.Max(0, Math.Min(100, 100.0 - di * 100.0 / dt)) : 0;
+            }
+            else
+            {
+                // 首拍无差分：用瞬时 idle 占比粗估，下一拍就准
+                cpuPct = Math.Max(0, Math.Min(100, 100.0 - idle * 100.0 / total));
+            }
+            _cpuIdlePrev = idle;
+            _cpuTotalPrev = total;
+        }
+        else
+        {
+            cpuPct = ParseDouble(m.GetValueOrDefault("cpu"));
+        }
+        CpuBar.SetValue(cpuPct, "");
+
         if (m.TryGetValue("mem", out var mem)) { var (p, s) = SplitPct(mem); MemBar.SetValue(p, s); }
         if (m.TryGetValue("swap", out var sw)) { var (p, s) = SplitPct(sw); SwapBar.SetValue(p, s); }
 
-        ProcBody.Children.Clear();
-        var procs = (m.GetValueOrDefault("procs") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries).Take(5).ToList();
-        for (int i = 0; i < procs.Count; i++)
+        // 进程/磁盘：字符串未变则跳过 Clear+重建（每 tick 最大 UI 成本）
+        var procsRaw = m.GetValueOrDefault("procs") ?? "";
+        if (procsRaw != _lastProcs)
         {
-            var f = procs[i].Split('|');
-            if (f.Length >= 3) ProcBody.Children.Add(ProcRow(f[0], f[1], f[2], i % 2 == 1));
+            _lastProcs = procsRaw;
+            ProcBody.Children.Clear();
+            var procs = procsRaw.Split(';', StringSplitOptions.RemoveEmptyEntries).Take(5).ToList();
+            for (int i = 0; i < procs.Count; i++)
+            {
+                var f = procs[i].Split('|');
+                if (f.Length >= 3) ProcBody.Children.Add(ProcRow(f[0], f[1], f[2], i % 2 == 1));
+            }
         }
 
-        DiskBody.Children.Clear();
-        var disks = (m.GetValueOrDefault("disks") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries).Take(6).ToList();
-        for (int i = 0; i < disks.Count; i++)
+        var disksRaw = m.GetValueOrDefault("disks") ?? "";
+        if (disksRaw != _lastDisks)
         {
-            var f = disks[i].Split('|');
-            if (f.Length >= 3) DiskBody.Children.Add(DiskRow(f[0], $"{f[1]}/{f[2]}", i % 2 == 1));
+            _lastDisks = disksRaw;
+            DiskBody.Children.Clear();
+            var disks = disksRaw.Split(';', StringSplitOptions.RemoveEmptyEntries).Take(6).ToList();
+            for (int i = 0; i < disks.Count; i++)
+            {
+                var f = disks[i].Split('|');
+                if (f.Length >= 3) DiskBody.Children.Add(DiskRow(f[0], $"{f[1]}/{f[2]}", i % 2 == 1));
+            }
         }
 
         // 网络：iface + 实时上下行。netrx/nettx 为 /proc/net/dev 累计字节，速率 = Δbytes/Δt。
@@ -103,7 +189,7 @@ public partial class MonitorSidebar : UserControl
         if (!hasRx || !hasTx)
         {
             // 兼容旧脚本只吐 netval（累计和）的情况：无法拆上下行，只推火花线。
-            NetTitle.Text = iface;
+            if (iface != _lastNetTitle) { NetTitle.Text = iface; _lastNetTitle = iface; }
             if (double.TryParse(m.GetValueOrDefault("netval"), out var nvLegacy)) NetSpark.Push(nvLegacy);
         }
         else
@@ -120,21 +206,24 @@ public partial class MonitorSidebar : UserControl
                 }
             }
             _lastRx = rx; _lastTx = tx; _lastNetAt = now; _netInited = true;
-            NetTitle.Text = $"{iface}  ↑ {FormatRate(txRate)}  ↓ {FormatRate(rxRate)}";
+            var nt = $"{iface}  ↑ {FormatRate(txRate)}  ↓ {FormatRate(rxRate)}";
+            if (nt != _lastNetTitle) { NetTitle.Text = nt; _lastNetTitle = nt; }
             NetSpark.Push(rxRate + txRate);
         }
 
-        // 延迟：网关 ping。此前"延迟"整块是死的——标题写死"网关"两个字，PushPing 也从没人调用，
-        // 火花线永远空白。现在监控命令里带回 pinghost/pingms，这里直接消费（与 mac 同一份数据口径）。
+        // 延迟：网关 ping
         var gw = m.GetValueOrDefault("pinghost", "");
+        string pt;
         if (double.TryParse(m.GetValueOrDefault("pingms"), out var ms))
         {
-            PingTitle.Text = string.IsNullOrEmpty(gw) ? $"网关 {ms:F1} ms" : $"网关 {gw} · {ms:F1} ms";
+            pt = string.IsNullOrEmpty(gw) ? $"网关 {ms:F1} ms" : $"网关 {gw} · {ms:F1} ms";
+            if (pt != _lastPingTitle) { PingTitle.Text = pt; _lastPingTitle = pt; }
             PingSpark.Push(ms);
         }
         else
         {
-            PingTitle.Text = string.IsNullOrEmpty(gw) ? "网关 -" : $"网关 {gw} · 超时";
+            pt = string.IsNullOrEmpty(gw) ? "网关 -" : $"网关 {gw} · 超时";
+            if (pt != _lastPingTitle) { PingTitle.Text = pt; _lastPingTitle = pt; }
         }
     }
 
@@ -162,13 +251,13 @@ public partial class MonitorSidebar : UserControl
 
     private static UIElement ProcRow(string mem, string cpu, string cmd, bool even)
     {
-        var row = new Grid { Height = 17, Background = new SolidColorBrush(Color.FromArgb((byte)(even ? 12 : 0), 255, 255, 255)) };
+        var row = new Grid { Height = 17, Background = even ? EvenRowBg : OddRowBg };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(52) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(42) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var mono = (FontFamily)Application.Current.Resources["FontMono"];
-        var memT = new TextBlock { Text = mem, FontSize = 10, FontFamily = mono, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Foreground = new SolidColorBrush(Color.FromRgb(0x0A, 0x84, 0xFF)) };
-        var cpuT = new TextBlock { Text = cpu, FontSize = 10, FontFamily = mono, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x45, 0x3A)) };
+        var memT = new TextBlock { Text = mem, FontSize = 10, FontFamily = mono, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Foreground = MemFg };
+        var cpuT = new TextBlock { Text = cpu, FontSize = 10, FontFamily = mono, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Foreground = CpuFg };
         Grid.SetColumn(cpuT, 1);
         var cmdT = new TextBlock { Text = cmd, FontSize = 10, FontFamily = mono, Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = (Brush)Application.Current.Resources["BrushText"] };
         Grid.SetColumn(cmdT, 2);
@@ -178,7 +267,7 @@ public partial class MonitorSidebar : UserControl
 
     private static UIElement DiskRow(string path, string sizeInfo, bool even)
     {
-        var row = new Grid { Height = 17, Background = new SolidColorBrush(Color.FromArgb((byte)(even ? 12 : 0), 255, 255, 255)) };
+        var row = new Grid { Height = 17, Background = even ? EvenRowBg : OddRowBg };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(82) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var mono = (FontFamily)Application.Current.Resources["FontMono"];
@@ -190,14 +279,13 @@ public partial class MonitorSidebar : UserControl
         return row;
     }
 
-    // Linux 监控一行命令：与 mac AppDelegate+Sessions.swift 的 monitorCommand 完全一致，
-    // 输出 KEY=value，保证两端行为一致。
+    // Linux 监控一行命令：去掉 sleep 1，吐 cpu_idle/cpu_total 供客户端差分（~1s 墙钟/次 → ~几十 ms）。
+    // 仍保留 cpu= 瞬时估算兼容旧解析。
     public const string MonitorCommand = @"
 echo ===mon===
 awk '{printf ""uptime=%dd%dh%dm\n"",$1/86400,($1%86400)/3600,($1%3600)/60}' /proc/uptime 2>/dev/null
 echo ""load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null | tr ' ' ',')""
-c1=$(awk '/^cpu /{i=$5;t=0;for(x=2;x<=NF;x++)t+=$x;print i,t}' /proc/stat 2>/dev/null); sleep 1; c2=$(awk '/^cpu /{i=$5;t=0;for(x=2;x<=NF;x++)t+=$x;print i,t}' /proc/stat 2>/dev/null)
-echo ""cpu=$(echo ""$c1 $c2"" | awk '{di=$3-$1;dt=$4-$2; if(dt>0)printf ""%.0f"",100-di*100/dt; else printf ""0""}')""
+awk '/^cpu /{i=$5;t=0;for(x=2;x<=NF;x++)t+=$x; printf ""cpu_idle=%d\ncpu_total=%d\n"",i,t; if(t>0)printf ""cpu=%.0f\n"",100-i*100/t; else print ""cpu=0""}' /proc/stat 2>/dev/null
 free -m 2>/dev/null | awk '/^Mem:/{printf ""mem=%.0f|%.1fG/%.1fG\n"",$3*100/$2,$3/1024,$2/1024}'
 free -m 2>/dev/null | awk '/^Swap:/{if($2>0)printf ""swap=%.0f|%.1fG/%.1fG\n"",$3*100/$2,$3/1024,$2/1024; else printf ""swap=0|0/0\n""}'
 printf ""disks=""; df -h 2>/dev/null | awk '$1 ~ /^\/dev/{printf ""%s|%s|%s;"",$6,$4,$2}'; echo

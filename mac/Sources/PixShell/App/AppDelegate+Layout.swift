@@ -330,8 +330,8 @@ extension AppDelegate {
         let addBtn = IconButton(symbol: "plus.app", tooltip: "新建连接", target: self, action: #selector(addHost))
 
         // 会话 tab 条
-        // 标签栏用 FlowView：一行放不下就折到第二行（对齐 FinalShell 的双行标签），
-        // 而不是把标签越挤越窄到看不清字。超过 2 行的部分靠外层滚动。
+        // 标签栏用 FlowView：一行放不下就折到第二行，而不是把标签越挤越窄到看不清字。
+        // 超过 2 行的部分靠外层滚动。
         tabBar = FlowView()
         tabBar.hGap = 6
         tabBar.vGap = 4
@@ -837,7 +837,7 @@ extension AppDelegate {
         let gh = GitHubMarkButton()
         gh.target = self; gh.action = #selector(menuRepo)
         let brand = NSTextField(labelWithString: "PixShell"); brand.font = Theme.ui(12, .bold); brand.textColor = Theme.text
-        let ver = NSTextField(labelWithString: "v0.1.2"); ver.font = Theme.ui(11); ver.textColor = Theme.muted
+        let ver = NSTextField(labelWithString: "v0.1.3"); ver.font = Theme.ui(11); ver.textColor = Theme.muted
         statusDot = Dot(Theme.warn, size: 8)
         statusLabel = NSTextField(labelWithString: "CLI 未开启"); statusLabel.font = Theme.ui(11); statusLabel.textColor = Theme.muted
         let leftStack = NSStackView(views: [gh, brand, ver, statusDot, statusLabel])
@@ -937,7 +937,6 @@ extension AppDelegate {
         m.addItem(sub("AI 对接", [
             ("接入 AI 工具…", #selector(openAIIntegration)),
             ("一键注册 AI 默认 SSH…", #selector(openAiSshBridge)),
-            ("Web SSH 网页终端…", #selector(openWebSSH)),
             (nil, nil),
             ("复制 CLI 用法", #selector(copyCLIUsage)),
             ("复制 MCP 注册命令", #selector(copyMCPRegister)),
@@ -946,7 +945,8 @@ extension AppDelegate {
             ("打开 CLI 脚本目录", #selector(openCLIBinDir)),
             ("重新安装 CLI / MCP", #selector(reinstallCLIBridge)),
         ]))
-        m.addItem(item("在浏览器中打开 Web SSH", #selector(openWebSSH)))
+        // Web 主路径：新建连接 → 类型 Web；此处仅调试入口
+        m.addItem(item("打开桥接镜像页（调试）…", #selector(openWebSSHEmbedded)))
         m.addItem(sub("云端同步", [
             ("备份选项配置…", #selector(openBackup)),
             (nil, nil),
@@ -961,7 +961,8 @@ extension AppDelegate {
             ("关于 PixShell", #selector(menuAbout)),
             ("接入 AI 工具…", #selector(openAIIntegration)),
             ("一键注册 AI 默认 SSH…", #selector(openAiSshBridge)),
-            ("Web SSH 网页终端…", #selector(openWebSSH)),
+            ("打开桥接镜像页（调试）…", #selector(openWebSSHEmbedded)),
+            ("在系统浏览器打开桥接页…", #selector(openWebSSHInSystemBrowser)),
             ("项目仓库", #selector(menuRepo)),
         ]))
         if let btn = menuBtn { m.popUp(positioning: nil, at: NSPoint(x: 0, y: btn.bounds.height + 4), in: btn) }

@@ -444,25 +444,25 @@ public partial class EditorWindow : Window
         Log.Info($"保存编辑器内容 {_filePath}（{text.Length} 字符）", "editor");
         if (OnSave == null)
         {
-            _isDirty = false;
-            DirtyText.Visibility = Visibility.Collapsed;
-            onSuccess?.Invoke();
+            // 对齐未接：对齐 mac（onSave==nil 直接 return）——不清脏、不关，避免静默丢改
+            SetSaveStatus(L10n.T("editor.saveFailed") + "：no OnSave", ok: false);
+            Log.Warn($"保存回调未接线 {_filePath}", "editor");
             return;
         }
-        SetSaveStatus("保存中…", ok: null);
+        SetSaveStatus(L10n.T("editor.saving"), ok: null);
         OnSave.Invoke(text, err => Dispatcher.Invoke(() =>
         {
             if (err == null)
             {
                 _isDirty = false;
                 DirtyText.Visibility = Visibility.Collapsed;
-                SetSaveStatus($"已保存 {DateTime.Now:HH:mm:ss}", ok: true);
+                SetSaveStatus($"{L10n.T("editor.saved")} {DateTime.Now:HH:mm:ss}", ok: true);
                 Log.Info($"保存成功 {_filePath}", "editor");
                 onSuccess?.Invoke();
             }
             else
             {
-                SetSaveStatus("保存失败：" + err, ok: false);   // 保留脏标记，不关闭
+                SetSaveStatus(L10n.T("editor.saveFailed") + "：" + err, ok: false);   // 保留脏标记，不关闭
                 Log.Error($"保存失败 {_filePath}: {err}", "editor");
             }
         }));
@@ -484,7 +484,7 @@ public partial class EditorWindow : Window
     {
         if (!_isDirty) { Close(); return; }
         var name = System.IO.Path.GetFileName(_filePath);
-        var result = MessageBox.Show(this, $"是否保存对“{name}”的更改？", "文件已修改",
+        var result = MessageBox.Show(this, string.Format(L10n.T("editor.modifiedBody"), name), L10n.T("editor.modifiedTitle"),
             MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
         switch (result)
         {

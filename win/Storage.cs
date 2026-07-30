@@ -31,9 +31,16 @@ public class HostEntry
     /// 对齐 mac Host.proxyId。</summary>
     public string ProxyId { get; set; } = "";
 
-    /// <summary>连接类型：100 = SSH（默认），200 = RDP，300 = 本机终端（应用内本地 shell）。
-    /// 对齐 mac Host.connectionType。RDP 拉 mstsc；本机终端走 TerminalSession.ConnectLocalAsync，不弹 wt/cmd。</summary>
+    /// <summary>连接类型：100 = SSH（默认），200 = RDP，300 = 本机终端，
+    /// 400 = Web（新建连接可选）。两种形态（对齐 mac）：
+    ///   1) WebUrl 非空（或 Host 本身是 http(s)）→ 应用内 WebView2 直接打开该页（noVNC / 面板）
+    ///   2) 否则 → 本地桥 /webssh?host_id=，底层仍是 SSH PTY
+    /// **禁止**外开系统浏览器。主入口是「新建连接 → Web」。</summary>
     public int ConnectionType { get; set; } = 100;
+
+    /// <summary>Web 外部页 URL（http/https）。空 = 走本地桥 WebSSH；有值 = 应用内 WebView2 直接 Navigate。
+    /// 也兼容把完整 URL 写在 Host 字段（保存时会规范化进 WebUrl）。旧 hosts.json 无此字段时默认 ""。</summary>
+    public string WebUrl { get; set; } = "";
 
     /// <summary>RDP 主机（Windows 远程桌面）。</summary>
     [System.Text.Json.Serialization.JsonIgnore]
@@ -43,16 +50,71 @@ public class HostEntry
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsLocal => ConnectionType == 300;
 
+    /// <summary>Web 连接（应用内 WebView2：外部 URL 或本地桥 /webssh）。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsWebSsh => ConnectionType == 400;
+
+    /// <summary>解析后的外部 Web URL（优先 WebUrl，其次 Host 字段里的 http(s)）。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Uri? ResolvedWebUrl
+    {
+        get
+        {
+            foreach (var raw in new[] { WebUrl, Host })
+            {
+                var t = (raw ?? "").Trim();
+                if (t.Length == 0) continue;
+                if (Uri.TryCreate(t, UriKind.Absolute, out var u)
+                    && (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps)
+                    && !string.IsNullOrEmpty(u.Host))
+                    return u;
+            }
+            return null;
+        }
+    }
+
+    /// <summary>Web 是否走外部页（noVNC 等），而非本地桥 SSH 终端。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsExternalWeb => IsWebSsh && ResolvedWebUrl != null;
+
     public override string ToString() =>
         string.IsNullOrWhiteSpace(Name) ? $"{Username}@{Host}" : Name;
 
-    /// <summary>卡片标题：优先显示名称，否则 user@host（对齐 mac Host.display）。</summary>
-    public string Display => string.IsNullOrWhiteSpace(Name) ? $"{Username}@{Host}" : Name;
+    /// <summary>卡片标题：优先显示名称；Web 外部页回落 host；否则 user@host。</summary>
+    public string Display
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(Name)) return Name;
+            if (ResolvedWebUrl is Uri u) return string.IsNullOrEmpty(u.Host) ? u.AbsoluteUri : u.Host;
+            return $"{Username}@{Host}";
+        }
+    }
 
-    /// <summary>卡片副标题：user@host:port；本机终端显示 user@local。</summary>
-    public string Subtitle => IsLocal
-        ? (string.IsNullOrWhiteSpace(Username) ? "local" : $"{Username}@local")
-        : $"{Username}@{Host}:{Port}";
+    /// <summary>卡片副标题：user@host:port；本机终端 user@local；
+    /// Web 外部页 web · host/path；本地桥 WebSSH 显示目标或 127.0.0.1。</summary>
+    public string Subtitle
+    {
+        get
+        {
+            if (IsLocal)
+                return string.IsNullOrWhiteSpace(Username) ? "local" : $"{Username}@local";
+            if (IsWebSsh)
+            {
+                if (ResolvedWebUrl is Uri u)
+                {
+                    var path = u.AbsolutePath;
+                    if (!string.IsNullOrEmpty(path) && path != "/")
+                        return $"web · {u.Host}{path}";
+                    return $"web · {u.AbsoluteUri}";
+                }
+                if (string.IsNullOrWhiteSpace(Host) || Host == "127.0.0.1")
+                    return "web · 127.0.0.1";
+                return $"web · {Username}@{Host}:{Port}";
+            }
+            return $"{Username}@{Host}:{Port}";
+        }
+    }
 
     /// <summary>快速连接 logo 打开的本机终端主机（不进 hosts.json）。</summary>
     public static HostEntry LocalTerminal() => new()
@@ -65,6 +127,19 @@ public class HostEntry
         Group = "",
         OsId = "windows",
         ConnectionType = 300,
+    };
+
+    /// <summary>应用内 Web 终端主机（不进 hosts.json；仅作标签元数据）。</summary>
+    public static HostEntry WebSshTerminal(int? sessionIndex) => new()
+    {
+        Id = "webssh-" + Guid.NewGuid().ToString("N"),
+        Name = sessionIndex is int i ? $"Web 终端 · 会话 {i + 1}" : "Web 终端",
+        Host = "127.0.0.1",
+        Port = 0,
+        Username = "web",
+        Group = "",
+        OsId = "web",
+        ConnectionType = 400,
     };
 }
 

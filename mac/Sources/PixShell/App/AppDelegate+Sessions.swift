@@ -17,6 +17,8 @@ extension AppDelegate {
         if host.isLocal { openLocalTerminal(host: host); return }
         // RDP 类型不走 SSH：直接拉起系统远程桌面客户端（对齐老仓库 app.js connectionType===200 分支）。
         if host.isRdp { launchRdp(host); return }
+        // Web 连接：和 SSH 同一入口（侧栏/连接管理器/快速连接），开应用内 Web 终端标签。
+        if host.isWebSSH { openWebHostSession(host: host); return }
         if let envPass = ProcessInfo.processInfo.environment["PIXSHELL_PASS"], !envPass.isEmpty {
             beginSession(to: host, password: envPass); return
         }
@@ -33,6 +35,95 @@ extension AppDelegate {
             if remember { Keychain.setPassword(pw, for: host.id, label: host.host.isEmpty ? host.name : host.host) }
             self.beginSession(to: host, password: pw)
         }
+    }
+
+    /// Web 主机：开应用内 WKWebView 标签。
+    /// - 外部 URL（webUrl / host 为 http(s)，如 noVNC `…/vnc`）→ 直接 Navigate，不经本地桥、不弹 SSH 密码
+    /// - 否则 → 本地桥 `/webssh?host_id=`；先确保密码/私钥可用，页面再 connect 建底层 SSH
+    /// **禁止** NSWorkspace 外开系统浏览器。
+    func openWebHostSession(host: Host) {
+        // 外部 Web/VNC：无 SSH 凭据闸门，直接开页
+        if host.isExternalWeb {
+            openWebHostSessionReady(host: host, externalURL: host.resolvedWebURL)
+            return
+        }
+        // 本地桥 WebSSH：凭据闸门对齐 SSH
+        if let envPass = ProcessInfo.processInfo.environment["PIXSHELL_PASS"], !envPass.isEmpty {
+            Keychain.setPassword(envPass, for: host.id, label: host.host.isEmpty ? host.name : host.host)
+            openWebHostSessionReady(host: host, externalURL: nil)
+            return
+        }
+        if let stored = Keychain.password(for: host.id), !stored.isEmpty {
+            openWebHostSessionReady(host: host, externalURL: nil)
+            return
+        }
+        if !host.keyPath.isEmpty {
+            openWebHostSessionReady(host: host, externalURL: nil)
+            return
+        }
+        promptPassword(for: host, prefill: "") { [weak self] pw, remember in
+            guard let self = self, let pw = pw, !pw.isEmpty else { return }
+            // 桥 connect 只读 Keychain；本次即使不「记住」也要写一次，否则页面 connect 401
+            Keychain.setPassword(pw, for: host.id, label: host.host.isEmpty ? host.name : host.host)
+            self.openWebHostSessionReady(host: host, externalURL: nil)
+        }
+    }
+
+    /// 真正开 Web 标签。`externalURL != nil` 时直接加载该页（允许同站跳转）；否则走本地桥。
+    private func openWebHostSessionReady(host: Host, externalURL: URL?) {
+        store.noteRecent(host.id)
+
+        if let external = externalURL {
+            let dummy = TerminalView(frame: .zero)
+            dummy.terminalDelegate = self
+            let web = WebSSHView(frame: termContainer.bounds)
+            // 外部页：放行同 host 导航（登录跳转 / noVNC 资源），仍禁止外开系统浏览器
+            web.allowExternalHosts = true
+            web.allowedHost = external.host
+            let sess = TermSession(host: host, termView: dummy, webSSHView: web)
+            sess.title = host.display
+            sess.connected = true
+            sessions.append(sess)
+            selectSession(sessions.count - 1)
+            web.load(url: external)
+            setStatus("已打开 Web · \(host.subtitle)")
+            Log.info("Web 外部页 host_id=\(host.id) \(external.absoluteString)", "webssh")
+            return
+        }
+
+        if agentBridge == nil || agentBridge?.isRunning != true {
+            startAgentBridge()
+        }
+        guard let bridge = agentBridge else {
+            setStatus("本地桥未启动，无法打开 Web 连接")
+            return
+        }
+        func tryOpen(attempt: Int) {
+            guard bridge.isRunning, let url = bridge.webSSHURL(hostId: host.id) else {
+                if attempt >= 8 {
+                    setStatus("本地桥未就绪，稍后重试 Web 连接")
+                    return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    tryOpen(attempt: attempt + 1)
+                }
+                return
+            }
+            let dummy = TerminalView(frame: .zero)
+            dummy.terminalDelegate = self
+            let web = WebSSHView(frame: termContainer.bounds)
+            // 本地桥：仅回环
+            web.allowExternalHosts = false
+            let sess = TermSession(host: host, termView: dummy, webSSHView: web)
+            sess.title = host.display
+            sess.connected = true   // Web 标签本身已挂上；底层 SSH 由页面 host_id 拉起
+            sessions.append(sess)
+            selectSession(sessions.count - 1)
+            web.load(url: url)
+            setStatus("已连接 Web · \(host.subtitle)")
+            Log.info("Web 连接 host_id=\(host.id) \(host.subtitle)", "webssh")
+        }
+        tryOpen(attempt: 0)
     }
 
     /// RDP 主机：拉起 macOS 系统远程桌面（rdp:// 由「Microsoft 远程桌面」注册处理）。
@@ -261,11 +352,23 @@ extension AppDelegate {
     func reconnectCurrent() {
         guard sessions.indices.contains(current) else { return }
         let sess = sessions[current]
+        // 应用内 Web 终端：只 reload WKWebView，不建 SSH
+        if sess.isWebSSH {
+            sess.webSSHView?.reload()
+            setStatus("Web 终端已刷新")
+            return
+        }
         // 先摘掉 ssh 引用再关：这样旧连接回调走 session(forSSH:) 查不到会话，
         // 不会把"主动断开"当成异常关闭去刷终端/弹框。
         let old = sess.ssh
         sess.ssh = nil
         old?.close()
+        // 用户显式重连 = 新生命周期：允许再走 NIO，也允许再回落一次 OpenSSH。
+        // 否则首次局域网失败后 triedOpenSSHFallback/closeHandled 会把后续重连钉死。
+        sess.triedOpenSSHFallback = false
+        sess.closeHandled = false
+        sess.connected = false
+        sess.shellOpened = false
 
         if sess.host.isLocal {
             startLocalShell(for: sess)
@@ -296,7 +399,7 @@ extension AppDelegate {
         alert.addButton(withTitle: "取消")
         let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = prefill
-        let remember = NSButton(checkboxWithTitle: "记住密码（存入钥匙串）", target: nil, action: nil)
+        let remember = NSButton(checkboxWithTitle: "记住密码（本地加密存储）", target: nil, action: nil)
         remember.state = .on
         let stack = NSStackView(views: [field, remember])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
@@ -374,20 +477,31 @@ extension AppDelegate {
         transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         termContainer.layer?.add(transition, forKey: "sessionSwitch")
 
-        let tv = sessions[i].termView
-        tv.frame = termContainer.bounds; tv.autoresizingMask = [.width, .height]
-        termContainer.addSubview(tv)
-        window.makeFirstResponder(tv); window.title = sessions[i].title
+        // Web SSH 标签用 WKWebView；普通会话用 SwiftTerm
+        let content = sessions[i].contentView
+        content.frame = termContainer.bounds
+        content.autoresizingMask = [.width, .height]
+        termContainer.addSubview(content)
+        window.makeFirstResponder(content)
+        window.title = sessions[i].title
         rebuildTabs()
         if sessions[i].connected { expandChrome() }   // 切到已连接会话 → 展开 chrome
-        if let sp = sftpPanel, !sp.isHidden { connectSFTPToActive() }
-        if sessions[i].ssh != nil { startMonitor(for: sessions[i]) } else { stopMonitor() }
+        // Web SSH 标签不挂 SFTP / 监控（它只是当前会话的网页镜像视图）
+        if sessions[i].isWebSSH {
+            stopMonitor()
+        } else {
+            if let sp = sftpPanel, !sp.isHidden { connectSFTPToActive() }
+            if sessions[i].ssh != nil { startMonitor(for: sessions[i]) } else { stopMonitor() }
+        }
     }
 
     func closeSession(_ i: Int) {
         guard i >= 0, i < sessions.count else { return }
         let wasActive = i == current
-        sessions[i].ssh?.close(); sessions[i].termView.removeFromSuperview(); sessions.remove(at: i)
+        sessions[i].ssh?.close()
+        sessions[i].contentView.removeFromSuperview()
+        sessions[i].webSSHView = nil
+        sessions.remove(at: i)
         if sessions.isEmpty {
             current = -1
             clearSessionSidePanels()   // P1：关最后标签 → 清 SFTP + 系统信息
@@ -477,13 +591,19 @@ extension AppDelegate {
     @objc func tabMenuDuplicate(_ s: NSMenuItem) {
         guard sessions.indices.contains(s.tag) else { return }
         let sess = sessions[s.tag]
+        // Web 主机：再走一遍 openSession（和 SSH 同路径），不要退回菜单硬开空标签
+        if sess.isWebSSH { openSession(to: sess.host); return }
         if let pw = sess.password, !pw.isEmpty { beginSession(to: sess.host, password: pw) }
         else { openSession(to: sess.host) }
     }
     @objc func tabMenuCloseOthers(_ s: NSMenuItem) {
         guard sessions.indices.contains(s.tag) else { return }
         let keep = sessions[s.tag]
-        for sess in sessions where sess !== keep { sess.ssh?.close(); sess.termView.removeFromSuperview() }
+        for sess in sessions where sess !== keep {
+            sess.ssh?.close()
+            sess.contentView.removeFromSuperview()
+            sess.webSSHView = nil
+        }
         sessions = [keep]
         selectSession(0)
     }
@@ -707,6 +827,8 @@ extension AppDelegate {
                     let detail: String
                     if LocalNetworkAuth.looksLikeLocalNetworkBlock(error) {
                         detail = "无法到达主机 (\(endpoint)) - 请检查网络连通性或本地网络权限"
+                        // 静默 re-probe（身份变/重装后 TCC 丢）；不弹 sheet
+                        LocalNetworkAuth.reprobeOnLikelyBlock()
                     } else {
                         detail = error?.localizedDescription ?? "网络不可达 (\(endpoint))"
                     }
@@ -723,10 +845,27 @@ extension AppDelegate {
                 // P0：网络/超时/DNS/代理失败 —— 保留 Keychain，禁止当认证失败清密码。
                 // 禁止自动 presentGrantHelp：errno 65 / No route 常见于主机离线、Wi‑Fi 掉线，
                 // 自动 sheet 会反复挡屏。本地网络授权仅由启动 NWBrowser + 帮助菜单手动触发。
+                //
+                // 关键：NIO 被本地网络 TCC 打成 errno 65 时，系统 /usr/bin/ssh 常仍可通
+                // （独立代码身份）。先静默回落 OpenSSH 一次，避免「第一次失败后永远连不上」。
+                if LocalNetworkAuth.looksLikeLocalNetworkBlock(error), !sess.triedOpenSSHFallback {
+                    sess.triedOpenSSHFallback = true
+                    LocalNetworkAuth.reprobeOnLikelyBlock()
+                    Log.warn("NIO 疑似本地网络拦截，改用系统 ssh 重连 \(sess.host.subtitle)", "ssh")
+                    let pw = sess.password ?? Keychain.password(for: sess.host.id) ?? ""
+                    // 允许下一次 didClose 再处理（本轮交给 OpenSSH）
+                    sess.closeHandled = false
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
+                        self.startSSH(for: sess, password: pw, forceOpenSSH: true)
+                    }
+                    return
+                }
                 let endpoint = "\(sess.host.host):\(sess.host.port)"
                 let detail: String
                 if LocalNetworkAuth.looksLikeLocalNetworkBlock(error) {
-                    detail = "无法到达主机 (\(endpoint)) - 请检查网络连通性或本地网络权限"
+                    detail = "无法到达主机 (\(endpoint)) - 请检查网络连通性或本地网络权限（帮助 → 授权本地网络…）"
+                    LocalNetworkAuth.reprobeOnLikelyBlock()
                 } else {
                     detail = error?.localizedDescription ?? "网络不可达 (\(endpoint))"
                 }

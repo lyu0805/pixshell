@@ -56,7 +56,14 @@ extension AppDelegate: BridgeHost {
             completion(.failure(NSError(domain: "PixShell", code: 401,
                 userInfo: [NSLocalizedDescriptionKey: "该主机没有保存的密码或私钥，请先在界面里连接一次"]))); return
         }
-        beginSession(to: h, password: pw)
+        // Web 主机（type 400）底层仍走 SSH PTY；剥掉 Web 标记，避免 SSH 标签被当成 Web 视图。
+        var connectHost = h
+        if connectHost.isWebSSH { connectHost.connectionType = 100 }
+        if connectHost.isRdp || connectHost.isLocal {
+            completion(.failure(NSError(domain: "PixShell", code: 400,
+                userInfo: [NSLocalizedDescriptionKey: "RDP/本机终端不能经 Web 桥连接"]))); return
+        }
+        beginSession(to: connectHost, password: pw)
         let idx = sessions.count - 1
         // 等 shell 真正打开再回，最多 20s
         var waited = 0.0

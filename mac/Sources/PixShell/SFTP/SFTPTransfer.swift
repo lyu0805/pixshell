@@ -41,7 +41,8 @@ enum SFTPTransfer {
         return "tar -xzf \(arc) -C \(dst) 2>&1; rc=$?; rm -f \(arc); echo __PIXSHELL_RC:$rc"
     }
 
-    /// 解析 `ssh.exec` 输出里的 `__PIXSHELL_RC:N`；无标记时按「有/无 stderr 风格输出」兜底。
+    /// 解析 `ssh.exec` 输出里的 `__PIXSHELL_RC:N`。
+    /// 打包/解压**必须**有标记：空输出或无标记一律失败（旧「空=成功」会把未执行的 extract 当绿）。
     static func parseRemoteRC(_ out: String) -> (code: Int, message: String) {
         let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
         if let range = trimmed.range(of: #"__PIXSHELL_RC:(-?\d+)\s*$"#, options: .regularExpression) {
@@ -52,8 +53,11 @@ enum SFTPTransfer {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return (Int(num) ?? 1, String(msg))
         }
-        // 兼容旧命令（无 RC 标记）：空输出当成功
-        return (trimmed.isEmpty ? 0 : 1, trimmed)
+        // 无标记：空（exec 失败/超时）与有文本都当失败
+        if trimmed.isEmpty {
+            return (1, "远端无 __PIXSHELL_RC 回执（命令未执行或通道失败）")
+        }
+        return (1, trimmed)
     }
 
     /// 本地解压到目标目录（返回错误描述，nil 表示成功）

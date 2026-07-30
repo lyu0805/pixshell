@@ -1,53 +1,91 @@
-using System.Collections.Generic;
-using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Shapes;
 
 namespace PixShell.UI;
 
+/// <summary>
+/// 迷你折线：环形缓冲 + 复用 PointCollection，避免每 3s new 分配（Win10 监控侧栏 jank）。
+/// </summary>
 public partial class Sparkline : UserControl
 {
-    private readonly List<double> _values = new();
-    private const int MaxPoints = 60;
+    private const int Cap = 60;
+    private readonly double[] _ring = new double[Cap];
+    private int _count;
+    private int _head; // next write index
+    private readonly PointCollection _pts = new();
 
     public Sparkline()
     {
         InitializeComponent();
-        Line.Stroke = new SolidColorBrush(Color.FromRgb(0x0A, 0x84, 0xFF));
     }
 
-    /// <summary>线条颜色（网络=绿色，延迟=accent 蓝，对齐 mac 构造参数）。</summary>
-    public void SetColor(Color c) => Line.Stroke = new SolidColorBrush(c);
+    public void SetColor(Color c)
+    {
+        var br = new SolidColorBrush(c);
+        br.Freeze();
+        Line.Stroke = br;
+    }
 
     public void Push(double v)
     {
-        _values.Add(v);
-        if (_values.Count > MaxPoints) _values.RemoveAt(0);
+        _ring[_head] = v;
+        _head = (_head + 1) % Cap;
+        if (_count < Cap) _count++;
         Redraw();
     }
 
-    private void Root_SizeChanged(object sender, SizeChangedEventArgs e) => Redraw();
+    public void Clear()
+    {
+        _count = 0;
+        _head = 0;
+        _pts.Clear();
+        Line.Points = _pts;
+    }
+
+    private void Root_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (_count >= 2) Redraw();
+    }
 
     private void Redraw()
     {
-        if (_values.Count < 2 || Root.ActualWidth <= 0 || Root.ActualHeight <= 0)
+        if (_count < 2 || ActualWidth < 4 || ActualHeight < 4)
         {
-            Line.Points = null;
+            if (_pts.Count > 0)
+            {
+                _pts.Clear();
+                Line.Points = _pts;
+            }
             return;
         }
-        var mn = _values.Min();
-        var mx = _values.Max();
-        var span = System.Math.Max(mx - mn, 1);
-        var w = Root.ActualWidth;
-        var h = Root.ActualHeight;
-        var pts = new PointCollection();
-        for (int i = 0; i < _values.Count; i++)
+        double mn = double.MaxValue, mx = double.MinValue;
+        for (int i = 0; i < _count; i++)
         {
-            var x = w * i / (_values.Count - 1);
-            var y = 3 + (h - 6) * (1 - (_values[i] - mn) / span); // 屏幕坐标 y 向下，翻转一下让数值大的往上
-            pts.Add(new Point(x, y));
+            var v = At(i);
+            if (v < mn) mn = v;
+            if (v > mx) mx = v;
         }
-        Line.Points = pts;
+        var span = mx - mn;
+        if (span < 1e-9) span = 1;
+        var w = ActualWidth > 0 ? ActualWidth : (Root?.ActualWidth ?? 0);
+        var h = ActualHeight > 0 ? ActualHeight : (Root?.ActualHeight ?? 0);
+        if (w < 4 || h < 4) return;
+        _pts.Clear();
+        for (int i = 0; i < _count; i++)
+        {
+            var x = w * i / (_count - 1);
+            var y = 3 + (h - 6) * (1 - (At(i) - mn) / span);
+            _pts.Add(new Point(x, y));
+        }
+        Line.Points = _pts;
+    }
+
+    private double At(int logical)
+    {
+        // logical 0 = oldest
+        var start = (_count < Cap) ? 0 : _head;
+        return _ring[(start + logical) % Cap];
     }
 }

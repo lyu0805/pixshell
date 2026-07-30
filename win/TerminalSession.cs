@@ -1,3 +1,5 @@
+using System.Windows;
+using System.Windows.Threading;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -43,17 +45,40 @@ public sealed class TerminalSession : IDisposable
             // 与 TermSchemes.pix-dark 默认底一致；ApplyTermScheme 会再改
             DefaultBackgroundColor = HexToDrawingColor("#002945"),
         };
-        v.SizeChanged += (_, _) =>
-        {
-            try
-            {
-                if (v.CoreWebView2 != null)
-                    _ = v.CoreWebView2.ExecuteScriptAsync(
-                        "try{window.pixFit&&window.pixFit()}catch(e){}");
-            }
-            catch { /* 未初始化完忽略 */ }
-        };
+        // SizeChanged → pixFit 在实例构造函数里挂（CreateView 是 static）
         return v;
+    }
+
+
+    private void WireTerminalView()
+    {
+        View.SizeChanged -= OnViewSizeChanged;
+        View.SizeChanged += OnViewSizeChanged;
+    }
+
+    private void OnViewSizeChanged(object sender, SizeChangedEventArgs e) => SchedulePixFit();
+
+    /// <summary>WebView2 SizeChanged 防抖 fit：合并 80ms 内多次，拖坞期间全跳（MainWindow.SuppressTerminalFit）。</summary>
+    private void SchedulePixFit()
+    {
+        if (MainWindow.SuppressTerminalFit) return;
+        if (View?.CoreWebView2 == null) return;
+        _fitTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(80) };
+        _fitTimer.Tick -= FitTimer_Tick;
+        _fitTimer.Tick += FitTimer_Tick;
+        _fitTimer.Stop();
+        _fitTimer.Start();
+    }
+
+    private void FitTimer_Tick(object? sender, EventArgs e)
+    {
+        _fitTimer?.Stop();
+        if (MainWindow.SuppressTerminalFit) return;
+        try
+        {
+            _ = View.CoreWebView2?.ExecuteScriptAsync("try{window.pixFit&&window.pixFit()}catch(e){}");
+        }
+        catch { /* ignore */ }
     }
 
     private static System.Drawing.Color HexToDrawingColor(string hex)
@@ -119,6 +144,8 @@ public sealed class TerminalSession : IDisposable
     private Process? _localProc;
     private Stream? _localStdin;
     private Thread? _readThread;
+    // SizeChanged → pixFit 防抖（拖坞/resize 风暴）；MainWindow.SuppressTerminalFit 时全跳
+    private DispatcherTimer? _fitTimer;
     private uint _cols = 80;
     private uint _rows = 24;
     private object? _channel;
@@ -187,8 +214,17 @@ public sealed class TerminalSession : IDisposable
     /// <summary>本会话连接密码（重连时复用；不做其它用途）。</summary>
     public string? Password => _pass;
 
+    /// <summary>应用内 Web 终端标签：仅 InitWebSshAsync 置位。
+    /// 主机 ConnectionType==400 只表示「连接时走 Web 入口」；
+    /// 桥 Connect 为 Web 主机拉起的底层 SSH 标签不应被当成 Web 标签。</summary>
+    public bool IsWebSsh => _isWebSsh;
+
+    private bool _isWebSsh;
+    private string? _webSshUrl;
+
     public TerminalSession(string label, string htmlPath)
     {
+        WireTerminalView();
         Title = label;
         _htmlPath = htmlPath;
     }
@@ -1346,10 +1382,195 @@ public sealed class TerminalSession : IDisposable
         }
     }
 
+    /// <summary>true = 允许非回环 http(s)（外部 Web/VNC）；false = 仅 127.0.0.1（本地桥 token 页）。</summary>
+    private bool _webAllowExternal;
+    /// <summary>外部模式下优先放行的 host；同站跳转粗匹配。</summary>
+    private string? _webAllowedHost;
+
+    /// <summary>
+    /// 应用内 Web 页：初始化 WebView2 后 Navigate。
+    /// - 本地桥：/webssh?token=…（allowExternalHosts=false，仅回环）
+    /// - 外部页：noVNC / 面板（allowExternalHosts=true，同站可跳转）
+    /// **禁止** Process.Start 外开系统浏览器——那是错误主路径。
+    /// </summary>
+    public async Task InitWebSshAsync(string url, bool allowExternalHosts = false)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            throw new ArgumentException("Web 页面 URL 为空", nameof(url));
+        _isWebSsh = true;
+        _webSshUrl = url;
+        _isLocal = false;
+        _webAllowExternal = allowExternalHosts;
+        _webAllowedHost = null;
+        if (Uri.TryCreate(url, UriKind.Absolute, out var startUri) && !string.IsNullOrEmpty(startUri.Host))
+            _webAllowedHost = startUri.Host;
+
+        try
+        {
+            var env = await GetSharedEnvironmentAsync().ConfigureAwait(true);
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    var init = View.EnsureCoreWebView2Async(env);
+                    var winner = await Task.WhenAny(init, Task.Delay(25_000)).ConfigureAwait(true);
+                    if (winner != init)
+                        throw new TimeoutException("EnsureCoreWebView2Async 超过 25s（0x800705B4 同类超时）");
+                    await init.ConfigureAwait(true);
+                    break;
+                }
+                catch (Exception ex) when (attempt < 2 && IsWebView2InitTimeout(ex))
+                {
+                    Log.Warn($"WebView2 初始化超时(WebSSH)，清 profile 锁后重试: {ex.Message}", "webview");
+                    TryClearWebView2Locks();
+                    await Task.Delay(400).ConfigureAwait(true);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                "WebView2 初始化失败（请安装 Microsoft Edge WebView2 Runtime）：" + ex.Message, ex);
+        }
+
+        View.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
+        View.CoreWebView2.Settings.IsStatusBarEnabled = false;
+        View.CoreWebView2.Settings.AreBrowserAcceleratorKeysEnabled = false;
+        try
+        {
+            View.CoreWebView2.Profile.PreferredColorScheme = ThemeManager.IsDark
+                ? CoreWebView2PreferredColorScheme.Dark
+                : CoreWebView2PreferredColorScheme.Light;
+        }
+        catch { /* 旧 runtime */ }
+
+        View.CoreWebView2.NavigationStarting -= OnWebSshNavStarting;
+        View.CoreWebView2.NavigationStarting += OnWebSshNavStarting;
+        // target=_blank → 同页打开（仍受 NavigationStarting 约束）；noVNC 有时弹新窗
+        View.CoreWebView2.NewWindowRequested -= OnWebSshNewWindow;
+        View.CoreWebView2.NewWindowRequested += OnWebSshNewWindow;
+
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnNav(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+        {
+            View.CoreWebView2.NavigationCompleted -= OnNav;
+            tcs.TrySetResult(e.IsSuccess);
+            if (!e.IsSuccess)
+                Log.Warn($"Web 页面导航失败 WebErrorStatus={e.WebErrorStatus}", "webssh");
+        }
+        View.CoreWebView2.NavigationCompleted += OnNav;
+        // 日志抹掉 token
+        var safe = System.Text.RegularExpressions.Regex.Replace(url, @"[?&]token=[^&]*", "?token=***");
+        Log.Info($"内嵌 Web 加载 {safe} external={allowExternalHosts}", "webssh");
+        View.CoreWebView2.Navigate(url);
+
+        var done = await Task.WhenAny(tcs.Task, Task.Delay(15_000)).ConfigureAwait(true);
+        if (done != tcs.Task || !await tcs.Task.ConfigureAwait(true))
+            Log.Warn("Web 页面导航超时或失败（页面可能仍部分可用）", "webssh");
+
+        _connected = true;
+        _jsReady = true;
+        try { ConnectedChanged?.Invoke(this, true); } catch { }
+        try { StatusChanged?.Invoke(this, allowExternalHosts ? "Web 页面已加载" : "Web 终端已加载"); } catch { }
+        Log.Info(allowExternalHosts ? "内嵌 Web 外部页已加载" : "内嵌 Web 终端已加载", "webssh");
+    }
+
+    private void OnWebSshNewWindow(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
+    {
+        try
+        {
+            e.Handled = true;
+            if (!string.IsNullOrEmpty(e.Uri))
+                View.CoreWebView2?.Navigate(e.Uri);
+        }
+        catch { /* ignore */ }
+    }
+
+    private void OnWebSshNavStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
+    {
+        try
+        {
+            if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out var u))
+            {
+                e.Cancel = true;
+                return;
+            }
+            var host = (u.Host ?? "").ToLowerInvariant();
+            var loopback = host is "127.0.0.1" or "localhost" or "::1" or "";
+            var okScheme = u.Scheme is "http" or "https" or "about" or "blob" or "data";
+            if (!okScheme)
+            {
+                Log.Warn($"内嵌 Web 拦截 scheme: {e.Uri}", "webssh");
+                e.Cancel = true;
+                return;
+            }
+            if (_webAllowExternal)
+            {
+                if (loopback || string.IsNullOrEmpty(host))
+                    return; // allow
+                var allow = (_webAllowedHost ?? "").ToLowerInvariant();
+                if (!string.IsNullOrEmpty(allow))
+                {
+                    if (host == allow || host.EndsWith("." + allow, StringComparison.Ordinal)
+                        || allow.EndsWith("." + host, StringComparison.Ordinal)
+                        || SameSite(host, allow))
+                        return;
+                    Log.Warn($"内嵌 Web 拦截跨站: {e.Uri} allow={_webAllowedHost}", "webssh");
+                    e.Cancel = true;
+                    return;
+                }
+                // 无 allowedHost：首次外链即放行并锁定
+                _webAllowedHost = host;
+                return;
+            }
+            // 本地桥模式：仅回环
+            if (!loopback)
+            {
+                Log.Warn($"内嵌 Web 拦截外链: {e.Uri}", "webssh");
+                e.Cancel = true;
+            }
+        }
+        catch { e.Cancel = true; }
+    }
+
+    private static bool SameSite(string a, string b)
+    {
+        static string Base(string h)
+        {
+            var parts = h.Split('.');
+            if (parts.Length >= 2) return parts[^2] + "." + parts[^1];
+            return h;
+        }
+        return Base(a) == Base(b);
+    }
+
+    /// <summary>Web 终端刷新（重连菜单走这里，不建 SSH）。</summary>
+    public async Task ReloadWebSshAsync()
+    {
+        if (string.IsNullOrEmpty(_webSshUrl) || View.CoreWebView2 == null)
+        {
+            if (!string.IsNullOrEmpty(_webSshUrl))
+                await InitWebSshAsync(_webSshUrl).ConfigureAwait(true);
+            return;
+        }
+        View.CoreWebView2.Navigate(_webSshUrl);
+        _connected = true;
+        try { StatusChanged?.Invoke(this, "Web 终端已刷新"); } catch { }
+    }
+
     /// <summary>关闭 tab 时调用：断开 SSH 并释放 WebView2。</summary>
     public void Dispose()
     {
         Disconnect();
+        try
+        {
+            if (View.CoreWebView2 != null)
+            {
+                View.CoreWebView2.NavigationStarting -= OnWebSshNavStarting;
+                View.CoreWebView2.NewWindowRequested -= OnWebSshNewWindow;
+            }
+        }
+        catch { }
         try { View.Dispose(); } catch { }
     }
 }

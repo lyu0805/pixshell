@@ -62,8 +62,8 @@ public partial class CommandPanel : UserControl
         {
             var keep = combo.SelectedIndex;
             combo.Items.Clear();
-            combo.Items.Add("当前会话");
-            combo.Items.Add("所有已连接会话");
+            combo.Items.Add(L10n.T("cmd.current"));
+            combo.Items.Add(L10n.T("cmd.allConnected"));
             foreach (var s in SessionsProvider?.Invoke() ?? new List<(string, bool)>())
                 if (s.connected) combo.Items.Add(s.title);
             combo.SelectedIndex = keep >= 0 && keep < combo.Items.Count ? keep : 0;
@@ -96,7 +96,7 @@ public partial class CommandPanel : UserControl
     private void ReloadGroups()
     {
         GroupRow.Children.Clear();
-        GroupRow.Children.Add(FolderChip("全部", "", _selectedGroup == null));
+        GroupRow.Children.Add(FolderChip(L10n.T("cmd.all"), "", _selectedGroup == null));
         foreach (var g in CommandStore.Groups())
             GroupRow.Children.Add(FolderChip(g, g, _selectedGroup == g));
     }
@@ -331,7 +331,7 @@ public partial class CommandPanel : UserControl
         RightColDef.Width = new GridLength(collapsed ? RightCollapsed : RightExpanded);
         EditorParts.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
         ExpandStrip.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
-        CollapseBtn.Content = collapsed ? "⟨ 展开" : "⟩ 收起";
+        CollapseBtn.Content = collapsed ? L10n.T("cmd.expand") : L10n.T("cmd.collapse");
     }
 
     // =====================================================================

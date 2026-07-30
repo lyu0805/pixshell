@@ -2,7 +2,7 @@ import AppKit
 
 /// 连接动画（覆盖在终端区上方）。
 /// 取代老实现往终端里 feed 的那行「连接中 root@ip:22 …」—— 终端里应该只有远端的输出，
-/// 连接过程属于 App 自己的 UI，用动画表达（参考 Termius：脉冲圆点 + 主机名 + 分步状态）。
+/// 连接过程属于 App 自己的 UI，用动画表达：脉冲圆点 + 主机名 + 分步状态。
 ///
 /// 生命周期：beginSession 时 show() → 打开 shell 时 succeed() 淡出 → 失败时 fail() 显示红字后淡出。
 final class ConnectOverlay: NSView {
@@ -125,7 +125,7 @@ final class ConnectOverlay: NSView {
     }
 }
 
-/// 脉冲圆点：外圈一圈圈扩散（Termius 连接中的那种呼吸感）。
+/// 脉冲圆点：外圈一圈圈扩散（连接中的呼吸感）。
 final class PulseDot: NSView {
     private let core = CALayer()
     private let ring = CALayer()

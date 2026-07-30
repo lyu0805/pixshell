@@ -96,6 +96,11 @@ enum BridgeRouter {
         case ("/webssh", "GET"), ("/v1/app/webssh", "GET"):
             completion(.html(WebSSHPage.html()))
 
+        // 本地静态资源：xterm.js / xterm.css / addon-fit.js（无 CDN，离线可用）。
+        // 仅 GET；路径白名单防穿越；免 token（页面本身靠 token，脚本同源自 127.0.0.1）。
+        case (let path, "GET") where path.hasPrefix("/web/"):
+            completion(serveWebAsset(path: path))
+
         case ("/v1/app/hosts", "GET"), ("/v1/app/host-list", "GET"):
             let hosts = host.bridgeHosts()
             if let gid = req.query["group-id"] ?? req.query["group_id"] ?? req.query["g"], !gid.isEmpty {
@@ -269,6 +274,45 @@ enum BridgeRouter {
             out["cursor"] = String(hasher.finalize())
         }
         completion(.ok(out))
+    }
+
+    // MARK: - 静态资源（/web/*）
+
+    /// 白名单文件名 → Bundle `Resources/web/`。防路径穿越；未知文件 404。
+    private static let webAssetAllowlist: Set<String> = [
+        "xterm.js", "xterm.css", "addon-fit.js",
+    ]
+
+    private static func serveWebAsset(path: String) -> BridgeResponse {
+        // path 形如 "/web/xterm.js"
+        let name = String(path.dropFirst("/web/".count))
+        // 仅允许纯文件名（无 /、无 ..、无空）
+        if name.isEmpty || name.contains("/") || name.contains("\\") || name.contains("..")
+            || !webAssetAllowlist.contains(name) {
+            return .fail(404, "not found")
+        }
+        // SPM `.process("Resources")` 会把 `Resources/web/*` **拍平到 bundle 根**
+        //（实测无 web/ 子目录）；同时兼容未来 copy 保留子目录的布局。
+        let base = (name as NSString).deletingPathExtension
+        let pathExt = (name as NSString).pathExtension
+        let url =
+            Bundle.module.url(forResource: name, withExtension: nil, subdirectory: "web")
+            ?? Bundle.module.url(forResource: base, withExtension: pathExt, subdirectory: "web")
+            ?? Bundle.module.url(forResource: name, withExtension: nil)
+            ?? Bundle.module.url(forResource: base, withExtension: pathExt)
+        guard let url, let data = try? Data(contentsOf: url) else {
+            Log.warn("Web 静态资源缺失: \(name)（检查 Package resources/web；bundle 可能已拍平）", "bridge")
+            return .fail(404, "web asset missing: \(name)")
+        }
+        let ext = pathExt.lowercased()
+        let ct: String
+        switch ext {
+        case "js":  ct = "application/javascript; charset=utf-8"
+        case "css": ct = "text/css; charset=utf-8"
+        case "html": ct = "text/html; charset=utf-8"
+        default:    ct = "application/octet-stream"
+        }
+        return .raw(status: 200, body: data, contentType: ct)
     }
 
     // MARK: - 小工具

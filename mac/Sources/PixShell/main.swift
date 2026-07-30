@@ -106,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
         // 2) 上次崩溃标记 → 本轮关掉默认 Core Animation
         // 3) 正常路径 register NSViewDefaultUsesCoreAnimation=true（可被 1/2 覆盖）
         configureGpuAcceleration()
-        Log.banner("0.1.1")
+        Log.banner("0.1.3")
         Log.info("主题=\(Theme.dark ? "深色" : "浅色")（来源：env/持久化/默认）", "ui")
         NSApp.appearance = NSAppearance(named: darkTheme ? .darkAqua : .aqua)
         AppIcon.install()    // 没有 .app bundle 就没有图标资源，所有系统弹窗会退化成"蓝色文件夹"占位图

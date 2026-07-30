@@ -64,9 +64,9 @@ final class KeyManager: NSWindowController {
 
         let title = NSTextField(labelWithString: "密钥管理")
         title.font = Theme.ui(15, .semibold); title.textColor = Theme.text
-        let genBtn = PillButton("＋生成密钥", style: .primary, hPad: 10, target: self, action: #selector(generateAction))
-        let refBtn = PillButton("刷新", style: .secondary, hPad: 10, target: self, action: #selector(reloadAction))
-        let closeBtn = PillButton("关闭", style: .secondary, hPad: 10, target: self, action: #selector(hideAction))
+        let genBtn = PillButton(L10n.t("keys.generate"), style: .primary, hPad: 10, target: self, action: #selector(generateAction))
+        let refBtn = PillButton(L10n.t("keys.refresh"), style: .secondary, hPad: 10, target: self, action: #selector(reloadAction))
+        let closeBtn = PillButton(L10n.t("common.close"), style: .secondary, hPad: 10, target: self, action: #selector(hideAction))
         let rightBtns = NSStackView(views: [genBtn, refBtn, closeBtn]); rightBtns.spacing = 6
         let head = NSStackView(views: [title, NSView(), rightBtns]); head.spacing = 12; head.alignment = .centerY
         head.translatesAutoresizingMaskIntoConstraints = false
@@ -107,7 +107,7 @@ final class KeyManager: NSWindowController {
     func reload() {
         keys = SSHKeys.list()
         countLabel.stringValue = keys.isEmpty
-            ? "~/.ssh 下没有找到密钥 —— 点「＋生成密钥」新建一个"
+            ? L10n.t("keys.empty")
             : "\(keys.count) 个密钥 · ~/.ssh"
         listStack.arrangedSubviews.forEach { listStack.removeArrangedSubview($0); $0.removeFromSuperview() }
         for (i, k) in keys.enumerated() {
@@ -135,13 +135,13 @@ final class KeyManager: NSWindowController {
         cmt.font = Theme.ui(10.5); cmt.textColor = Theme.muted
         cmt.lineBreakMode = .byTruncatingMiddle
 
-        let useBtn = PillButton("用于此主机", style: .primary, hPad: 8, height: 24,
+        let useBtn = PillButton(L10n.t("keys.useForHost"), style: .primary, hPad: 8, height: 24,
                                 font: Theme.ui(11, .semibold), target: self, action: #selector(useKey(_:)))
-        let copyBtn = PillButton("复制公钥", style: .secondary, hPad: 8, height: 24,
+        let copyBtn = PillButton(L10n.t("keys.copyPub"), style: .secondary, hPad: 8, height: 24,
                                  font: Theme.ui(11, .medium), target: self, action: #selector(copyPub(_:)))
         let showBtn = PillButton("访达", style: .secondary, hPad: 8, height: 24,
                                  font: Theme.ui(11, .medium), target: self, action: #selector(revealKey(_:)))
-        let delBtn = PillButton("删除", style: .danger, hPad: 8, height: 24,
+        let delBtn = PillButton(L10n.t("keys.delete"), style: .danger, hPad: 8, height: 24,
                                 font: Theme.ui(11, .medium), target: self, action: #selector(deleteKey(_:)))
         for b in [useBtn, copyBtn, showBtn, delBtn] { b.identifier = .init("\(index)") }
         let btnRow = NSStackView(views: [useBtn, copyBtn, showBtn, NSView(), delBtn])
@@ -212,9 +212,9 @@ final class KeyManager: NSWindowController {
     /// 生成密钥表单：文件名 / 类型 / 注释 / 口令。
     @objc private func generateAction() {
         let a = NSAlert.pix()
-        a.messageText = "生成 SSH 密钥"
-        a.informativeText = "会在 ~/.ssh 下用系统 ssh-keygen 生成标准密钥对。"
-        a.addButton(withTitle: "生成"); a.addButton(withTitle: "取消")
+        a.messageText = L10n.t("keys.genTitle")
+        a.informativeText = L10n.t("keys.genBody")
+        a.addButton(withTitle: L10n.t("keys.gen")); a.addButton(withTitle: L10n.t("common.cancel"))
 
         let nameField = NSTextField(); nameField.stringValue = "id_pixshell"
         let typePopup = NSPopUpButton()

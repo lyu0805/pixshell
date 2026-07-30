@@ -38,12 +38,26 @@ public partial class HostEditWindow : Window
                 OsId = existing.OsId,
                 KeyPath = existing.KeyPath,
                 ProxyId = existing.ProxyId,
-                ConnectionType = existing.ConnectionType
+                ConnectionType = existing.ConnectionType,
+                WebUrl = existing.WebUrl,
             };
 
-        TypeBox.SelectedIndex = Entry.IsRdp ? 1 : 0;
+        // SSH=0 / RDP=1 / Web=2（与 mac HostEditor 对齐）
+        TypeBox.SelectedIndex = Entry.IsWebSsh ? 2 : (Entry.IsRdp ? 1 : 0);
         NameBox.Text = Entry.Name;
-        HostBox.Text = Entry.Host;
+        // 若历史把完整 URL 写在 Host，编辑时回填到 URL 框
+        if (Entry.IsWebSsh && Entry.ResolvedWebUrl is Uri web)
+        {
+            WebUrlBox.Text = string.IsNullOrWhiteSpace(Entry.WebUrl) ? web.AbsoluteUri : Entry.WebUrl;
+            var hostLooksUrl = Entry.Host.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                || Entry.Host.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+            HostBox.Text = hostLooksUrl ? (web.Host ?? "") : Entry.Host;
+        }
+        else
+        {
+            HostBox.Text = Entry.Host;
+            WebUrlBox.Text = Entry.WebUrl ?? "";
+        }
         PortBox.Text = Entry.Port.ToString();
         UserBox.Text = Entry.Username;
         GroupBox.Text = string.IsNullOrWhiteSpace(Entry.Group) ? "默认" : Entry.Group;
@@ -73,6 +87,8 @@ public partial class HostEditWindow : Window
             ProxyBox.Items.Add(new ComboBoxItem { Content = $"{(string.IsNullOrEmpty(p.Name) ? p.Host : p.Name)} ({p.DisplayName})", Tag = p.Id });
         var sel = ProxyBox.Items.Cast<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == Entry.ProxyId);
         ProxyBox.SelectedItem = sel ?? ProxyBox.Items[0];
+
+        ApplyTypeUi();
     }
 
     private void Card_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -103,25 +119,73 @@ public partial class HostEditWindow : Window
         if (dlg.ShowDialog(this) == true) KeyPathBox.Text = dlg.FileName;
     }
 
-    /// <summary>切到 RDP 且端口还是 SSH 默认 22 → 顺手改成 3389；切回 SSH 且端口是 3389 → 改回 22。</summary>
+    /// <summary>切到 RDP 且端口还是 SSH 默认 22 → 顺手改成 3389；
+    /// 切回 SSH/Web 且端口是 3389 → 改回 22。Web：露出 URL 行。</summary>
     private void OnTypeChanged(object sender, SelectionChangedEventArgs e)
     {
         if (PortBox == null) return;   // 构造期 SelectedIndex 赋值会先触发一次，控件尚未就绪
         var p = PortBox.Text.Trim();
-        if (TypeBox.SelectedIndex == 1 && p == "22") PortBox.Text = "3389";
-        else if (TypeBox.SelectedIndex == 0 && p == "3389") PortBox.Text = "22";
+        var idx = TypeBox.SelectedIndex;
+        if (idx == 1 && p == "22") PortBox.Text = "3389";
+        else if ((idx == 0 || idx == 2) && p == "3389") PortBox.Text = "22";
+        ApplyTypeUi();
+    }
+
+    private void ApplyTypeUi()
+    {
+        if (WebUrlBox == null || WebUrlLabel == null) return;
+        var isWeb = TypeBox.SelectedIndex == 2;
+        var vis = isWeb ? Visibility.Visible : Visibility.Collapsed;
+        WebUrlBox.Visibility = vis;
+        WebUrlLabel.Visibility = vis;
+        if (isWeb)
+        {
+            HostBox.ToolTip = "可选；或把完整 URL 只填在 URL 框";
+        }
+        else
+        {
+            HostBox.ToolTip = null;
+        }
     }
 
     private void OnSave(object sender, RoutedEventArgs e)
     {
         var host = HostBox.Text.Trim();
         var user = UserBox.Text.Trim();
-        if (host.Length == 0 || user.Length == 0)
+        var urlVal = (WebUrlBox?.Text ?? "").Trim();
+        var isWeb = TypeBox.SelectedIndex == 2;
+
+        // 主机框误填完整 URL → 归一到 WebUrl
+        if (string.IsNullOrEmpty(urlVal)
+            && Uri.TryCreate(host, UriKind.Absolute, out var hostAsUrl)
+            && (hostAsUrl.Scheme == Uri.UriSchemeHttp || hostAsUrl.Scheme == Uri.UriSchemeHttps)
+            && !string.IsNullOrEmpty(hostAsUrl.Host))
         {
-            MessageBox.Show(this, "主机和用户名不能为空。", "PixShell",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
+            urlVal = host;
+            host = hostAsUrl.Host;
         }
+
+        if (isWeb)
+        {
+            // Web：URL 或 主机至少填一个；用户名可空（默认 web）
+            if (string.IsNullOrEmpty(host) && string.IsNullOrEmpty(urlVal))
+            {
+                MessageBox.Show(this, "Web 连接请填写 URL（noVNC/面板）或主机。", "PixShell",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            if (string.IsNullOrEmpty(user)) user = "web";
+        }
+        else
+        {
+            if (host.Length == 0 || user.Length == 0)
+            {
+                MessageBox.Show(this, "主机和用户名不能为空。", "PixShell",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+        }
+
         if (!int.TryParse(PortBox.Text.Trim(), out var port) || port <= 0 || port > 65535)
             port = 22;
 
@@ -133,7 +197,24 @@ public partial class HostEditWindow : Window
         Entry.OsId = (OsBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
         Entry.KeyPath = KeyPathBox.Text.Trim();
         Entry.ProxyId = (ProxyBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
-        Entry.ConnectionType = TypeBox.SelectedIndex == 1 ? 200 : 100;
+        Entry.ConnectionType = TypeBox.SelectedIndex switch
+        {
+            1 => 200, // RDP
+            2 => 400, // Web（外部页 或 本地桥终端）
+            _ => 100, // SSH
+        };
+        if (Entry.ConnectionType == 400)
+        {
+            if (string.IsNullOrEmpty(Entry.OsId)) Entry.OsId = "web";
+            Entry.WebUrl = urlVal;
+            // 外部 URL 且没名称 → 用 host 当显示名
+            if (string.IsNullOrEmpty(Entry.Name) && Entry.ResolvedWebUrl is Uri web)
+                Entry.Name = string.IsNullOrEmpty(web.Host) ? "Web" : web.Host;
+        }
+        else
+        {
+            Entry.WebUrl = ""; // 非 Web 不留 WebUrl，避免脏数据
+        }
 
         // 密码框有内容才回传（空 = 不改动已存凭据）。
         Password = PassBox.Password.Length > 0 ? PassBox.Password : null;

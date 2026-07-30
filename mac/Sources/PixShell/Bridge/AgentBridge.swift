@@ -387,13 +387,18 @@ private final class BridgeConnection {
             return
         }
 
-        let got = extractToken()
-        guard !got.isEmpty, BridgeConnection.constantTimeEqual(got, token) else {
-            respond(.fail(401, "unauthorized"))
-            return
+        // 静态资源 GET /web/*（xterm.js/css/addon）：公开前端库，无会话数据；
+        // <script src> 无法带 token，对齐 Win 免鉴权。仍受回环绑定 + Origin 约束。
+        let isPublicWebAsset = method == "GET" && path.hasPrefix("/web/")
+        if !isPublicWebAsset {
+            let got = extractToken()
+            guard !got.isEmpty, BridgeConnection.constantTimeEqual(got, token) else {
+                respond(.fail(401, "unauthorized"))
+                return
+            }
+            // 鉴权通过才算「外部真正对接过」；401 绝不触发。
+            onAuthenticated?()
         }
-        // 鉴权通过才算「外部真正对接过」；401 绝不触发。
-        onAuthenticated?()
 
         let needsBody = method == "POST" || method == "PUT" || method == "PATCH"
         var bodyObj: [String: Any]?
@@ -411,6 +416,7 @@ private final class BridgeConnection {
 
         let req = BridgeRequest(method: method, path: path, query: query, body: bodyObj)
         // 铁律：碰 App 状态的处理一律在主线程；回到 bridge 队列后再写连接（避免跨线程碰同一个连接对象）。
+        // 静态资源无 App 状态，可在 bridge 队列直接路由，但走同一路径更简单一致。
         DispatchQueue.main.async { [weak self] in
             BridgeRouter.route(req, host: self?.host) { response in
                 self?.queue.async { self?.respond(response) }
@@ -477,12 +483,20 @@ private final class BridgeConnection {
         }
 
         let ct = response.contentType.isEmpty ? "application/json; charset=utf-8" : response.contentType
+        // HTML 页再加一层 CSP（页面 meta 已有；响应头双保险，禁 CDN/外联）
+        let csp: String
+        if ct.contains("text/html") {
+            csp = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        } else {
+            csp = "default-src 'none'"
+        }
         let statusLine = "HTTP/1.1 \(response.status) \(BridgeConnection.reason(for: response.status))\r\n"
         let head = statusLine
             + "Content-Type: \(ct)\r\n"
             + "Content-Length: \(bodyData.count)\r\n"
             + "Cache-Control: no-store\r\n"
             + "X-Content-Type-Options: nosniff\r\n"
+            + "Content-Security-Policy: \(csp)\r\n"
             + "Connection: close\r\n"
             + "\r\n"
 

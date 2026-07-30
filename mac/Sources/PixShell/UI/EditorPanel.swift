@@ -147,10 +147,10 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         let replaceAllBtn = PillButton("全部替换", style: .secondary, hPad: 10, height: 24,
                                         target: self, action: #selector(replaceAllAction))
 
-        lineNumberCheck = NSButton(checkboxWithTitle: "行号", target: self, action: #selector(toggleLineNumbers(_:)))
+        lineNumberCheck = NSButton(checkboxWithTitle: L10n.t("editor.lineNumbers"), target: self, action: #selector(toggleLineNumbers(_:)))
         lineNumberCheck.state = .on
         lineNumberCheck.font = Theme.ui(11)
-        wrapCheck = NSButton(checkboxWithTitle: "自动换行", target: self, action: #selector(toggleWrap(_:)))
+        wrapCheck = NSButton(checkboxWithTitle: L10n.t("editor.wrap"), target: self, action: #selector(toggleWrap(_:)))
         wrapCheck.state = .off
         wrapCheck.font = Theme.ui(11)
 
@@ -268,12 +268,12 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
             self.saveBtn.isEnabled = true
             if let e = err {
                 // 失败：**不清脏标记、不关闭**，把错误就地显示出来
-                self.setSaveStatus("保存失败：\(e)", color: Theme.err)
+                self.setSaveStatus(L10n.t("editor.saveFailed") + "：\(e)", color: Theme.err)
                 Log.warn("编辑器保存失败 \(self.filePath): \(e)", "editor")
                 return
             }
             self.isDirty = false
-            self.setSaveStatus("已保存 " + Self.stamp(), color: Theme.ok)
+            self.setSaveStatus(L10n.t("editor.saved") + " " + Self.stamp(), color: Theme.ok)
             if thenClose { self.onClose?() }
         }
     }
@@ -296,11 +296,11 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
     private func requestClose() {
         guard isDirty else { onClose?(); return }
         let alert = NSAlert.pix()
-        alert.messageText = "文件已修改"
-        alert.informativeText = "是否保存对“\((filePath as NSString).lastPathComponent)”的更改？"
-        alert.addButton(withTitle: "保存")
-        alert.addButton(withTitle: "放弃")
-        alert.addButton(withTitle: "取消")
+        alert.messageText = L10n.t("editor.modifiedTitle")
+        alert.informativeText = String(format: L10n.t("editor.modifiedBody"), (filePath as NSString).lastPathComponent)
+        alert.addButton(withTitle: L10n.t("common.save"))
+        alert.addButton(withTitle: L10n.t("editor.discard"))
+        alert.addButton(withTitle: L10n.t("common.cancel"))
         switch alert.runModal() {
         case .alertFirstButtonReturn:
             // 保存成功才关；失败时留在编辑器里（否则改动就丢了）

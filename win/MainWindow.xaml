@@ -116,8 +116,8 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" MinHeight="120"/>          <!-- work-center -->
                         <RowDefinition Height="Auto"/>                       <!-- 命令栏（在坞之上）-->
-                        <RowDefinition x:Name="DockSplitterRow" Height="4"/>   <!-- 坞上分隔线，随坞折叠一起归零 -->
-                        <RowDefinition x:Name="DockRow" Height="230"/>       <!-- 底部坞（可整体折叠到 0）-->
+                        <RowDefinition x:Name="DockSplitterRow" Height="6"/>   <!-- 坞上分隔线（GitHub #2 加高易拖），折叠归零 -->
+                        <RowDefinition x:Name="DockRow" Height="230"/>       <!-- 底部坞（可整体折叠到 0；高度由手动拖）-->
                     </Grid.RowDefinitions>
 
                     <!-- work-center：无会话 → 快速连接落地页；有会话 → 终端。
@@ -162,13 +162,17 @@
                         </Grid>
                     </Border>
 
-                    <!-- 可拖高坞的分隔条（对齐 mac buildDockResizer）；折叠时高度归零。 -->
-                    <GridSplitter x:Name="DockSplitter" Grid.Row="2" Height="4"
-                                  HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
-                                  ResizeDirection="Rows" ResizeBehavior="PreviousAndNext"
-                                  Background="{DynamicResource BrushBorder}"
-                                  ShowsPreview="False"
-                                  DragCompleted="DockSplitter_DragCompleted"/>
+                    <!-- 可拖高坞的分隔条（对齐 mac buildDockResizer）；折叠时高度归零。
+                         GitHub #2：不用 GridSplitter PreviousAndNext（只会动 Auto 命令栏↔坞），
+                         高度由 PreviewMouse* 自管，直接改 DockRow。加高到 6px 方便 Win10 点中。 -->
+                    <Border x:Name="DockSplitter" Grid.Row="2" Height="6"
+                            HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                            Background="{DynamicResource BrushBorder}"
+                            Cursor="SizeNS"
+                            PreviewMouseLeftButtonDown="DockSplitter_PreviewMouseLeftButtonDown"
+                            PreviewMouseMove="DockSplitter_PreviewMouseMove"
+                            PreviewMouseLeftButtonUp="DockSplitter_PreviewMouseLeftButtonUp"
+                            LostMouseCapture="DockSplitter_LostMouseCapture"/>
 
                     <!-- 底部坞：[文件][命令] 与文件操作图标同一行 + 面板体（可整体折叠到 0） -->
                     <Border x:Name="DockBorder" Grid.Row="3" Background="{DynamicResource BrushBg}"

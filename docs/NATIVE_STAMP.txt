@@ -1,3 +1,6 @@
+2026-07-29T12:00:00Z Dual: Web connectionType=400 in HostEditor/HostEditWindow; openSession/ConnectToHost like SSH; in-app WebView /webssh?host_id=; demote menu bridge-mirror; bridgeConnect strips type400
+2026-07-29T01:25:00Z Docs: 代码概要 permanent iron section 铁律·macOS本地网络TCC/errno65 (identity prompted, NIO vs /usr/bin/ssh, help onRetry, no auto sheet, hash codesign)
+2026-07-29T01:16:00Z Mac: LocalNetwork identity-keyed TCC + OpenSSH fallback on errno65 + help reconnect wired; PixShell Local codesign; package-mac BUILD_ARGS/SIGN_ID fix
 2026-07-28T22:43:00Z Win: SFTP ChmodWindow (文件权限…) + pack-transfer toggle + Ctrl A/X/C/V; Release 0w0e
 2026-07-28T22:20:00Z Win: SFTP pack-transfer toggle + Ctrl A/X/C/V text shortcuts + FocusTerminal Esc; ChmodWindow hex perms; Release 0w0e
 2026-07-28T21:50:00Z Docs: README screenshots refreshed (12 product PNGs; README.md + README_CN.md grouped <img width=480> tables)

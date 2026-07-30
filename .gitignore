@@ -8,14 +8,60 @@ Thumbs.db
 .vscode/
 .idea/
 
+# ── 敏感信息 / 本地工程笔记 — 严禁同步到 GitHub ──
+代码概要.md
+**/代码概要.md
+**/开发日志*
+**/开发日志*.md
+**/MEMORY.md
+**/memory/
+# ──────────────────────────────────────────────
+
 # Logs / diagnostics
 *.log
 *.log.*
 *.binlog
+logs/
+**/logs/
+**/Logs/
 
-# Local engineering notes (never publish)
-代码概要.md
-**/代码概要.md
+# AI agent artifacts (never publish)
+**/sessions/
+**/.claude/
+**/.cursor/
+**/.codex/
+**/.opencode/
+**/session-env/
+**/shell-snapshots/
+**/telemetry/
+
+# Build smoke / CI temp scripts (never publish)
+**/*_smoke.*
+**/*smoke*.ps1
+**/*smoke*.sh
+**/smoke/
+/tmp/
+
+# Local configuration (never publish)
+.env
+.env.*
+**/.env*
+*.local.json
+**/settings.local.json
+**/claude_desktop_config*.json
+**/credentials*
+**/*credential*
+**/*secret*
+**/*.key
+**/identity.hash
+**/NATIVE_STAMP*.txt
+
+# Claude / AI tool internal files
+**/.claude.json*
+**/plan-usage-history.json
+**/buddy-tokens.json
+**/extensions-*.json
+**/cowork-*.json
 
 # Local CI/build drop folders
 artifacts/

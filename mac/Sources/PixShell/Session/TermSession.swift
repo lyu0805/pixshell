@@ -2,12 +2,22 @@ import AppKit
 import SwiftTerm
 
 /// 一个终端会话：独立的 TerminalView + NIOSSHSession + 所属主机 + 标题 + 凭据。
+/// 也可为 **应用内 Web SSH**（`webSSHView != nil`）：内容区是 WKWebView，不经 NIO SSH。
 final class TermSession {
     let id = UUID().uuidString
     var host: Host   // 可变：首次连上识别出系统后会回填 osId（见 AppDelegate.detectRemoteOS）
     let termView: TerminalView
+    /// 非空 = 应用内 Web 终端标签（xterm.js via 本地桥）；`contentView` 优先用它。
+    var webSSHView: WebSSHView?
     var ssh: SSHSession?
     var title: String
+
+    /// 工作区应显示的内容：Web SSH 用 WKWebView，其它用 SwiftTerm。
+    var contentView: NSView { webSSHView ?? termView }
+    /// 应用内 Web 终端会话：仅当本标签挂了 WKWebView 时为真。
+    /// 注意：主机 connectionType==400 只表示「连接时走 Web 入口」；
+    /// 桥 /connect 为 Web 主机拉起的底层 SSH 标签不应被当成 Web 标签。
+    var isWebSSH: Bool { webSSHView != nil }
 
     /// 标签栏显示的名字：**用户在连接管理器里设的名字**（`host.display` = name 为空才回退到 IP）。
     ///
@@ -15,6 +25,10 @@ final class TermSession {
     /// 于是用户明明把主机命名为「台湾宽屏」，标签上却显示 `ubuntu24`，几台机器还会重名到分不清。
     /// 完整的远端标题仍保留在 `title` 里（tooltip、独立窗口标题用它）。
     var tabTitle: String {
+        if isWebSSH {
+            let name = host.display.trimmingCharacters(in: .whitespaces)
+            return name.isEmpty ? "Web 终端" : name
+        }
         let name = host.display.trimmingCharacters(in: .whitespaces)
         if !name.isEmpty { return name }
         // 兜底：连 display 都空（理论上不会）才退回远端标题，并去掉 user@ 和 : ~
@@ -51,7 +65,14 @@ final class TermSession {
     }
     func clearOutput() { outputBuffer = "" }
 
-    init(host: Host, termView: TerminalView) {
-        self.host = host; self.termView = termView; self.title = host.display
+    init(host: Host, termView: TerminalView, webSSHView: WebSSHView? = nil) {
+        self.host = host
+        self.termView = termView
+        self.webSSHView = webSSHView
+        self.title = host.display
+        if webSSHView != nil {
+            self.connected = true
+            self.shellOpened = true
+        }
     }
 }

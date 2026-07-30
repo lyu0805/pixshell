@@ -392,11 +392,17 @@ public sealed class AgentBridge
         await WriteBytesAsync(response, 200, "text/html; charset=utf-8", Encoding.UTF8.GetBytes(html)).ConfigureAwait(false);
     }
 
+    private static readonly HashSet<string> WebAssetAllowlist = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "xterm.js", "xterm.css", "addon-fit.js",
+    };
+
     private static async Task WriteStaticWebAsync(HttpListenerResponse response, string relative)
     {
-        // 防路径穿越：只允许纯文件名（xterm.js / xterm.css / addon-fit.js / webssh.html）
+        // 防路径穿越 + 白名单（对齐 Mac：仅公开 xterm 三件套；webssh.html 走已鉴权 /webssh）
         var name = relative.Replace('\\', '/');
-        if (name.Contains("..", StringComparison.Ordinal) || name.Contains('/') || string.IsNullOrWhiteSpace(name))
+        if (name.Contains("..", StringComparison.Ordinal) || name.Contains('/') || string.IsNullOrWhiteSpace(name)
+            || !WebAssetAllowlist.Contains(name))
         {
             await WriteJsonAsync(response, 404, new { ok = false, error = "not found" }).ConfigureAwait(false);
             return;
@@ -416,13 +422,8 @@ public sealed class AgentBridge
         var ext = Path.GetExtension(full).ToLowerInvariant();
         var ctype = ext switch
         {
-            ".html" => "text/html; charset=utf-8",
             ".js" => "application/javascript; charset=utf-8",
             ".css" => "text/css; charset=utf-8",
-            ".map" => "application/json; charset=utf-8",
-            ".svg" => "image/svg+xml",
-            ".png" => "image/png",
-            ".ico" => "image/x-icon",
             _ => "application/octet-stream",
         };
         var bytes = await File.ReadAllBytesAsync(full).ConfigureAwait(false);
@@ -522,6 +523,15 @@ public sealed class AgentBridge
             response.StatusCode = status;
             response.ContentType = contentType;
             response.Headers["Cache-Control"] = "no-store";
+            response.Headers["X-Content-Type-Options"] = "nosniff";
+            // HTML 响应头 CSP 双保险（页面 meta 已有）；禁 CDN/外联，仅 self + 内联。
+            if (contentType.Contains("text/html", StringComparison.OrdinalIgnoreCase))
+            {
+                response.Headers["Content-Security-Policy"] =
+                    "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+                    "connect-src 'self'; img-src 'self' data:; font-src 'self' data:; " +
+                    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+            }
             // 同源 Web SSH 页不需要 CORS 头；跨站仍被 Origin 校验挡掉。
             response.ContentLength64 = bodyBytes.Length;
             await response.OutputStream.WriteAsync(bodyBytes).ConfigureAwait(false);

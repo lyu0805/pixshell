@@ -60,8 +60,29 @@ public partial class MainWindow : IBridgeHost
         var pw = CredentialStore.GetPassword(h.Id) ?? "";
         if (string.IsNullOrEmpty(pw) && string.IsNullOrEmpty(h.KeyPath))
             throw new Exception("该主机没有保存的密码或私钥，请先在界面里连接一次");
+        if (h.IsRdp || h.IsLocal)
+            throw new Exception("RDP/本机终端不能经 Web 桥连接");
 
-        await OpenSessionTab(h, pw);
+        // Web 主机（type 400）底层仍走 SSH PTY；剥掉 Web 标记，避免 SSH 标签被当成 Web 视图。
+        var connectHost = h;
+        if (connectHost.IsWebSsh)
+        {
+            connectHost = new HostEntry
+            {
+                Id = h.Id,
+                Name = h.Name,
+                Host = h.Host,
+                Port = h.Port,
+                Username = h.Username,
+                Group = h.Group,
+                OsId = h.OsId,
+                KeyPath = h.KeyPath,
+                ProxyId = h.ProxyId,
+                ConnectionType = 100,
+            };
+        }
+
+        await OpenSessionTab(connectHost, pw);
         var idx = Sessions.Items.Count - 1;
 
         // 等 shell 真正打开再回，最多 20s（对齐 mac bridgeConnect 的 poll()）。
