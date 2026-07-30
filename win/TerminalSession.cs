@@ -61,7 +61,7 @@ public sealed class TerminalSession : IDisposable
     /// <summary>WebView2 SizeChanged 防抖 fit：合并 80ms 内多次，拖坞期间全跳（MainWindow.SuppressTerminalFit）。</summary>
     private void SchedulePixFit()
     {
-        if (MainWindow.SuppressTerminalFit) return;
+        if (System.Windows.Application.Current.MainWindow is MainWindow mw && mw.SuppressTerminalFit) return;
         if (View?.CoreWebView2 == null) return;
         _fitTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(80) };
         _fitTimer.Tick -= FitTimer_Tick;
@@ -73,7 +73,7 @@ public sealed class TerminalSession : IDisposable
     private void FitTimer_Tick(object? sender, EventArgs e)
     {
         _fitTimer?.Stop();
-        if (MainWindow.SuppressTerminalFit) return;
+        if (System.Windows.Application.Current.MainWindow is MainWindow mw && mw.SuppressTerminalFit) return;
         try
         {
             _ = View.CoreWebView2?.ExecuteScriptAsync("try{window.pixFit&&window.pixFit()}catch(e){}");
@@ -1237,10 +1237,13 @@ public sealed class TerminalSession : IDisposable
         if (cols == 0 || rows == 0) return;
         _cols = cols;
         _rows = rows;
-        if (!_connected || _windowChange == null || _channel == null) return;
+        var connected = _connected;
+        var ch = _channel;
+        var wc = _windowChange;
+        if (!connected || wc == null || ch == null) return;
         try
         {
-            _windowChange.Invoke(_channel, new object[] { cols, rows, 0u, 0u });
+            wc.Invoke(ch, new object[] { cols, rows, 0u, 0u });
         }
         catch { /* PTY resize 失败不致命 */ }
     }
@@ -1380,6 +1383,7 @@ public sealed class TerminalSession : IDisposable
         {
             try { ConnectedChanged?.Invoke(this, false); } catch { }
         }
+        _fitTimer?.Stop();
     }
 
     /// <summary>true = 允许非回环 http(s)（外部 Web/VNC）；false = 仅 127.0.0.1（本地桥 token 页）。</summary>
@@ -1568,9 +1572,13 @@ public sealed class TerminalSession : IDisposable
             {
                 View.CoreWebView2.NavigationStarting -= OnWebSshNavStarting;
                 View.CoreWebView2.NewWindowRequested -= OnWebSshNewWindow;
+                View.CoreWebView2.WebMessageReceived -= OnWebMessageReceived;
             }
         }
         catch { }
+        try { View.CoreWebView2.ContextMenuRequested -= OnContextMenuRequested; } catch { }
+        try { View.SizeChanged -= OnViewSizeChanged; } catch { }
+        _fitTimer?.Stop();
         try { View.Dispose(); } catch { }
     }
 }

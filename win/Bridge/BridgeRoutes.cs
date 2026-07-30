@@ -133,12 +133,7 @@ public static class BridgeRouter
                     if (method != "POST") return BridgeResponse.Fail(405, "use POST");
                     return await RouteSftpUpload(req, host).ConfigureAwait(false);
 
-                // Web SSH：HTML 主路径在 AgentBridge 直接处理（含无 token 打开 gate）；
-                // 这里保留别名，鉴权通过后也可由路由层吐同一页。
-                case "/webssh":
-                case "/v1/app/webssh":
-                    if (method != "GET") return BridgeResponse.Fail(405, "use GET");
-                    return RouteWebSshPage();
+                // Web SSH 页由 AgentBridge 直接处理，不走路由层。
 
                 default:
                     return BridgeResponse.Fail(404, "not found");
@@ -289,33 +284,6 @@ public static class BridgeRouter
         {
             return BridgeResponse.Fail(400, ex.Message);
         }
-    }
-
-    /// <summary>Web SSH 终端页：读 web/webssh.html；缺失时返回占位 HTML。</summary>
-    private static BridgeResponse RouteWebSshPage()
-    {
-        try
-        {
-            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            var candidates = new[]
-            {
-                Path.Combine(baseDir, "web", "webssh.html"),
-                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "web", "webssh.html")),
-            };
-            foreach (var p in candidates)
-            {
-                if (!File.Exists(p)) continue;
-                return BridgeResponse.HtmlOk(File.ReadAllText(p));
-            }
-        }
-        catch (Exception ex)
-        {
-            return BridgeResponse.Fail(500, "webssh page: " + ex.Message);
-        }
-        return BridgeResponse.HtmlOk(
-            "<!DOCTYPE html><meta charset=utf-8><title>PixShell Web SSH</title>" +
-            "<body style='background:#0e1116;color:#c9d1d9;font:14px sans-serif;padding:24px'>" +
-            "<h1>Web SSH</h1><p>缺少 web/webssh.html。</p></body>");
     }
 
     // =====================================================================

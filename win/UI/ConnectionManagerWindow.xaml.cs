@@ -315,7 +315,8 @@ public partial class ConnectionManagerWindow : Window
     
     private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        DragMove();
+        if (e.ChangedButton == MouseButton.Left && e.ButtonState == MouseButtonState.Pressed)
+            DragMove();
     }
     
     private void Window_KeyDown(object sender, KeyEventArgs e)

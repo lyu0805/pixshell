@@ -72,12 +72,12 @@ public static class SftpTransfer
         return (1, trimmed.Length == 0 ? "远端无 __PIXSHELL_RC 回执（命令未执行或通道失败）" : trimmed);
     }
 
-    /// <summary>本地解压到目标目录。返回错误描述，null 表示成功。</summary>
-    public static string? ExtractLocal(string archive, string intoDir) =>
-        Run("tar", new[] { "-xzf", archive, "-C", intoDir });
+    /// <summary>本地解压到目标目录。返回错误描述，null 表示成���。</summary>
+    public static async Task<string?> ExtractLocalAsync(string archive, string intoDir) =>
+        await RunAsync("tar", new[] { "-xzf", archive, "-C", intoDir }).ConfigureAwait(false);
 
     /// <summary>本地打包（多项 → 一个 .tar.gz）。逐项 <c>-C 父目录 basename</c>，支持跨目录多选（对齐 mac packLocal）。</summary>
-    public static string? PackLocal(string archive, IReadOnlyList<string> paths)
+    public static async Task<string?> PackLocalAsync(string archive, IReadOnlyList<string> paths)
     {
         if (paths.Count == 0) return "无文件";
         var args = new List<string> { "-czf", archive };
@@ -93,10 +93,10 @@ public static class SftpTransfer
             args.Add(parent);
             args.Add(baseName);
         }
-        return Run("tar", args.ToArray());
+        return await RunAsync("tar", args.ToArray()).ConfigureAwait(false);
     }
 
-    private static string? Run(string exe, string[] args)
+    private static async Task<string?> RunAsync(string exe, string[] args)
     {
         try
         {
@@ -110,16 +110,17 @@ public static class SftpTransfer
             foreach (var a in args) psi.ArgumentList.Add(a);
             using var p = Process.Start(psi);
             if (p == null) return "无法启动 tar";
-            var err = p.StandardError.ReadToEnd();
-            var outp = p.StandardOutput.ReadToEnd();
-            p.WaitForExit();
+            var errTask = p.StandardError.ReadToEndAsync();
+            var outTask = p.StandardOutput.ReadToEndAsync();
+            await Task.WhenAll(errTask, outTask).ConfigureAwait(false);
+            await p.WaitForExitAsync().ConfigureAwait(false);
             if (p.ExitCode == 0) return null;
-            var msg = (err + outp).Trim();
+            var msg = (errTask.Result + outTask.Result).Trim();
             return msg.Length == 0 ? $"tar 退出码 {p.ExitCode}" : msg;
         }
         catch (Exception ex) { return ex.Message; }
     }
 
-    /// <summary>生成唯一临时包名（毫秒时间戳，与 mac stamp() 等价可读）。</summary>
-    public static string Stamp() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
+    /// <summary>生成唯一临时包名（GUID，避免时间戳碰撞）。</summary>
+    public static string Stamp() => Guid.NewGuid().ToString("N");
 }

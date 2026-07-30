@@ -63,7 +63,7 @@ public partial class MainWindow : Window
     // 切 tab 后 PollMonitor 防抖：避免 SelectionChanged 立刻再 Exec mon 叠 3s tick
     private DateTime _lastPollKick = DateTime.MinValue;
     // 公开给 TerminalSession：拖坞期间跳过 pixFit（避免 SizeChanged 风暴）
-    internal static bool SuppressTerminalFit;
+    internal bool SuppressTerminalFit;
 
     // 本地 CLI/AI-Agent 桥（对齐 mac AppDelegate.agentBridge + bridgeTimer）。
     private Bridge.AgentBridge? _agentBridge;
@@ -169,7 +169,6 @@ public partial class MainWindow : Window
 
         // 自绘机器人，跟随主题着色（Segoe MDL2 没有这个字形）
         ChatBtn.Content = UI.RobotIcon.Make();
-        ApplyLocalHiddenIndicator();
         UpdateWorkCenterVisibility();
         ThemeBtn.Content = ThemeManager.IsDark ? "\uE708" : "\uE706";  // Segoe MDL2: 月/日，单色随主题
         _monitorTimer.Start();
@@ -179,7 +178,6 @@ public partial class MainWindow : Window
         // 注册独立 ToolsFlyout 窗口的关闭控制，确保 Esc/Outside Click / Alt-Tab 均能正常关闭
         PreviewMouseLeftButtonDown += MainWindow_PreviewMouseLeftButtonDown;
         PreviewKeyDown += MainWindow_PreviewKeyDown;
-        Deactivated += MainWindow_Deactivated;
         LocationChanged += (s, ev) => CloseToolsFlyout();
         SizeChanged += (s, ev) => CloseToolsFlyout();
         StateChanged += (s, ev) => CloseToolsFlyout();
@@ -484,17 +482,8 @@ public partial class MainWindow : Window
         var h = host ?? HostEntry.LocalTerminal();
         Log.Info("打开本机终端", "session");
         var session = new TerminalSession(h.Display, _htmlPath) { SourceHost = h };
-        session.StatusChanged += (s, msg) => { if (IsActiveSession(s)) SetStatus(msg); };
-        session.ConnectedChanged += (s, on) =>
-        {
-            if (on) return;
-            if (!IsActiveSession(s)) return;
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                ClearSessionSidePanels();
-                RefreshConnState();
-            }));
-        };
+        session.StatusChanged += OnSessionStatusChanged;
+        session.ConnectedChanged += OnSessionConnectedChanged;
 
         var item = new TabItem { Tag = session, Content = session.View };
         BuildTabHeader(item, session);
@@ -543,18 +532,9 @@ public partial class MainWindow : Window
         if (host.IsLocal) { await OpenLocalTerminalSession(host); return; }
         Log.Info($"打开会话 {host.Username}@{host.Host}:{host.Port}", "session");
         var session = new TerminalSession(host.Display, _htmlPath) { SourceHost = host };
-        session.StatusChanged += (s, msg) => { if (IsActiveSession(s)) SetStatus(msg); };
+        session.StatusChanged += OnSessionStatusChanged;
         // P1：活动会话掉线 → 清 SFTP + 关系统信息（与关标签/手动断开同路径）
-        session.ConnectedChanged += (s, on) =>
-        {
-            if (on) return;
-            if (!IsActiveSession(s)) return;
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                ClearSessionSidePanels();
-                RefreshConnState();
-            }));
-        };
+        session.ConnectedChanged += OnSessionConnectedChanged;
 
         var item = new TabItem { Tag = session, Content = session.View };
         BuildTabHeader(item, session);
@@ -675,7 +655,7 @@ public partial class MainWindow : Window
         if (_retryPrompting) return;
         _retryPrompting = true;
         // 延后一拍：此刻还在 ConnectAsync 的异常处理里，直接弹模态框会和正在收尾的会话打架。
-        Dispatcher.BeginInvoke(new Action(async () =>
+        _ = Dispatcher.InvokeAsync(async () =>
         {
             try
             {
@@ -699,7 +679,7 @@ public partial class MainWindow : Window
                 SetStatus("连接失败: " + ex2.Message);
             }
             finally { _retryPrompting = false; }
-        }), System.Windows.Threading.DispatcherPriority.Background);
+        }, System.Windows.Threading.DispatcherPriority.Background);
     }
 
     private void BuildTabHeader(TabItem item, TerminalSession session)
@@ -726,11 +706,7 @@ public partial class MainWindow : Window
         item.ContextMenu = BuildTabContextMenu(item);
 
         // OSC 标题变化 → 只刷新 tooltip，标签文字保持用户命名
-        session.TitleChanged += s => titleBlock.Dispatcher.BeginInvoke(new Action(() =>
-        {
-            titleBlock.Text = s.TabTitle;
-            titleBlock.ToolTip = s.Title;
-        }));
+        session.TitleChanged += OnSessionTitleChanged;
 
         // 点击 tab（哪怕是已选中的同一个）都要把强制显示的快速连接落地页收起——
         // WPF 的 SelectionChanged 只在选中项真正变化时触发，重选同一 tab 不会触发，
@@ -857,7 +833,13 @@ public partial class MainWindow : Window
     private void CloseTab(TabItem item)
     {
         var wasActive = ReferenceEquals(Sessions.SelectedItem, item);
-        if (item.Tag is TerminalSession session) { try { session.Dispose(); } catch { } }
+        if (item.Tag is TerminalSession session)
+        {
+            session.StatusChanged -= OnSessionStatusChanged;
+            session.ConnectedChanged -= OnSessionConnectedChanged;
+            session.TitleChanged -= OnSessionTitleChanged;
+            try { session.Dispose(); } catch { }
+        }
         Sessions.Items.Remove(item);
         // P1：关标签就清侧栏；空会话或关掉的是当前活动标签都要
         if (Sessions.Items.Count == 0 || wasActive) ClearSessionSidePanels();
@@ -887,16 +869,6 @@ public partial class MainWindow : Window
         KickPollMonitorDebounced();
     }
 
-    /// <summary>
-    /// 主题切换等非 HWND 场景可用的软过渡。切 SSH 标签页<strong>不要</strong>调用——
-    /// MainArea 含 WebView2，RenderTargetBitmap 会得到黑洞（GitHub #1）。
-    /// </summary>
-    private void PlayRippleTransition()
-    {
-        // 故意空实现保留符号，避免外部/菜单误调旧路径再引入闪黑。
-        // 若将来有纯 WPF 页可在此做轻量 Opacity 淡入，仍禁止 RTB(MainArea)。
-    }
-
     private void SyncDockSession()
     {
         Sftp.SetSession(ActiveSession);
@@ -909,6 +881,38 @@ public partial class MainWindow : Window
 
     private TerminalSession? ActiveSession => (Sessions.SelectedItem as TabItem)?.Tag as TerminalSession;
     private bool IsActiveSession(TerminalSession s) => ReferenceEquals(ActiveSession, s);
+
+    private void OnSessionStatusChanged(TerminalSession s, string msg) { if (IsActiveSession(s)) SetStatus(msg); }
+    private void OnSessionConnectedChanged(TerminalSession s, bool on)
+    {
+        if (!on && IsActiveSession(s))
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                ClearSessionSidePanels();
+                RefreshConnState();
+            }));
+        }
+    }
+    private void OnSessionTitleChanged(TerminalSession s)
+    {
+        // Find the TabItem for this session and update its title/tooltip
+        foreach (var tab in Sessions.Items)
+        {
+            if (tab is TabItem { Tag: TerminalSession cur } && ReferenceEquals(cur, s))
+            {
+                if (tab is TabItem ti && ti.Header is StackPanel sp && sp.Children.Count > 0 && sp.Children[0] is TextBlock tb)
+                {
+                    tb.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        tb.Text = s.TabTitle;
+                        tb.ToolTip = s.Title;
+                    }));
+                }
+                break;
+            }
+        }
+    }
 
     private List<(string title, bool active)> BuildSessionTitles()
     {
@@ -1292,12 +1296,6 @@ public partial class MainWindow : Window
         return true; // 文本编辑聚焦但没匹配到控件：吞掉，别漏进终端
     }
 
-    private void MainWindow_Deactivated(object? sender, EventArgs e)
-    {
-        // 不在失焦时自动关工具窗：文件夹选择器/结果窗/子对话框会抢焦点导致闪关。
-        // 关闭靠 ✕ / Esc / 再点工具按钮 / 点主窗空白。
-    }
-
     private void PickDownloadDir()
     {
         var dlg = new OpenFolderDialog { InitialDirectory = _downloadDir };
@@ -1419,8 +1417,6 @@ public partial class MainWindow : Window
         if (files) Sftp.ConnectIfNeeded();
     }
 
-    private void ApplyLocalHiddenIndicator() { /* 本地列默认隐藏，由 SftpPanel 自行管理 */ }
-
     // =====================================================================
     // 内置文本编辑器（SFTP 双击文件 → 打开；保存 → 写回远端，对齐 mac editorPanel 接线）
     // =====================================================================
@@ -1501,7 +1497,6 @@ public partial class MainWindow : Window
 
         ActiveSession.SendText(text + "\r");
         _cmdHistory.Push(text);
-        ApplyCdSync(text);
         CmdInput.Text = "";
         CmdInput.Focus(); // 发送后焦点留在命令框（底栏 UX，对齐 mac sendCommandBox）
     }
@@ -1593,19 +1588,6 @@ public partial class MainWindow : Window
         foreach (var s in list.Skip(1))
             while (!s.StartsWith(p) && p.Length > 0) p = p[..^1];
         return p;
-    }
-
-    /// <summary>P0：SFTP 与终端独立 — 终端 cd 不再驱动 SFTP。</summary>
-    private void ApplyCdSync(string command)
-    {
-        // 保留空实现，避免调用点改漏；如需旧联动行为再打开下方逻辑。
-        _ = command;
-    }
-
-    /// <summary>P0：SFTP 进目录不再往终端灌 cd（旧 OnUserNavigate 已解绑）。</summary>
-    private void SyncTerminalCd(string path)
-    {
-        _ = path;
     }
 
     /// <summary>P1：SSH 断开/关标签 → 清 SFTP + 关系统信息窗口。</summary>
@@ -1975,7 +1957,7 @@ public partial class MainWindow : Window
         QuickConnectPanel.Reload();
 
         var session = new TerminalSession(host.Display, _htmlPath) { SourceHost = host };
-        session.StatusChanged += (s, msg) => { if (IsActiveSession(s)) SetStatus(msg); };
+        session.StatusChanged += OnSessionStatusChanged;
 
         var item = new TabItem { Tag = session, Content = session.View };
         BuildTabHeader(item, session);
@@ -2044,7 +2026,7 @@ public partial class MainWindow : Window
         var url = _agentBridge.BuildWebSshUrl(bindSession);
         var host = HostEntry.WebSshTerminal(bindSession);
         var session = new TerminalSession(host.Display, _htmlPath) { SourceHost = host };
-        session.StatusChanged += (s, msg) => { if (IsActiveSession(s)) SetStatus(msg); };
+        session.StatusChanged += OnSessionStatusChanged;
 
         var item = new TabItem { Tag = session, Content = session.View };
         BuildTabHeader(item, session);

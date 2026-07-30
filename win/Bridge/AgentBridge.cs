@@ -130,8 +130,6 @@ public sealed class AgentBridge
                 Arguments = $"\"{path}\" /inheritance:r /grant:r \"{user}:F\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
             };
             using var proc = Process.Start(psi);
             proc?.WaitForExit(5000);
@@ -186,7 +184,9 @@ public sealed class AgentBridge
             _listener?.Close();
         }
         catch { /* 忽略收尾异常 */ }
+        try { _cts?.Dispose(); } catch { }
         _listener = null;
+        _cts = null;
         IsRunning = false;
         Log.Info("本地桥已停止", "bridge");
     }

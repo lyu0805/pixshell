@@ -238,12 +238,13 @@ public partial class SftpPanel : UserControl
         if (sender is not TreeViewItem item || item.Tag is not SftpNode node) return;
         if (node.Loaded) return;
         node.Loaded = true;
-        if (_sftp is not { IsConnected: true }) { item.Items.Clear(); return; }
+        var sftp = _sftp;
+        if (sftp is not { IsConnected: true }) { item.Items.Clear(); return; }
         var path = node.Path;
         System.Threading.Tasks.Task.Run(() =>
         {
             List<ISftpFile>? dirs = null;
-            try { dirs = _sftp.ListDirectory(path).Where(f => f.IsDirectory && f.Name != "." && f.Name != "..").OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList(); }
+            try { dirs = sftp.ListDirectory(path).Where(f => f.IsDirectory && f.Name != "." && f.Name != "..").OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList(); }
             catch { }
             Dispatcher.BeginInvoke(new Action(() =>
             {
@@ -265,7 +266,8 @@ public partial class SftpPanel : UserControl
     // =====================================================================
     private void LoadRemoteDetail(string dir)
     {
-        if (_sftp is not { IsConnected: true }) return;
+        var sftp = _sftp;
+        if (sftp is not { IsConnected: true }) return;
         OnPathChange?.Invoke(dir);
         System.Threading.Tasks.Task.Run(() =>
         {
@@ -273,7 +275,7 @@ public partial class SftpPanel : UserControl
             string? err = null;
             try
             {
-                var listing = _sftp.ListDirectory(dir).Where(f => f.Name != "." && f.Name != "..").ToList();
+                var listing = sftp.ListDirectory(dir).Where(f => f.Name != "." && f.Name != "..").ToList();
                 rows = listing
                     .OrderByDescending(f => f.IsDirectory)
                     .ThenBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
@@ -309,16 +311,20 @@ public partial class SftpPanel : UserControl
     // =====================================================================
     // 内置编辑器：双击文件 / 右键"打开" → 下载到临时文件 → 交给 EditorWindow
     // =====================================================================
-    private void OpenRemoteFileForEdit(FsRow r)
+    private async void OpenRemoteFileForEdit(FsRow r)
     {
-        if (_sftp is not { IsConnected: true }) return;
+        var sftp = _sftp;
+        if (sftp is not { IsConnected: true }) return;
         if (r.Size > 4 * 1024 * 1024) { StatusLabel.Text = "文件过大（>4MB），请先下载"; return; }
         var remote = JoinRemote(_remoteDir, r.Name);
         var tmp = Path.Combine(Path.GetTempPath(), "pixshell_edit_" + r.Name);
         StatusLabel.Text = $"打开 {r.Name} …";
         try
         {
-            using (var fs = File.Create(tmp)) _sftp.DownloadFile(remote, fs);
+            await Task.Run(() =>
+            {
+                using (var fs = File.Create(tmp)) sftp.DownloadFile(remote, fs);
+            });
             string text;
             try { text = File.ReadAllText(tmp, Encoding.UTF8); }
             catch { text = File.ReadAllText(tmp, Encoding.Latin1); }
@@ -331,21 +337,34 @@ public partial class SftpPanel : UserControl
             Log.Error($"打开远端文件失败 {remote}: {ex.Message}", "editor");
             StatusLabel.Text = "打开失败: " + ex.Message;
         }
+        finally
+        {
+            try { File.Delete(tmp); } catch { }
+        }
     }
 
     /// <summary>编辑器保存 → 写回远端（MainWindow 把 EditorWindow.OnSave 接到这里）。</summary>
-    public void SaveRemoteFile(string remotePath, string text, Action<string?> done)
+    public async void SaveRemoteFile(string remotePath, string text, Action<string?> done)
     {
-        if (_sftp is not { IsConnected: true }) { done("远端未连接"); return; }
+        var sftp = _sftp;
+        if (sftp is not { IsConnected: true }) { done("远端未连接"); return; }
+        var tmp = "";
         try
         {
-            var tmp = Path.Combine(Path.GetTempPath(), "pixshell_save_" + Path.GetFileName(remotePath));
-            File.WriteAllText(tmp, text, new UTF8Encoding(false));
-            using (var fs = File.OpenRead(tmp)) _sftp.UploadFile(fs, remotePath, true);
+            tmp = Path.Combine(Path.GetTempPath(), "pixshell_save_" + Path.GetFileName(remotePath));
+            await Task.Run(() =>
+            {
+                File.WriteAllText(tmp, text, new UTF8Encoding(false));
+                using (var fs = File.OpenRead(tmp)) sftp.UploadFile(fs, remotePath, true);
+            });
             done(null);
             if (remotePath.StartsWith(_remoteDir)) LoadRemoteDetail(_remoteDir);
         }
         catch (Exception ex) { done(ex.Message); }
+        finally
+        {
+            if (!string.IsNullOrEmpty(tmp)) try { File.Delete(tmp); } catch { }
+        }
     }
 
     // =====================================================================
@@ -363,47 +382,61 @@ public partial class SftpPanel : UserControl
         LoadRemoteDetail(_remoteDir);
     }
 
-    public void Mkdir()
+    public async void Mkdir()
     {
-        if (_sftp is not { IsConnected: true }) return;
+        var sftp = _sftp;
+        if (sftp is not { IsConnected: true }) return;
         var name = Prompt("新建远端目录名：");
         if (string.IsNullOrWhiteSpace(name)) return;
-        try { _sftp.CreateDirectory(JoinRemote(_remoteDir, name)); LoadRemoteDetail(_remoteDir); }
+        try
+        {
+            await Task.Run(() => sftp.CreateDirectory(JoinRemote(_remoteDir, name)));
+            LoadRemoteDetail(_remoteDir);
+        }
         catch (Exception ex) { StatusLabel.Text = "新建失败: " + ex.Message; }
     }
 
     /// <summary>右键/键盘 Delete 目标条目：优先当前多选（⌘/Shift 多选，对齐 mac 版 §5）。</summary>
     private List<FsRow> TargetRemoteRows() => RemoteList.SelectedItems.Cast<FsRow>().ToList();
 
-    public void Delete()
+    public async void Delete()
     {
-        if (_sftp is not { IsConnected: true }) return;
+        var sftp = _sftp;
+        if (sftp is not { IsConnected: true }) return;
         var rows = TargetRemoteRows();
         if (rows.Count == 0) return;
         var preview = string.Join("\n", rows.Take(6).Select(r => r.Name));
         if (MessageBox.Show($"删除 {rows.Count} 项？\n{preview}", "PixShell", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
-        foreach (var r in rows)
+        await Task.Run(() =>
         {
-            try
+            foreach (var r in rows)
             {
-                var p = JoinRemote(_remoteDir, r.Name);
-                if (r.IsDir) _sftp.DeleteDirectory(p); else _sftp.DeleteFile(p);
+                try
+                {
+                    var p = JoinRemote(_remoteDir, r.Name);
+                    if (r.IsDir) sftp.DeleteDirectory(p); else sftp.DeleteFile(p);
+                }
+                catch (Exception ex) { StatusLabel.Text = "删除失败: " + ex.Message; }
             }
-            catch (Exception ex) { StatusLabel.Text = "删除失败: " + ex.Message; }
-        }
+        });
         LoadRemoteDetail(_remoteDir);
     }
 
     /// <summary>F2 / 右键"重命名…"：只对第一个选中项生效。</summary>
-    public void Rename()
+    public async void Rename()
     {
-        if (_sftp is not { IsConnected: true }) return;
+        var sftp = _sftp;
+        if (sftp is not { IsConnected: true }) return;
         var rows = TargetRemoteRows();
         if (rows.Count == 0) return;
         var r = rows[0];
-        var name = Prompt($"重命名“{r.Name}”为：", r.Name);
+        var name = Prompt($"重命名"{r.Name}"为：", r.Name);
         if (string.IsNullOrWhiteSpace(name) || name == r.Name) return;
-        try { _sftp.RenameFile(JoinRemote(_remoteDir, r.Name), JoinRemote(_remoteDir, name)); LoadRemoteDetail(_remoteDir); }
+        try
+        {
+            await Task.Run(() => sftp.RenameFile(JoinRemote(_remoteDir, r.Name), JoinRemote(_remoteDir, name)));
+            LoadRemoteDetail(_remoteDir);
+        }
         catch (Exception ex) { StatusLabel.Text = "重命名失败: " + ex.Message; }
     }
 
@@ -473,37 +506,40 @@ public partial class SftpPanel : UserControl
     }
 
     /// <summary>关闭打包时：逐项直传上传（目录跳过并提示）。</summary>
-    private void UploadDirect(List<string> paths, SftpClient sftp)
+    private async void UploadDirect(List<string> paths, SftpClient sftp)
     {
         var skippedDirs = 0;
         var uploaded = 0;
-        foreach (var one in paths)
+        await Task.Run(() =>
         {
-            if (Directory.Exists(one))
+            foreach (var one in paths)
             {
-                skippedDirs++;
-                continue;
+                if (Directory.Exists(one))
+                {
+                    skippedDirs++;
+                    continue;
+                }
+                if (!File.Exists(one)) continue;
+                try
+                {
+                    var remote = JoinRemote(_remoteDir, Path.GetFileName(one));
+                    using var fs = File.OpenRead(one);
+                    StatusLabel.Text = $"上传 {Path.GetFileName(one)} …";
+                    Log.Info($"直传上传 {one} → {remote}", "sftp");
+                    sftp.UploadFile(fs, remote, true);
+                    uploaded++;
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"上传失败 {one}: {ex.Message}", "sftp");
+                    StatusLabel.Text = "上传失败: " + ex.Message;
+                    return;
+                }
             }
-            if (!File.Exists(one)) continue;
-            try
-            {
-                var remote = JoinRemote(_remoteDir, Path.GetFileName(one));
-                using var fs = File.OpenRead(one);
-                StatusLabel.Text = $"上传 {Path.GetFileName(one)} …";
-                Log.Info($"直传上传 {one} → {remote}", "sftp");
-                sftp.UploadFile(fs, remote, true);
-                uploaded++;
-            }
-            catch (Exception ex)
-            {
-                Log.Error($"上传失败 {one}: {ex.Message}", "sftp");
-                StatusLabel.Text = "上传失败: " + ex.Message;
-                return;
-            }
-        }
+        });
         StatusLabel.Text = skippedDirs > 0
             ? $"直传完成（{skippedDirs} 个目录已跳过，请开启「打包传输」）"
-            : (uploaded > 0 ? "上传完成" : "无可上传文件");
+            : (uploaded > 0 ? "上传完成" : "无���上传文件");
         if (uploaded > 0) LoadRemoteDetail(_remoteDir);
     }
 
@@ -515,7 +551,7 @@ public partial class SftpPanel : UserControl
         var remoteArchive = $"/tmp/pixshell_up_{st}.tar.gz";
         StatusLabel.Text = $"本地打包 {paths.Count} 项 …";
         Log.Info("智能打包上传 " + string.Join(", ", paths.Select(Path.GetFileName)), "sftp");
-        var err = SftpTransfer.PackLocal(localArchive, paths);
+        var err = await SftpTransfer.PackLocalAsync(localArchive, paths).ConfigureAwait(false);
         if (err != null) { Log.Error("本地打包失败: " + err, "sftp"); StatusLabel.Text = "打包失败: " + err; return; }
         try
         {
@@ -566,38 +602,41 @@ public partial class SftpPanel : UserControl
     }
 
     /// <summary>关闭打包时：逐项直传下载（目录跳过并提示）。</summary>
-    private void DownloadDirect(List<FsRow> rows, string destDir, SftpClient sftp)
+    private async void DownloadDirect(List<FsRow> rows, string destDir, SftpClient sftp)
     {
         var skippedDirs = 0;
         var downloaded = 0;
         try { Directory.CreateDirectory(destDir); } catch { /* 目标目录创建失败后面再报 */ }
-        foreach (var r in rows)
+        await Task.Run(() =>
         {
-            if (r.IsDir)
+            foreach (var r in rows)
             {
-                skippedDirs++;
-                continue;
+                if (r.IsDir)
+                {
+                    skippedDirs++;
+                    continue;
+                }
+                Guid? task = null;
+                try
+                {
+                    var local = Path.Combine(destDir, r.Name);
+                    using var fs = File.Create(local);
+                    StatusLabel.Text = $"下载 {r.Name} …";
+                    Log.Info($"直传下载 {JoinRemote(_remoteDir, r.Name)} → {local}", "sftp");
+                    task = DownloadTasks.Start(r.Name, local);
+                    sftp.DownloadFile(JoinRemote(_remoteDir, r.Name), fs);
+                    DownloadTasks.Finish(task.Value, ok: true);
+                    downloaded++;
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"下载失败 {r.Name}: {ex.Message}", "sftp");
+                    if (task.HasValue) DownloadTasks.Finish(task.Value, ok: false, detail: ex.Message);
+                    StatusLabel.Text = "下载失败: " + ex.Message;
+                    return;
+                }
             }
-            Guid? task = null;
-            try
-            {
-                var local = Path.Combine(destDir, r.Name);
-                using var fs = File.Create(local);
-                StatusLabel.Text = $"下载 {r.Name} …";
-                Log.Info($"直传下载 {JoinRemote(_remoteDir, r.Name)} → {local}", "sftp");
-                task = DownloadTasks.Start(r.Name, local);
-                sftp.DownloadFile(JoinRemote(_remoteDir, r.Name), fs);
-                DownloadTasks.Finish(task.Value, ok: true);
-                downloaded++;
-            }
-            catch (Exception ex)
-            {
-                Log.Error($"下载失败 {r.Name}: {ex.Message}", "sftp");
-                if (task.HasValue) DownloadTasks.Finish(task.Value, ok: false, detail: ex.Message);
-                StatusLabel.Text = "下载失败: " + ex.Message;
-                return;
-            }
-        }
+        });
         StatusLabel.Text = skippedDirs > 0
             ? $"直传完成（{skippedDirs} 个目录已跳过，请开启「打包传输」）"
             : (downloaded > 0 ? $"下载完成: {destDir}" : "无可下载文件");
@@ -639,7 +678,7 @@ public partial class SftpPanel : UserControl
             return;
         }
         _ = ExecRunner($"rm -f {SftpTransfer.Quote(remoteArchive)}");
-        var err = SftpTransfer.ExtractLocal(localArchive, destDir);
+        var err = await SftpTransfer.ExtractLocalAsync(localArchive, destDir).ConfigureAwait(false);
         if (err != null)
         {
             Log.Error("本地解压失败: " + err, "sftp");
@@ -696,20 +735,24 @@ public partial class SftpPanel : UserControl
     // =====================================================================
     // 本地（默认隐藏）
     // =====================================================================
-    private void LoadLocal(string dir)
+    private async void LoadLocal(string dir)
     {
         try
         {
-            var di = new DirectoryInfo(dir);
-            var rows = new List<FsRow>();
-            foreach (var d in di.GetDirectories().OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
-                rows.Add(new FsRow { Name = d.Name, IsDir = true });
-            foreach (var f in di.GetFiles().OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
-                rows.Add(new FsRow { Name = f.Name, IsDir = false, Size = f.Length, Mtime = f.LastWriteTime });
-            _localDir = di.FullName;
+            var rows = await Task.Run(() =>
+            {
+                var di = new DirectoryInfo(dir);
+                var result = new List<FsRow>();
+                foreach (var d in di.GetDirectories().OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
+                    result.Add(new FsRow { Name = d.Name, IsDir = true });
+                foreach (var f in di.GetFiles().OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
+                    result.Add(new FsRow { Name = f.Name, IsDir = false, Size = f.Length, Mtime = f.LastWriteTime });
+                return (di.FullName, result);
+            });
+            _localDir = rows.FullName;
             LocalPathLabel.Text = _localDir;
-            _localEntries = rows;
-            LocalList.ItemsSource = rows;
+            _localEntries = rows.result;
+            LocalList.ItemsSource = rows.result;
         }
         catch (Exception ex) { StatusLabel.Text = "本地读取失败: " + ex.Message; }
     }
