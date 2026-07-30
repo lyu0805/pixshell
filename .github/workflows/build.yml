@@ -2,8 +2,6 @@ name: build
 
 on:
   push:
-    branches:
-      - agent/openssh-compatibility
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
