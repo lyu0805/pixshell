@@ -138,6 +138,30 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
                                    password: password,
                                    keyPath: host.keyPath.isEmpty ? nil : host.keyPath,
                                    proxy: proxyProvider?(host.proxyId))
+        // 与终端会话保持一致：RSA/DSA/加密私钥等 NIO 无法加载的类型，直接交给
+        // 系统 OpenSSH。否则文件列表会先等待 NIO 连接超时约两分钟才开始回落。
+        let keyRequiresOpenSSH = !host.keyPath.isEmpty
+            && SSHPrivateKeyLoader.load(path: host.keyPath) == nil
+        if keyRequiresOpenSSH {
+            Log.info("私钥不受 NIO 支持，SFTP 直接使用 OpenSSH", "sftp")
+            let primary = OpenSSHSFTPSession()
+            sftp = primary
+            primary.connect(creds) { [weak self] result in
+                guard let self = self, gen == self.connectGeneration else { return }
+                switch result {
+                case .success:
+                    self.markConnected(primary, label: "OpenSSH")
+                case .failure(let error):
+                    self.sftp?.close(); self.sftp = nil
+                    self.sftpReady = false
+                    self.onPathChange?("远端未连接")
+                    self.statusLabel.stringValue = "SFTP 失败: \(self.msg(error))"
+                    Log.error("OpenSSH SFTP 失败：\(error.localizedDescription)", "sftp")
+                    self.finishWaiters(.failure(error))
+                }
+            }
+            return
+        }
         // 先试 NIO（零进程、快）；算法/子系统失败再回落系统 OpenSSH。
         let primary = NIOSFTPSession()
         sftp = primary
