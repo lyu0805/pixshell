@@ -32,7 +32,7 @@
 
         <!-- Visible：轨道常显，内容溢出时滑块可拖（用户反复要求分组/整窗滑块） -->
         <ScrollViewer Grid.Row="1"
-                      VerticalScrollBarVisibility="Visible"
+                      VerticalScrollBarVisibility="Auto"
                       HorizontalScrollBarVisibility="Disabled"
                       CanContentScroll="False"
                       PanningMode="VerticalOnly">

@@ -74,68 +74,11 @@ public partial class ConnectionManagerWindow : Window
 
             if (!_collapsed.Contains(name))
             {
-                // 分组内独立滚动：MaxHeight 压矮，Visible 强制出滑块轨道
-                var hostsScroll = new ScrollViewer
-                {
-                    VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
-                    HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                    Margin = new Thickness(0, 6, 0, 0),
-                    MaxHeight = 140, // 约 4 行主机；再矮一点保证多主机时一定出滑块
-                    CanContentScroll = false,
-                    PanningMode = PanningMode.VerticalOnly
-                };
-
-                // Add mouse wheel redirection to bubble scroll to parent ScrollViewer when boundaries are hit
-                hostsScroll.PreviewMouseWheel += (sender, e) =>
-                {
-                    if (sender is ScrollViewer sv)
-                    {
-                        if (sv.ScrollableHeight <= 0)
-                        {
-                            var parent = FindAncestor<ScrollViewer>(sv);
-                            if (parent != null)
-                            {
-                                e.Handled = true;
-                                var eventArg = new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta)
-                                {
-                                    RoutedEvent = UIElement.MouseWheelEvent,
-                                    Source = sv
-                                };
-                                parent.RaiseEvent(eventArg);
-                            }
-                        }
-                        else
-                        {
-                            bool isAtTop = sv.VerticalOffset <= 0;
-                            bool isAtBottom = sv.VerticalOffset >= sv.ScrollableHeight;
-                            if ((e.Delta > 0 && isAtTop) || (e.Delta < 0 && isAtBottom))
-                            {
-                                var parent = FindAncestor<ScrollViewer>(sv);
-                                if (parent != null)
-                                {
-                                    e.Handled = true;
-                                    var eventArg = new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta)
-                                    {
-                                        RoutedEvent = UIElement.MouseWheelEvent,
-                                        Source = sv
-                                    };
-                                    parent.RaiseEvent(eventArg);
-                                }
-                            }
-                        }
-                    }
-                };
-
-                var hostsStack = new StackPanel { Orientation = Orientation.Vertical };
+                var hostsPanel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 6, 0, 0) };
                 foreach (var h in list)
-                {
-                    hostsStack.Children.Add(BuildRow(h));
-                }
-
-                hostsScroll.Content = hostsStack;
-                groupStack.Children.Add(hostsScroll);
+                    hostsPanel.Children.Add(BuildRow(h));
+                groupStack.Children.Add(hostsPanel);
             }
-
             groupBorder.Child = groupStack;
             ListPanel.Children.Add(groupBorder);
         }

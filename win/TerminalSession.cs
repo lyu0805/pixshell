@@ -1075,18 +1075,27 @@ public sealed class TerminalSession : IDisposable
         if (System.Net.IPAddress.TryParse(host, out _)) return host;
         try
         {
-            var addrs = System.Net.Dns.GetHostAddresses(host);
-            var v4 = addrs.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
-            if (v4 != null)
+            // 带超时的 DNS 解析，避免 LLMNR/NetBIOS 导致局域网卡顿 3-4 秒
+            var task = System.Net.Dns.GetHostAddressesAsync(host);
+            if (task.Wait(TimeSpan.FromMilliseconds(500)))
             {
-                Log.Info($"DNS 快解析 {host} → {v4}", "ssh");
-                return v4.ToString();
+                var addrs = task.Result;
+                var v4 = addrs.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+                if (v4 != null)
+                {
+                    Log.Info($"DNS 快解析 {host} → {v4}", "ssh");
+                    return v4.ToString();
+                }
+                var any = addrs.FirstOrDefault();
+                if (any != null)
+                {
+                    Log.Info($"DNS 快解析 {host} → {any}", "ssh");
+                    return any.ToString();
+                }
             }
-            var any = addrs.FirstOrDefault();
-            if (any != null)
+            else
             {
-                Log.Info($"DNS 快解析 {host} → {any}", "ssh");
-                return any.ToString();
+                Log.Warn($"DNS 快解析超时 (500ms) {host}，降级原样直连", "ssh");
             }
         }
         catch (Exception ex)
