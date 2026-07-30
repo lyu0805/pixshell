@@ -266,7 +266,7 @@
                     <Setter.Value>
                         <ControlTemplate TargetType="{x:Type Thumb}">
                             <Border x:Name="b" Background="{DynamicResource BrushText}"
-                                    Opacity="0.45" CornerRadius="5" Margin="1.5"/>
+                                    Opacity="0.45" CornerRadius="4" Margin="3"/>
                             <ControlTemplate.Triggers>
                                 <Trigger Property="IsMouseOver" Value="True">
                                     <Setter TargetName="b" Property="Opacity" Value="0.75"/>
@@ -337,11 +337,10 @@
 
             <Style TargetType="{x:Type ScrollBar}">
                 <Setter Property="OverridesDefaultStyle" Value="True"/>
-                <Setter Property="Background" Value="{DynamicResource BrushBg3}"/>
+                <Setter Property="Background" Value="Transparent"/>
                 <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
                 <Setter Property="BorderThickness" Value="0"/>
                 <Setter Property="Width" Value="14"/>
-                <Setter Property="Height" Value="14"/>
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="{x:Type ScrollBar}">
@@ -351,7 +350,7 @@
                                         <RepeatButton Style="{StaticResource PixScrollPageButton}" Command="ScrollBar.PageUpCommand"/>
                                     </Track.DecreaseRepeatButton>
                                     <Track.Thumb>
-                                        <Thumb Style="{StaticResource PixScrollThumb}"/>
+                                        <Thumb Style="{StaticResource PixScrollThumb}" MinHeight="20"/>
                                     </Track.Thumb>
                                     <Track.IncreaseRepeatButton>
                                         <RepeatButton Style="{StaticResource PixScrollPageButton}" Command="ScrollBar.PageDownCommand"/>
@@ -374,7 +373,7 @@
                                                 <RepeatButton Style="{StaticResource PixScrollPageButton}" Command="ScrollBar.PageLeftCommand"/>
                                             </Track.DecreaseRepeatButton>
                                             <Track.Thumb>
-                                                <Thumb Style="{StaticResource PixScrollThumb}"/>
+                                                <Thumb Style="{StaticResource PixScrollThumb}" MinWidth="20"/>
                                             </Track.Thumb>
                                             <Track.IncreaseRepeatButton>
                                                 <RepeatButton Style="{StaticResource PixScrollPageButton}" Command="ScrollBar.PageRightCommand"/>

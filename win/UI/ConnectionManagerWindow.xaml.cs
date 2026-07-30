@@ -85,7 +85,17 @@ public partial class ConnectionManagerWindow : Window
                 var hostsPanel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 6, 0, 0) };
                 foreach (var h in list)
                     hostsPanel.Children.Add(BuildRow(h));
-                groupStack.Children.Add(hostsPanel);
+                
+                var sv = new ScrollViewer
+                {
+                    Content = hostsPanel,
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                    HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                    MaxHeight = 250,
+                    Margin = new Thickness(0, 0, -6, 0),
+                    Padding = new Thickness(0, 0, 6, 0)
+                };
+                groupStack.Children.Add(sv);
             }
             groupBorder.Child = groupStack;
             ListPanel.Children.Add(groupBorder);

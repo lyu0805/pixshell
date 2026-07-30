@@ -64,6 +64,7 @@
                 CornerRadius="{DynamicResource RadiusSm}">
             <TreeView x:Name="RemoteTree" Background="Transparent" BorderThickness="0"
                       Foreground="{DynamicResource BrushText}"
+                      ScrollViewer.CanContentScroll="False"
                       SelectedItemChanged="RemoteTree_SelectedItemChanged"/>
         </Border>
 
@@ -76,6 +77,7 @@
             <ListView x:Name="RemoteList" MouseDoubleClick="RemoteList_DoubleClick"
                       SelectionMode="Extended" PreviewKeyDown="RemoteList_PreviewKeyDown"
                       ContextMenuOpening="RemoteList_ContextMenuOpening"
+                      ScrollViewer.CanContentScroll="False"
                       Background="{DynamicResource BrushBg2}" BorderBrush="{DynamicResource BrushBorder}"
                       Foreground="{DynamicResource BrushText}">
                 <ListView.ItemContainerStyle>
