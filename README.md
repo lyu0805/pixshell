@@ -106,4 +106,4 @@ PixShell-all/
 
 ## License
 
-See [LICENSE](./LICENSE). All rights reserved.
+See [LICENSE](./LICENSE). Licensed under [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) — free to share and adapt with attribution, commercial use prohibited.

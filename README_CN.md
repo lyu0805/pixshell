@@ -88,4 +88,4 @@ PixShell-all/
 
 ## 许可
 
-见 [LICENSE](./LICENSE)。保留所有权利。
+见 [LICENSE](./LICENSE)。采用 [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) 许可 — 允许署名后自由分享与改编，禁止商业用途。
