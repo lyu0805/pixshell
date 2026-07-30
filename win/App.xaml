@@ -248,6 +248,16 @@
                 <Setter Property="Foreground" Value="{DynamicResource BrushMuted}"/>
             </Style>
 
+            <!-- ToolTip：跟随主题色，深色下白底蓝字太刺眼，用 BrushBg2 底 + BrushText 字 -->
+            <Style TargetType="{x:Type ToolTip}">
+                <Setter Property="Background" Value="{DynamicResource BrushBg2}"/>
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource BrushBorderStrong}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="Padding" Value="6,3"/>
+                <Setter Property="FontSize" Value="11"/>
+            </Style>
+
             <!-- 滚动条：滑块用 BrushText 高对比，轨道 BrushBg3；浅色/深色都能看见。 -->
             <Style x:Key="PixScrollThumb" TargetType="{x:Type Thumb}">
                 <Setter Property="OverridesDefaultStyle" Value="True"/>
