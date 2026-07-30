@@ -24,23 +24,7 @@ namespace PixShell;
 /// </summary>
 public partial class SftpPanel : UserControl
 {
-    // WPF {Binding Xxx} 只认属性，不认字段。Name 曾是 public 字段 → 图标能显示（Icon 是属性）
-    // 但文件名永远空白。全部改成属性，禁止再写字段。
-    internal sealed class FsRow
-    {
-        public string Name { get; set; } = "";
-        public bool IsDir { get; set; }
-        public bool IsLink { get; set; }
-        public long Size { get; set; }
-        public DateTime Mtime { get; set; }
-        /// <summary>POSIX 低 9 位权限（对齐 mac SFTPEntry.perms）；未知时 0 → 弹窗回落 0755。</summary>
-        public uint Perms { get; set; }
-        public string Icon => IsDir ? "📁" : (IsLink ? "🔗" : "📄");
-        public string SizeText => IsDir ? "" : HumanSize(Size);
-        public string TypeText => IsDir ? "目录" : (IsLink ? "链接" : "文件");
-        public string TimeText => Mtime.Year <= 1971 ? "" : Mtime.ToString("yyyy/MM/dd HH:mm");
-    }
-
+    // WPF {Binding Xxx} 只认属性，不认字段。
     private sealed class SftpNode
     {
         public string Path; public string Name; public bool Loaded;
@@ -1042,4 +1026,26 @@ public partial class SftpPanel : UserControl
 
     /// <summary>面板释放：断开 SFTP。</summary>
     public void Cleanup() => DisconnectSftp();
+}
+
+internal sealed class FsRow
+{
+    public string Name { get; set; } = "";
+    public bool IsDir { get; set; }
+    public bool IsLink { get; set; }
+    public long Size { get; set; }
+    public DateTime Mtime { get; set; }
+    public uint Perms { get; set; }
+    public string Icon => IsDir ? "📁" : (IsLink ? "🔗" : "📄");
+    public string SizeText => IsDir ? "" : HumanSize(Size);
+    public string TypeText => IsDir ? "目录" : (IsLink ? "链接" : "文件");
+    public string TimeText => Mtime.Year <= 1971 ? "" : Mtime.ToString("yyyy/MM/dd HH:mm");
+
+    private static string HumanSize(long n)
+    {
+        if (n < 1024) return $"{n} B";
+        if (n < 1_048_576) return $"{n / 1024.0:F1} KB";
+        if (n < 1_073_741_824) return $"{n / 1_048_576.0:F1} MB";
+        return $"{n / 1_073_741_824.0:F1} GB";
+    }
 }
