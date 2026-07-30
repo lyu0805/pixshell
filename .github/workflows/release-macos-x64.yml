@@ -37,7 +37,7 @@ jobs:
       - name: Package DMG
         env:
           VERSION: ${{ steps.ver.outputs.version }}
-          ARCH: x64
+          ARCH: x86_64
         run: |
           bash scripts/package-mac.sh release
           bash scripts/make-dmg.sh
