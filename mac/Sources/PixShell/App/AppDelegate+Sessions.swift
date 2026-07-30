@@ -336,10 +336,13 @@ extension AppDelegate {
         let creds = SSHCredentials(host: host.host, port: host.port, username: host.username,
                                    password: password, keyPath: host.keyPath.isEmpty ? nil : host.keyPath,
                                    proxy: proxy)
-        // 默认仍走 NIO（局域网体感更好）；OpenWrt/Dropbear 等无 AES-GCM 设备在
-        // shell 打开前会以 EOF/协商失败关闭，classifyClose → .algorithm 后自动回落系统 ssh。
-        // forceOpenSSH / 已回落标记时直接 OpenSSH，避免二次 NIO 空转。
-        let useOpenSSH = forceOpenSSH || sess.triedOpenSSHFallback
+        // 默认仍走 NIO（局域网体感更好）；但 NIO 无法加载 RSA/DSA/加密私钥。
+        // 预检已配置私钥：加载失败时立即交给系统 OpenSSH，避免先等待 NIO 握手超时
+        // 约两分钟后才回落。Ed25519/ECDSA 等 NIO 支持的私钥仍保留原快速路径。
+        let keyRequiresOpenSSH = !host.keyPath.isEmpty
+            && SSHPrivateKeyLoader.load(path: host.keyPath) == nil
+        // forceOpenSSH / 已回落标记 / 私钥不兼容时直接 OpenSSH，避免 NIO 空转。
+        let useOpenSSH = forceOpenSSH || sess.triedOpenSSHFallback || keyRequiresOpenSSH
         let s: SSHSession = useOpenSSH ? OpenSSHSession() : NIOSSHSession()
         Log.info("SSH 引擎=\(useOpenSSH ? "OpenSSH" : "NIO") \(host.subtitle)", "ssh")
         s.delegate = self; sess.ssh = s
