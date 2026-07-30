@@ -26,25 +26,43 @@ PixShell is a desktop SSH / SFTP client built as two native applications in a si
 
 ## Screenshots
 
-| | |
+| Dark theme | Light theme |
 | :---: | :---: |
 | <img src="./docs/assets/screenshots/dark-theme.png" width="480"> | <img src="./docs/assets/screenshots/light-theme.png" width="480"> |
+
+| Connection manager | New connection |
+| :---: | :---: |
 | <img src="./docs/assets/screenshots/connection-manager.png" width="480"> | <img src="./docs/assets/screenshots/new-connection.png" width="480"> |
+
+| Quick connect history | Sidebar collapsed |
+| :---: | :---: |
 | <img src="./docs/assets/screenshots/quick-connect-history.png" width="480"> | <img src="./docs/assets/screenshots/sidebar-collapsed.png" width="480"> |
+
+| AI tool integration | MCP / CLI bridge |
+| :---: | :---: |
 | <img src="./docs/assets/screenshots/ai-interaction.png" width="480"> | <img src="./docs/assets/screenshots/mcp-cli-bridge.png" width="480"> |
+
+| Text editor | Download manager |
+| :---: | :---: |
 | <img src="./docs/assets/screenshots/text-editor.png" width="480"> | <img src="./docs/assets/screenshots/download-manager.png" width="480"> |
+
+| Cloud backup | Key manager |
+| :---: | :---: |
 | <img src="./docs/assets/screenshots/cloud-backup.png" width="480"> | <img src="./docs/assets/screenshots/key-manager.png" width="480"> |
 
 ## Features
 
 - Tabbed SSH sessions with PTY resize and reconnect
 - Connection manager with groups, notes, and host OS detection
-- Password and private key authentication
-- SFTP file browser with upload, download, pack transfer, and remote editing
-- Light and dark UI themes with terminal color palettes
-- SOCKS and HTTP proxy support
-- Local automation bridge for CLI and agent workflows
-- Five-zone workspace layout consistent across platforms
+- Password and private key authentication with encrypted local storage
+- SFTP file browser: upload, download, pack transfer, remote text editing, file permissions
+- Light and dark UI themes with configurable terminal color palettes
+- SOCKS and HTTP proxy support on both platforms
+- Local automation bridge (HTTP API) for CLI and AI agent workflows
+- AI SSH bridge: auto-register as system default SSH wrapper for Claude Code, Codex, and other tools
+- Web SSH terminal: built-in browser-based terminal via local bridge
+- Host fingerprint manager with import/export
+- Cross-platform five-zone workspace layout
 
 ## Build
 
@@ -70,7 +88,7 @@ dotnet publish PixShell.csproj -c Release -r win-x64 --self-contained true -o pu
 
 ## Downloads
 
-Pre-built packages are published on [GitHub Releases](https://github.com/lyu0805/pixshell/releases).
+Pre-built packages: [GitHub Releases](https://github.com/lyu0805/pixshell/releases)
 
 - macOS: `PixShell-0.1.3-mac-arm64.dmg` / `PixShell-0.1.3-mac-x64.dmg`
 - Windows: `PixShell-0.1.3-win-x64-setup.exe` / `PixShell-0.1.3-win-x64.zip`

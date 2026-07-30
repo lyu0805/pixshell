@@ -1,0 +1,75 @@
+name: release-windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 0.1.3)'
+        required: true
+        default: '0.1.3'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Windows x64
+    runs-on: windows-2025
+    defaults:
+      run:
+        working-directory: win
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          RAW="${{ github.event.inputs.version }}"
+          RAW="${RAW#v}"
+          echo "version=$RAW" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Build
+        run: |
+          dotnet restore PixShell.csproj -r win-x64
+          dotnet publish PixShell.csproj -c Release -r win-x64 --self-contained true -o publish/win-x64 -v minimal
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "${env:ProgramFiles}\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          echo "INNO_SETUP_ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Package
+        shell: pwsh
+        run: |
+          ./installer/package-win.ps1 -Version '${{ steps.ver.outputs.version }}' -Runtime win-x64 -PublishDir (Join-Path (Get-Location) 'publish/win-x64') -OutputDir (Join-Path (Get-Location) 'dist/artifacts') -InnoSetupCompiler $env:INNO_SETUP_ISCC
+
+      - name: Publish zip
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: PixShell ${{ steps.ver.outputs.version }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+          files: win/dist/artifacts/PixShell-${{ steps.ver.outputs.version }}-win-x64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish setup
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: PixShell ${{ steps.ver.outputs.version }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+          files: win/dist/artifacts/PixShell-${{ steps.ver.outputs.version }}-win-x64-setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

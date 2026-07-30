@@ -1,0 +1,55 @@
+name: release-macos-arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 0.1.3)'
+        required: true
+        default: '0.1.3'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: macOS arm64
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: mac
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          RAW="${{ github.event.inputs.version }}"
+          RAW="${RAW#v}"
+          echo "version=$RAW" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: |
+          swift package resolve
+          swift build -c release -v
+
+      - name: Package DMG
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          ARCH: arm64
+        run: |
+          bash scripts/package-mac.sh release
+          bash scripts/make-dmg.sh
+
+      - name: Publish to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: PixShell ${{ steps.ver.outputs.version }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+          files: mac/dist/artifacts/PixShell-${{ steps.ver.outputs.version }}-mac-arm64.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
