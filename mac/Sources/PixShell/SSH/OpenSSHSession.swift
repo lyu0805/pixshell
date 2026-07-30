@@ -175,17 +175,55 @@ public final class OpenSSHSession: SSHSession {
     static func compatibilityOptions() -> [String] {
         // 最大算法兼容：新算法优先，同时显式放开老 Dropbear / OpenWrt / CentOS7 / 网络设备常用的旧套件。
         // 用绝对列表而不是仅 `+`，避免本机 ssh_config 把旧算法整类关掉后回落仍握不上手。
-        [
+        var keyAlgorithms = [
+            "ssh-ed25519",
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp521",
+            "rsa-sha2-512",
+            "rsa-sha2-256",
+            "ssh-rsa",
+        ]
+        // macOS 26 的 /usr/bin/ssh 已从二进制中完全移除 ssh-dss；把不受支持的算法
+        // 放进绝对列表会让整条选项报 "Bad key types" 并在认证前退出。不要按系统版本
+        // 猜测：直接查询当前 OpenSSH，旧系统仍支持时继续保留对老设备的兼容性。
+        if systemSSHKeyAlgorithms.contains("ssh-dss") {
+            keyAlgorithms.append("ssh-dss")
+        }
+        let keyList = keyAlgorithms.joined(separator: ",")
+        return [
             // blowfish-cbc/cast128-cbc 已从现代 OpenSSH 编译列表移除；写进绝对列表会让整条 Ciphers 失效。
             "-o", "Ciphers=chacha20-poly1305@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr,aes128-gcm@openssh.com,aes256-gcm@openssh.com,3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc",
             "-o", "KexAlgorithms=sntrup761x25519-sha512@openssh.com,sntrup761x25519-sha512,curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group-exchange-sha256,diffie-hellman-group14-sha256,diffie-hellman-group16-sha512,diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1,diffie-hellman-group1-sha1",
-            "-o", "HostKeyAlgorithms=ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256,ssh-rsa",
-            "-o", "PubkeyAcceptedAlgorithms=ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256,ssh-rsa",
+            "-o", "HostKeyAlgorithms=\(keyList)",
+            "-o", "PubkeyAcceptedAlgorithms=\(keyList)",
             // 老 OpenSSH 仍认 PubkeyAcceptedKeyTypes；与上面并列无害。
-            "-o", "PubkeyAcceptedKeyTypes=ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256,ssh-rsa",
+            "-o", "PubkeyAcceptedKeyTypes=\(keyList)",
             "-o", "MACs=hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha2-256,hmac-sha2-512,hmac-sha1",
         ]
     }
+
+    /// 当前系统 OpenSSH 实际编译进二进制的 key 算法。只查询一次，避免按 macOS
+    /// 版本硬编码，也让未来系统或用户替换的 ssh 实现自动采用正确能力集合。
+    private static let systemSSHKeyAlgorithms: Set<String> = {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = ["-Q", "key"]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return [] }
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            guard let text = String(data: data, encoding: .utf8) else { return [] }
+            return Set(text.split(whereSeparator: \.isNewline).map(String.init))
+        } catch {
+            Log.warn("无法查询系统 OpenSSH 支持的 key 算法：\(error.localizedDescription)", "ssh")
+            return []
+        }
+    }()
 
     /// 写一次性 ASKPASS 脚本 + 0600 密文文件。返回路径；失败返回 nil（退回终端交互）。
     ///
