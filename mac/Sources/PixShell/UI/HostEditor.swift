@@ -110,11 +110,9 @@ final class HostFormView: NSView {
         webUrlRow = grid.row(at: 3)
         addSubview(grid)
         NSLayoutConstraint.activate([
-            grid.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            grid.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            grid.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            // 不约束 bottom：grid 高度 = 内容自然高度（fittingSize）。约束到底会让
-            // NSGrid 把多余空间塞给个别行（折叠/恢复过的行尤甚）→ 行间大空隙。
+            grid.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            grid.centerXAnchor.constraint(equalTo: centerXAnchor),
+            self.widthAnchor.constraint(equalToConstant: 420)
         ])
         applyTypeUI(animated: false)
     }
