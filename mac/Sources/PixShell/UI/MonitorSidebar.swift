@@ -121,7 +121,7 @@ final class MonitorSidebar: NSView {
 
         // 进程 TOP
         secTitle("进程 TOP")
-        procBody.orientation = .vertical; procBody.alignment = .width; procBody.spacing = 0
+        procBody.orientation = .vertical; procBody.alignment = .leading; procBody.spacing = 0
         addRow(pad(vstackFull([procHeader(), procBody]), 0, 0, 0, 0), border: true)
 
         // 网络
@@ -140,7 +140,7 @@ final class MonitorSidebar: NSView {
 
         // 磁盘
         secTitle("磁盘")
-        diskBody.orientation = .vertical; diskBody.alignment = .width; diskBody.spacing = 0
+        diskBody.orientation = .vertical; diskBody.alignment = .leading; diskBody.spacing = 0
         addRow(pad(vstackFull([diskHeader(), diskBody]), 0, 0, 0, 0), border: false)
     }
 
@@ -186,7 +186,13 @@ final class MonitorSidebar: NSView {
         return s
     }
     private func vstack(_ v: [NSView], gap: CGFloat) -> NSStackView { let s = NSStackView(views: v); s.orientation = .vertical; s.alignment = .leading; s.spacing = gap; return s }
-    private func vstackFull(_ v: [NSView]) -> NSStackView { let s = NSStackView(views: v); s.orientation = .vertical; s.alignment = .width; s.spacing = 0; s.distribution = .fill; return s }
+    private func vstackFull(_ v: [NSView]) -> NSStackView {
+        let s = NSStackView(views: v); s.orientation = .vertical; s.alignment = .leading; s.spacing = 0; s.distribution = .fill
+        for child in v {
+            child.widthAnchor.constraint(equalTo: s.widthAnchor).isActive = true
+        }
+        return s
+    }
     private func pad(_ v: NSView, _ t: CGFloat, _ l: CGFloat, _ b: CGFloat, _ r: CGFloat) -> NSView {
         let c = NSView(); c.translatesAutoresizingMaskIntoConstraints = false; v.translatesAutoresizingMaskIntoConstraints = false
         c.addSubview(v)
