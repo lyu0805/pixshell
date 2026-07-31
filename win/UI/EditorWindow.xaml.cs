@@ -195,7 +195,7 @@ public partial class EditorWindow : Window
     {
         if (!_lspAvailable) return;
         var menu = new ContextMenu();
-        var hover = new MenuItem { Header = "LSP 悬停（⌘ 等价：Ctrl+Space 悬停）" };
+        var hover = new MenuItem { Header = "LSP 悬停（Ctrl+Shift+H）" };
         hover.Click += (_, _) => LspHover();
         var gotoDef = new MenuItem { Header = "跳转到定义（Ctrl+Shift+G）" };
         gotoDef.Click += (_, _) => LspGoToDefinition();
@@ -427,6 +427,12 @@ public partial class EditorWindow : Window
         if (e.Key == Key.Space && Keyboard.Modifiers == ModifierKeys.Control)
         {
             LspCompletion();
+            e.Handled = true;
+            return;
+        }
+        if (e.Key == Key.H && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && _lspAvailable)
+        {
+            LspHover();
             e.Handled = true;
             return;
         }

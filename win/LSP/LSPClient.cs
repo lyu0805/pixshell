@@ -101,6 +101,7 @@ public sealed class LSPClient : IDisposable
                     ["hover"] = new Dictionary<string, object?> { ["contentFormat"] = new[] { "plaintext", "markdown" } },
                     ["completion"] = new Dictionary<string, object?> { ["completionItem"] = new Dictionary<string, object?> { ["documentationFormat"] = new[] { "plaintext" } } },
                     ["definition"] = new Dictionary<string, object?> { ["linkSupport"] = false },
+                    ["publishDiagnostics"] = new Dictionary<string, object?> { ["relatedInformation"] = false },
                 },
             },
         }, expectResponse: true, _ =>

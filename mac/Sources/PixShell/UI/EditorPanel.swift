@@ -17,7 +17,8 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
     private var completionPopup: NSPopover?
     private var completionItems: [(label: String, detail: String)] = []
     private var completionIndex = 0
-    private var lspHoverTimer: Timer?
+    /// 补全弹窗打开期间挂的 keyDown 本地监听（↑↓ 选择 / ⏎ 插入 / Esc 关闭）。
+    private var completionKeyMonitor: Any?
     private var lspMenuItems: (hover: NSMenuItem, goto: NSMenuItem, complete: NSMenuItem)?
 
 
@@ -477,7 +478,7 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
     }
 
     private func showCompletionPopup() {
-        completionPopup?.close()
+        closeCompletionPopup()
         let pop = NSPopover()
         let vc = CompletionListVC(items: completionItems) { [weak self] idx in
             guard let self else { return }
@@ -490,6 +491,37 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         let rect = textView.firstRect(forCharacterRange: textView.selectedRange(), actualRange: nil)
         pop.show(relativeTo: textView.bounds, of: textView, preferredEdge: .minY)
         _ = rect
+        installCompletionKeyMonitor()
+    }
+
+    /// 补全弹窗键盘导航：NSPopover 不抢焦点（textView 仍是 firstResponder），
+    /// 用 local monitor 在弹窗打开期间拦截 ↑↓/⏎/Esc，转给 CompletionListVC。
+    private func installCompletionKeyMonitor() {
+        removeCompletionKeyMonitor()
+        completionKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.completionPopup != nil else { return event }
+            let vc = self.completionPopup?.contentViewController as? CompletionListVC
+            switch event.keyCode {
+            case 125: vc?.moveSelection(delta: 1); return nil   // ↓
+            case 126: vc?.moveSelection(delta: -1); return nil  // ↑
+            case 36, 76: vc?.pickSelected(); return nil         // ⏎
+            case 53: self.closeCompletionPopup(); return nil    // Esc
+            default: return event
+            }
+        }
+    }
+
+    private func removeCompletionKeyMonitor() {
+        if let m = completionKeyMonitor {
+            NSEvent.removeMonitor(m)
+            completionKeyMonitor = nil
+        }
+    }
+
+    private func closeCompletionPopup() {
+        completionPopup?.close()
+        completionPopup = nil
+        removeCompletionKeyMonitor()
     }
 
     private func insertCompletion(at index: Int) {
@@ -511,8 +543,7 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         } else {
             textView.insertText(item.label, replacementRange: sel)
         }
-        completionPopup?.close()
-        completionPopup = nil
+        closeCompletionPopup()
     }
 
     private func utf16Col(in ns: NSString, line: Int, offset: Int) -> Int {
