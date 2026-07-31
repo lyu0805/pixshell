@@ -3,7 +3,7 @@
 # Usage:
 #   bash scripts/make-dmg.sh [app-path] [output-dmg-path]
 # Env:
-#   VERSION   default 0.1.4 (or from Info.plist)
+#   VERSION   default 0.1.5 (or from Info.plist)
 #   ARCH      arm64|x64|x86_64  (default: uname -m mapped)
 set -euo pipefail
 
@@ -23,7 +23,7 @@ if [ -z "$VERSION" ]; then
     VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist" 2>/dev/null || true)"
   fi
 fi
-VERSION="${VERSION:-0.1.4}"
+VERSION="${VERSION:-0.1.5}"
 VERSION="${VERSION#v}"
 
 if [ -z "$ARCH_IN" ]; then
