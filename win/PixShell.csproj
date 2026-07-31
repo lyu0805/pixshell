@@ -31,4 +31,8 @@
     <Content Include="Resources\AppIcon.ico" CopyToOutputDirectory="PreserveNewest" Link="Resources\AppIcon.ico" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 排除 LSP 验证测试工程（lsptest/rawdump），避免被默认编译扫入 -->
+    <Compile Remove="lsptest\**\*.cs" />
+  </ItemGroup>
 </Project>

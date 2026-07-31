@@ -6,6 +6,21 @@ import AppKit
 /// （遮罩 + 圆角卡片、HeaderPanGesture 拖动、点遮罩/Esc 关闭）。
 final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
 
+    // MARK: LSP（rust-analyzer）
+    private var lsp: LSPClient?
+    private var lspUri = ""
+    private var lspAvailable = false
+    /// 诊断波浪线所在行 → 首个错误信息（悬停提示用）
+    private var diagnosticLines: [Int: (range: NSRange, message: String, isError: Bool)] = [:]
+    private var lspChangeDebounce: DispatchWorkItem?
+    private let lspBadge = NSTextField(labelWithString: "")   // 头部语言徽章右侧：LSP 状态
+    private var completionPopup: NSPopover?
+    private var completionItems: [(label: String, detail: String)] = []
+    private var completionIndex = 0
+    private var lspHoverTimer: Timer?
+    private var lspMenuItems: (hover: NSMenuItem, goto: NSMenuItem, complete: NSMenuItem)?
+
+
     // MARK: 对外 API
 
     /// 保存回调：调用方写回（远端/本地）后，**必须**通过 completion 回报结果
@@ -119,7 +134,9 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         saveStatus.font = Theme.ui(11)
         saveStatus.textColor = Theme.muted
         saveStatus.lineBreakMode = .byTruncatingTail
-        head = NSStackView(views: [headerTitle, NSView(), saveStatus, saveBtn, closeBtn])
+        lspBadge.font = Theme.mono(10)
+        lspBadge.textColor = Theme.muted
+        head = NSStackView(views: [headerTitle, lspBadge, NSView(), saveStatus, saveBtn, closeBtn])
         head.orientation = .horizontal; head.spacing = 10; head.alignment = .centerY
         head.translatesAutoresizingMaskIntoConstraints = false
 
@@ -182,6 +199,7 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         textView.textContainerInset = NSSize(width: 6, height: 6)
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        buildEditorContextMenu()
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = true
         textView.autoresizingMask = [.width]
@@ -200,6 +218,27 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         scrollView.hasVerticalRuler = true
         scrollView.verticalRulerView = gutterView
         scrollView.rulersVisible = true
+    }
+
+    /// 编辑器右键菜单：标准编辑项 + LSP（仅 .rs 显示悬停/跳转）
+    private func buildEditorContextMenu() {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
+        let hover = NSMenuItem(title: "LSP 悬停（⌘Space）", action: #selector(lspHoverAction), keyEquivalent: "")
+        hover.target = self
+        hover.isHidden = true
+        let goto = NSMenuItem(title: "跳转到定义（⌘⇧G）", action: #selector(lspGoToDefinition), keyEquivalent: "")
+        goto.target = self
+        goto.isHidden = true
+        let complete = NSMenuItem(title: "补全（⌃Space）", action: #selector(lspCompletionAction), keyEquivalent: "")
+        complete.target = self
+        complete.isHidden = true
+        menu.addItem(hover); menu.addItem(goto); menu.addItem(complete)
+        lspMenuItems = (hover, goto, complete)
+        textView.menu = menu
     }
 
     private func buildFooter() -> NSStackView {
@@ -248,6 +287,229 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         textView.undoManager?.removeAllActions()
         gutter?.needsDisplay = true
         updateFooter()
+
+        startLSPIfNeeded(path: path, text: text)
+    }
+
+    // MARK: - LSP（rust-analyzer）
+
+    /// 仅 .rs 文件启用。rust-analyzer 不存在时优雅降级（无 LSP 能力，编辑不受影响）。
+    private func startLSPIfNeeded(path: String, text: String) {
+        stopLSP()
+        guard (path as NSString).pathExtension.lowercased() == "rs" else { return }
+        guard LSPClient.locate() != nil else {
+            Log.info("rust-analyzer 未安装，编辑器 LSP 不可用（仅 .rs）", "lsp")
+            lspBadge.stringValue = "LSP 未装"
+            lspBadge.textColor = Theme.warn
+            return
+        }
+        let dir = (path as NSString).deletingLastPathComponent
+        lspUri = "file://\(path)"
+        let client = LSPClient()
+        lsp = client
+        client.onReadyChange = { [weak self] ok in
+            self?.lspAvailable = ok
+            self?.lspBadge.stringValue = ok ? "● LSP" : "LSP 失败"
+            self?.lspBadge.textColor = ok ? Theme.ok : Theme.err
+            if let m = self?.lspMenuItems {
+                m.hover.isHidden = !ok
+                m.goto.isHidden = !ok
+                m.complete.isHidden = !ok
+            }
+        }
+        client.onDiagnostics = { [weak self] diags in
+            self?.applyDiagnostics(diags)
+        }
+        client.start(rootPath: dir, uri: lspUri, text: text)
+        lspBadge.stringValue = "LSP…"
+        lspBadge.textColor = Theme.muted
+        lspBadge.toolTip = "rust-analyzer（⌃Space 补全 · ⌘悬停 · 右键跳转定义）"
+    }
+
+    private func stopLSP() {
+        lsp?.shutdown()
+        lsp = nil
+        lspUri = ""
+        lspAvailable = false
+        lspBadge.stringValue = ""
+        clearDiagnostics()
+    }
+
+    /// 编辑器关闭时调用（宿主 orderOut 时）
+    func lspClose() { stopLSP() }
+
+    /// 防抖后的全文变更 → didChange
+    private func scheduleLSPChange(_ text: String) {
+        guard lspAvailable else { return }
+        lspChangeDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.lsp?.didChange(text: text)
+        }
+        lspChangeDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    /// 应用诊断：错误红色波浪线、警告黄色。悬停/状态栏提示。
+    private func applyDiagnostics(_ diags: [LSPClient.Diagnostic]) {
+        clearDiagnostics()
+        guard let storage = textView.textStorage else { return }
+        storage.beginEditing()
+        for d in diags {
+            let range = d.range
+            guard range.location + range.length <= storage.length else { continue }
+            storage.addAttribute(.underlineStyle,
+                                 value: NSUnderlineStyle.thick.rawValue,
+                                 range: range)
+            storage.addAttribute(.underlineColor,
+                                 value: d.isError ? Theme.err : Theme.warn,
+                                 range: range)
+            let ns = storage.string as NSString
+            let line = ns.substring(to: range.location).components(separatedBy: "\n").count - 1
+            diagnosticLines[line] = (range, d.message, d.isError)
+        }
+        storage.endEditing()
+        // 状态栏汇总
+        let errs = diags.filter(\.isError).count
+        let warns = diags.count - errs
+        if errs + warns > 0 {
+            setSaveStatus("\(errs) 错误 · \(warns) 警告", color: errs > 0 ? Theme.err : Theme.warn)
+        } else {
+            setSaveStatus("", color: Theme.muted)
+        }
+    }
+
+    private func clearDiagnostics() {
+        diagnosticLines.removeAll()
+        guard let storage = textView.textStorage else { return }
+        storage.beginEditing()
+        let full = NSRange(location: 0, length: storage.length)
+        storage.removeAttribute(.underlineStyle, range: full)
+        storage.removeAttribute(.underlineColor, range: full)
+        storage.endEditing()
+    }
+
+    /// LSP 悬停：光标处诊断信息，否则请求 rust-analyzer hover
+    @objc private func lspHoverAction() {
+        let sel = textView.selectedRange()
+        guard sel.length == 0, let ns = textView.textStorage?.string as NSString? else { return }
+        let line = ns.substring(to: sel.location).components(separatedBy: "\n").count - 1
+        // 先查诊断
+        if let diag = diagnosticLines[line] {
+            showHoverTooltip(diag.message)
+            return
+        }
+        guard lspAvailable else { return }
+        let (l, _) = lineColumn(at: sel.location, in: ns)
+        let ch = utf16Col(in: ns, line: l - 1, offset: sel.location)
+        lsp?.hover(uri: lspUri, line: l - 1, character: ch) { [weak self] text in
+            if let t = text, !t.isEmpty { self?.showHoverTooltip(t) }
+        }
+    }
+
+    private func showHoverTooltip(_ text: String) {
+        guard let window = window else { return }
+        let tooltip = NSPopover()
+        let vc = NSViewController()
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = Theme.mono(11)
+        label.textColor = Theme.text
+        label.maximumNumberOfLines = 0
+        let wrap = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 120))
+        label.frame = NSRect(x: 8, y: 8, width: 364, height: 104)
+        wrap.addSubview(label)
+        vc.view = wrap
+        tooltip.contentViewController = vc
+        tooltip.behavior = .transient
+        let rect = textView.firstRect(forCharacterRange: textView.selectedRange(), actualRange: nil)
+        tooltip.show(relativeTo: textView.bounds, of: textView, preferredEdge: .minY)
+        _ = (window, rect)
+    }
+
+    /// LSP 跳转定义：光标移到目标位置
+    @objc private func lspGoToDefinition() {
+        guard lspAvailable, let ns = textView.textStorage?.string as NSString? else { return }
+        let sel = textView.selectedRange()
+        let (l, _) = lineColumn(at: sel.location, in: ns)
+        let ch = utf16Col(in: ns, line: l - 1, offset: sel.location)
+        lsp?.definition(uri: lspUri, line: l - 1, character: ch) { [weak self] pos in
+            guard let self, let pos else { return }
+            let ns = self.textView.textStorage?.string as NSString? ?? ""
+            var offset = 0
+            var li = 0
+            while li < pos.line && offset < ns.length {
+                let r = ns.range(of: "\n", options: [], range: NSRange(location: offset, length: ns.length - offset))
+                if r.location == NSNotFound { return }
+                offset = r.location + 1; li += 1
+            }
+            let target = min(offset + pos.character, ns.length)
+            self.textView.setSelectedRange(NSRange(location: target, length: 0))
+            self.textView.scrollRangeToVisible(NSRange(location: target, length: 0))
+        }
+    }
+
+    /// LSP 补全：⌃Space 弹出列表（Esc 关闭，↑↓ 选择，回车/单击插入）
+    @objc private func lspCompletionAction() {
+        guard lspAvailable, let ns = textView.textStorage?.string as NSString? else { return }
+        let sel = textView.selectedRange()
+        guard sel.length == 0 else { return }
+        let (l, _) = lineColumn(at: sel.location, in: ns)
+        let ch = utf16Col(in: ns, line: l - 1, offset: sel.location)
+        lsp?.completion(uri: lspUri, line: l - 1, character: ch) { [weak self] items in
+            guard let self, !items.isEmpty else { return }
+            self.completionItems = items
+            self.completionIndex = 0
+            self.showCompletionPopup()
+        }
+    }
+
+    private func showCompletionPopup() {
+        completionPopup?.close()
+        let pop = NSPopover()
+        let vc = CompletionListVC(items: completionItems) { [weak self] idx in
+            guard let self else { return }
+            self.insertCompletion(at: idx)
+        }
+        vc.onSelectionChange = { [weak self] idx in self?.completionIndex = idx }
+        pop.contentViewController = vc
+        pop.behavior = .transient
+        completionPopup = pop
+        let rect = textView.firstRect(forCharacterRange: textView.selectedRange(), actualRange: nil)
+        pop.show(relativeTo: textView.bounds, of: textView, preferredEdge: .minY)
+        _ = rect
+    }
+
+    private func insertCompletion(at index: Int) {
+        guard index >= 0, index < completionItems.count else { return }
+        let item = completionItems[index]
+        guard let ns = textView.textStorage?.string as NSString? else { return }
+        let sel = textView.selectedRange()
+        // 从光标往前找单词边界（标识符字符），替换之
+        var start = sel.location
+        while start > 0 {
+            let c = ns.character(at: start - 1)
+            let isIdent = c >= 0x30 && c <= 0x39 || c >= 0x41 && c <= 0x5A || c >= 0x61 && c <= 0x7A || c == 0x5F
+            if !isIdent { break }
+            start -= 1
+        }
+        if start < sel.location {
+            textView.textStorage?.replaceCharacters(in: NSRange(location: start, length: sel.location - start), with: item.label)
+            textView.didChangeText()
+        } else {
+            textView.insertText(item.label, replacementRange: sel)
+        }
+        completionPopup?.close()
+        completionPopup = nil
+    }
+
+    private func utf16Col(in ns: NSString, line: Int, offset: Int) -> Int {
+        var lineStart = 0
+        var li = 0
+        while li < line && lineStart < ns.length {
+            let r = ns.range(of: "\n", options: [], range: NSRange(location: lineStart, length: ns.length - lineStart))
+            if r.location == NSNotFound { break }
+            lineStart = r.location + 1; li += 1
+        }
+        return offset - lineStart
     }
 
     // MARK: - 头部动作
@@ -323,9 +585,19 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         let p = convert(event.locationInWindow, from: nil)
         if !card.frame.contains(p) { requestClose() } else { super.mouseDown(with: event) }
     }
-    // Esc 关闭——同样过脏检查
+    // Esc 关闭——同样过脏检查；⌃Space 补全、⌘悬停、⌘⇧G 跳转定义
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if !isHidden, event.keyCode == 53 { requestClose(); return true }
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if mods == .control, event.charactersIgnoringModifiers == " " {
+            lspCompletionAction(); return true
+        }
+        if mods == .command, event.charactersIgnoringModifiers == " " {
+            lspHoverAction(); return true
+        }
+        if mods == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "g" {
+            lspGoToDefinition(); return true
+        }
         return super.performKeyEquivalent(with: event)
     }
 
@@ -427,6 +699,7 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         rehighlight(textStorage)
         gutter?.needsDisplay = true
         updateFooter()
+        scheduleLSPChange(textStorage.string)   // LSP：防抖 0.4s 后全文同步
     }
 
     private func rehighlight(_ textStorage: NSTextStorage) {
@@ -549,5 +822,73 @@ final class LineNumberGutter: NSRulerView {
             searchLoc = r.location + 1
         }
         return line
+    }
+}
+
+/// 补全列表弹窗（NSPopover 内容）。↑↓ 选择、回车插入、单击插入。
+private final class CompletionListVC: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    private let items: [(label: String, detail: String)]
+    private let onPick: (Int) -> Void
+    var onSelectionChange: ((Int) -> Void)?
+    private var tableView: NSTableView!
+
+    init(items: [(label: String, detail: String)], onPick: @escaping (Int) -> Void) {
+        self.items = items
+        self.onPick = onPick
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func loadView() {
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 320, height: 260))
+        scroll.hasVerticalScroller = true
+        tableView = NSTableView(frame: scroll.bounds)
+        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("item"))
+        col.width = 300
+        tableView.addTableColumn(col)
+        tableView.headerView = nil
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.rowHeight = 22
+        scroll.documentView = tableView
+        view = scroll
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row < items.count else { return nil }
+        let cell = NSTableCellView()
+        let label = NSTextField(labelWithString: items[row].label)
+        label.font = Theme.mono(12)
+        label.textColor = Theme.text
+        label.frame = NSRect(x: 6, y: 2, width: 170, height: 18)
+        let detail = NSTextField(labelWithString: items[row].detail)
+        detail.font = Theme.ui(10)
+        detail.textColor = Theme.muted
+        detail.frame = NSRect(x: 180, y: 2, width: 130, height: 18)
+        detail.lineBreakMode = .byTruncatingTail
+        cell.addSubview(label); cell.addSubview(detail)
+        return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        onSelectionChange?(tableView.selectedRow)
+    }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        if NSApp.currentEvent?.clickCount == 2 { onPick(row); return false }
+        return true
+    }
+
+    /// 键盘：↑↓ 选择、回车插入（由 popover key 事件处理）
+    func moveSelection(delta: Int) {
+        let r = min(max(tableView.selectedRow + delta, 0), items.count - 1)
+        tableView.selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
+        tableView.scrollRowToVisible(r)
+    }
+    func pickSelected() {
+        let r = tableView.selectedRow
+        if r >= 0 { onPick(r) }
     }
 }

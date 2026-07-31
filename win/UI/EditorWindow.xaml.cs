@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -36,6 +37,17 @@ public partial class EditorWindow : Window
     private readonly Paragraph _paragraph = new();
     private readonly DispatcherTimer _rehighlightTimer;
 
+    // ---- LSP（rust-analyzer）----
+    private LSP.LSPClient? _lsp;
+    private string _lspUri = "";
+    private bool _lspAvailable;
+    private readonly DispatcherTimer _lspChangeTimer;
+    private readonly List<LSP.LSPClient.Diagnostic> _diagnostics = new();
+    private ListBox? _completionList;
+    private Popup? _completionPopup;
+    private List<(string Label, string Detail)> _completionItems = new();
+    private int _completionIndex;
+
     private static readonly Dictionary<string, Brush> BrushCache = new();
 
     public EditorWindow()
@@ -47,9 +59,13 @@ public partial class EditorWindow : Window
         _rehighlightTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(220) };
         _rehighlightTimer.Tick += (_, _) => { _rehighlightTimer.Stop(); Rehighlight(); };
 
+        _lspChangeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        _lspChangeTimer.Tick += (_, _) => { _lspChangeTimer.Stop(); _lsp?.DidChange(ExtractPlainText()); };
+
         Editor.TextChanged += Editor_TextChanged;
         Editor.SelectionChanged += (_, _) => UpdateFooter();
         Editor.PreviewKeyDown += Editor_PreviewKeyDown;
+        Editor.MouseRightButtonUp += Editor_MouseRightButtonUp;
         Editor.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(Editor_ScrollChanged));
         Closing += EditorWindow_Closing;
         ApplyWrapSetting();
@@ -81,6 +97,238 @@ public partial class EditorWindow : Window
         UpdateGutter();
         UpdateFooter();
         Log.Info($"打开编辑器 {path}（{(text ?? "").Length} 字符）", "editor");
+        StartLspIfNeeded(path, text ?? "");
+    }
+
+    // =====================================================================
+    // LSP（rust-analyzer）
+    // =====================================================================
+
+    /// <summary>仅 .rs 文件启用；rust-analyzer 不存在时优雅降级。</summary>
+    private void StartLspIfNeeded(string path, string text)
+    {
+        StopLsp();
+        if (!System.IO.Path.GetExtension(path).Equals(".rs", StringComparison.OrdinalIgnoreCase)) return;
+        if (LSP.LSPClient.Locate() == null)
+        {
+            Log.Info("rust-analyzer 未安装，编辑器 LSP 不可用（仅 .rs）", "lsp");
+            return;
+        }
+        var dir = System.IO.Path.GetDirectoryName(path) ?? "";
+        // Windows 盘符 URI 必须三斜杠：file:///C:/...（两斜杠会把 C: 当 authority，
+        // rust-analyzer 解析不了导致 workspace 不加载、无诊断）
+        _lspUri = "file:///" + path.Replace('\\', '/');
+        var client = new LSP.LSPClient();
+        _lsp = client;
+        client.ReadyChanged += ok =>
+        {
+            _lspAvailable = ok;
+            Log.Info(ok ? "LSP 就绪" : "LSP 启动失败", "lsp");
+        };
+        client.Diagnostics += list =>
+        {
+            _diagnostics.Clear();
+            _diagnostics.AddRange(list);
+            ApplyDiagnostics();
+        };
+        client.Start(dir, _lspUri, text);
+    }
+
+    private void StopLsp()
+    {
+        _lsp?.Dispose();
+        _lsp = null;
+        _lspUri = "";
+        _lspAvailable = false;
+        ClearDiagnostics();
+    }
+
+    /// <summary>诊断波浪线：错误红、警告黄（TextDecoration 下划线）。</summary>
+    private void ApplyDiagnostics()
+    {
+        ClearDiagnostics();
+        if (_diagnostics.Count == 0) return;
+        var full = ExtractPlainText();
+        foreach (var d in _diagnostics)
+        {
+            if (d.Start < 0 || d.Start + d.Length > full.Length) continue;
+            var tp = GetTextPointerAtOffset(d.Start);
+            if (tp == null) continue;
+            var range = new TextRange(tp, GetTextPointerAtOffset(d.Start + d.Length));
+            var brush = d.IsError ? Brushes.Red : Brushes.Orange;
+            // Run 没有 TextDecorations 属性；TextBlock.TextDecorationsProperty 是 WPF 文本下划线的正主，
+            // 对 TextRange 应用时对 Inline 同样生效（TextBlock.TextDecorationsProperty 是 Attached 语义）。
+            var deco = new TextDecorationCollection { new TextDecoration(TextDecorationLocation.Underline, new Pen(brush, 1.5), 0, TextDecorationUnit.Pixel, TextDecorationUnit.Pixel) };
+            range.ApplyPropertyValue(TextBlock.TextDecorationsProperty, deco);
+            range.ApplyPropertyValue(TextElement.ForegroundProperty, brush);
+        }
+        var errs = _diagnostics.Count(d => d.IsError);
+        var warns = _diagnostics.Count - errs;
+        SaveStatusText.Text = errs + warns > 0 ? $"{errs} 错误 · {warns} 警告" : "";
+    }
+
+    private void ClearDiagnostics()
+    {
+        if (_diagnostics.Count == 0) return;
+        _diagnostics.Clear();
+        var full = ExtractPlainText();
+        if (string.IsNullOrEmpty(full)) return;
+        var range = new TextRange(Editor.Document.ContentStart, Editor.Document.ContentEnd);
+        range.ApplyPropertyValue(TextBlock.TextDecorationsProperty, new TextDecorationCollection());
+    }
+
+    private TextPointer? GetTextPointerAtOffset(int offset)
+    {
+        var pos = Editor.Document.ContentStart;
+        var remaining = offset;
+        while (pos.GetPositionAtOffset(Math.Min(remaining, 1024)) is { } next && next.CompareTo(pos) > 0)
+        {
+            pos = next;
+            remaining -= 1024;
+            if (remaining <= 0) break;
+        }
+        return remaining <= 0 ? pos : null;
+    }
+
+    /// <summary>右键菜单：悬停 / 跳转定义（仅 .rs + LSP 就绪显示）。</summary>
+    private void Editor_MouseRightButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (!_lspAvailable) return;
+        var menu = new ContextMenu();
+        var hover = new MenuItem { Header = "LSP 悬停（⌘ 等价：Ctrl+Space 悬停）" };
+        hover.Click += (_, _) => LspHover();
+        var gotoDef = new MenuItem { Header = "跳转到定义（Ctrl+Shift+G）" };
+        gotoDef.Click += (_, _) => LspGoToDefinition();
+        var complete = new MenuItem { Header = "补全（Ctrl+Space）" };
+        complete.Click += (_, _) => LspCompletion();
+        menu.Items.Add(hover);
+        menu.Items.Add(gotoDef);
+        menu.Items.Add(complete);
+        menu.IsOpen = true;
+    }
+
+    private (int Line, int Char, int Offset) CurrentPosition()
+    {
+        var full = ExtractPlainText();
+        var offset = GetCaretOffset();
+        var line = full[..Math.Min(offset, full.Length)].Count(c => c == '\n');
+        var lineStart = full.LastIndexOf('\n', Math.Max(0, Math.Min(offset, full.Length) - 1));
+        var col = offset - (lineStart < 0 ? 0 : lineStart + 1);
+        return (line, col, offset);
+    }
+
+    private int GetCaretOffset()
+    {
+        var pos = Editor.CaretPosition;
+        return pos.CompareTo(Editor.Document.ContentEnd) >= 0
+            ? ExtractPlainText().Length
+            : new TextRange(Editor.Document.ContentStart, pos).Text.Replace("\r", "").Length;
+    }
+
+    private void LspHover()
+    {
+        var (line, col, _) = CurrentPosition();
+        _lsp?.HoverAsync(_lspUri, line, col, text =>
+        {
+            if (!string.IsNullOrEmpty(text))
+                MessageBox.Show(this, text, "LSP 悬停", MessageBoxButton.OK, MessageBoxImage.Information);
+        });
+    }
+
+    private void LspGoToDefinition()
+    {
+        var (line, col, _) = CurrentPosition();
+        _lsp?.DefinitionAsync(_lspUri, line, col, pos =>
+        {
+            if (pos == null) return;
+            var full = ExtractPlainText();
+            var offset = 0;
+            for (int l = 0; l < pos.Value.Line; l++)
+            {
+                var nl = full.IndexOf('\n', offset);
+                if (nl < 0) return;
+                offset = nl + 1;
+            }
+            offset = Math.Min(offset + pos.Value.Char, full.Length);
+            var tp = GetTextPointerAtOffset(offset);
+            if (tp != null)
+            {
+                Editor.CaretPosition = tp;
+                var sv = FindVisualChild<ScrollViewer>(Editor);
+                sv?.ScrollToVerticalOffset(pos.Value.Line * 18.0); // 近似行高滚动到目标行
+            }
+        });
+    }
+
+    private void LspCompletion()
+    {
+        var (line, col, offset) = CurrentPosition();
+        _lsp?.CompletionAsync(_lspUri, line, col, items =>
+        {
+            if (items.Count == 0) return;
+            _completionItems = items;
+            _completionIndex = 0;
+            Dispatcher.BeginInvoke(() => ShowCompletionPopup(offset));
+        });
+    }
+
+    private void ShowCompletionPopup(int caretOffset)
+    {
+        if (_completionPopup != null) _completionPopup.IsOpen = false;
+        var list = new ListBox
+        {
+            Width = 320, MaxHeight = 260,
+            Background = (Brush)FindResource("BrushBg2"),
+        };
+        foreach (var (label, detail) in _completionItems)
+        {
+            var sp = new StackPanel { Orientation = Orientation.Horizontal };
+            sp.Children.Add(new TextBlock { Text = label, FontFamily = (FontFamily)FindResource("FontMono"), Margin = new Thickness(4, 2, 10, 2) });
+            if (!string.IsNullOrEmpty(detail))
+                sp.Children.Add(new TextBlock { Text = detail, Foreground = (Brush)FindResource("BrushMuted"), Margin = new Thickness(0, 2, 4, 2) });
+            list.Items.Add(sp);
+        }
+        list.SelectedIndex = 0;
+        list.MouseDoubleClick += (_, _) => { if (list.SelectedIndex >= 0) InsertCompletion(list.SelectedIndex); };
+        _completionList = list;
+        // WPF 的 PlacementMode 没有 Caret（那是 WinForms 的）；用 Mouse.GetPosition 近似光标位。
+        var mousePos = Mouse.GetPosition(Editor);
+        var pop = new Popup
+        {
+            Child = list,
+            PlacementTarget = Editor,
+            Placement = PlacementMode.RelativePoint,
+            HorizontalOffset = mousePos.X,
+            VerticalOffset = mousePos.Y + 16,
+            IsOpen = true,
+            StaysOpen = false,
+            AllowsTransparency = true,
+        };
+        pop.Closed += (_, _) => _completionPopup = null;
+        _completionPopup = pop;
+    }
+
+    private void InsertCompletion(int index)
+    {
+        if (index < 0 || index >= _completionItems.Count) return;
+        var item = _completionItems[index];
+        var full = ExtractPlainText();
+        var caret = GetCaretOffset();
+        var start = caret;
+        while (start > 0 && (char.IsLetterOrDigit(full[start - 1]) || full[start - 1] == '_')) start--;
+        var replace = new TextRange(Editor.CaretPosition.GetPositionAtOffset(start - caret) ?? Editor.CaretPosition, Editor.CaretPosition);
+        replace.Text = item.Label;
+        if (_completionPopup != null) _completionPopup.IsOpen = false;
+        Editor.Focus();
+    }
+
+    private void HandleCompletionKeys(KeyEventArgs e)
+    {
+        if (_completionPopup == null || _completionList == null) return;
+        if (e.Key == Key.Escape) { if (_completionPopup != null) _completionPopup.IsOpen = false; e.Handled = true; }
+        else if (e.Key == Key.Down) { _completionList.SelectedIndex = Math.Min(_completionList.SelectedIndex + 1, _completionList.Items.Count - 1); e.Handled = true; }
+        else if (e.Key == Key.Up) { _completionList.SelectedIndex = Math.Max(_completionList.SelectedIndex - 1, 0); e.Handled = true; }
+        else if (e.Key == Key.Enter) { InsertCompletion(_completionList.SelectedIndex); e.Handled = true; }
     }
 
     // =====================================================================
@@ -156,6 +404,24 @@ public partial class EditorWindow : Window
 
     private void Editor_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        // 补全弹窗打开时：↑↓ 选择、回车插入、Esc 关闭（先于编辑器默认行为）
+        if (_completionPopup != null)
+        {
+            HandleCompletionKeys(e);
+            if (e.Handled) return;
+        }
+        if (e.Key == Key.Space && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            LspCompletion();
+            e.Handled = true;
+            return;
+        }
+        if (e.Key == Key.G && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && _lspAvailable)
+        {
+            LspGoToDefinition();
+            e.Handled = true;
+            return;
+        }
         if (e.Key == Key.Enter)
         {
             // 默认行为会新起一个 Paragraph，破坏"单段落 + LineBreak"假设；改为插入 LineBreak。
@@ -179,6 +445,13 @@ public partial class EditorWindow : Window
         DirtyText.Visibility = Visibility.Visible;
         UpdateGutter();
         UpdateFooter();
+
+        // LSP：停止输入 0.4s 后全文同步（rust-analyzer 会重新诊断）
+        if (_lspAvailable)
+        {
+            _lspChangeTimer.Stop();
+            _lspChangeTimer.Start();
+        }
 
         if (_lang == EditorLang.Plain) return; // 纯文本不需要重新着色
         _rehighlightTimer.Stop();
@@ -496,8 +769,20 @@ public partial class EditorWindow : Window
 
     private void EditorWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        StopLsp(); // 关窗即停 rust-analyzer 进程，避免残留
         if (!_isDirty) return;
         e.Cancel = true; // 拦截默认关闭，走 RequestClose 的确认流程（它会在用户选择后再真正 Close）
         RequestClose();
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T t) return t;
+            if (FindVisualChild<T>(child) is { } found) return found;
+        }
+        return null;
     }
 }
