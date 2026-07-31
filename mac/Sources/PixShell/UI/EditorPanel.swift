@@ -349,6 +349,17 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 
+    /// 请求前 flush 未决 didChange：防抖 work 还没执行说明服务器文本不是最新，
+    /// 先结算再发查询，避免 -32801 content modified（客户端重试是兜底，这里才是正路）。
+    private func flushPendingLspChange() {
+        guard lspAvailable else { return }
+        if let work = lspChangeDebounce {
+            work.cancel()
+            lspChangeDebounce = nil
+            lsp?.didChange(text: textView.textStorage?.string ?? "")
+        }
+    }
+
     /// 应用诊断：错误红色波浪线、警告黄色。悬停/状态栏提示。
     private func applyDiagnostics(_ diags: [LSPClient.Diagnostic]) {
         clearDiagnostics()
@@ -399,6 +410,7 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
             return
         }
         guard lspAvailable else { return }
+        flushPendingLspChange()
         let (l, _) = lineColumn(at: sel.location, in: ns)
         let ch = utf16Col(in: ns, line: l - 1, offset: sel.location)
         lsp?.hover(uri: lspUri, line: l - 1, character: ch) { [weak self] text in
@@ -428,6 +440,7 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
     /// LSP 跳转定义：光标移到目标位置
     @objc private func lspGoToDefinition() {
         guard lspAvailable, let ns = textView.textStorage?.string as NSString? else { return }
+        flushPendingLspChange()
         let sel = textView.selectedRange()
         let (l, _) = lineColumn(at: sel.location, in: ns)
         let ch = utf16Col(in: ns, line: l - 1, offset: sel.location)
@@ -450,6 +463,7 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
     /// LSP 补全：⌃Space 弹出列表（Esc 关闭，↑↓ 选择，回车/单击插入）
     @objc private func lspCompletionAction() {
         guard lspAvailable, let ns = textView.textStorage?.string as NSString? else { return }
+        flushPendingLspChange()
         let sel = textView.selectedRange()
         guard sel.length == 0 else { return }
         let (l, _) = lineColumn(at: sel.location, in: ns)

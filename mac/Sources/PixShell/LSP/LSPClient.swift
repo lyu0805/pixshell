@@ -358,7 +358,8 @@ final class LSPClient {
     }
 
     private func parseDefinition(_ data: Data) -> (line: Int, character: Int)? {
-        // 新版 rust-analyzer 返回 Location[]（裸数组）；老版可能返回单条 Location 或 {locations:[…]}
+        // 新版 rust-analyzer 返回 Location[]（裸数组，空数组 = 无定义）；
+        // 老版可能返回单条 Location 或 {locations:[…]}
         if let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]],
            let first = arr.first, let range = first["range"] as? [String: Any],
            let start = range["start"] as? [String: Any],

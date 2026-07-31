@@ -428,9 +428,10 @@ public sealed class LSPClient : IDisposable
     private static (int Line, int Char)? ParseDefinition(JsonElement? r)
     {
         if (!r.HasValue) return null;
-        // 新版：Location[] 裸数组
-        if (r.Value.ValueKind == JsonValueKind.Array && r.Value.GetArrayLength() > 0)
+        // 新版：Location[] 裸数组（空数组 = 无定义）
+        if (r.Value.ValueKind == JsonValueKind.Array)
         {
+            if (r.Value.GetArrayLength() == 0) return null;
             var first = r.Value[0];
             if (first.TryGetProperty("range", out var rg) && rg.TryGetProperty("start", out var st) &&
                 st.TryGetProperty("line", out var l) && st.TryGetProperty("character", out var c))

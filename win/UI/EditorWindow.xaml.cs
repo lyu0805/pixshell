@@ -225,8 +225,20 @@ public partial class EditorWindow : Window
             : new TextRange(Editor.Document.ContentStart, pos).Text.Replace("\r", "").Length;
     }
 
+    /// <summary>请求前 flush 未决 didChange：防抖 timer 还在跑说明服务器文本不是最新，
+    /// 先结算再发查询，避免 -32801 content modified（客户端重试是兜底，这里才是正路）。</summary>
+    private void FlushPendingLspChange()
+    {
+        if (_lspChangeTimer.IsEnabled)
+        {
+            _lspChangeTimer.Stop();
+            _lsp?.DidChange(ExtractPlainText());
+        }
+    }
+
     private void LspHover()
     {
+        FlushPendingLspChange();
         var (line, col, _) = CurrentPosition();
         _lsp?.HoverAsync(_lspUri, line, col, text =>
         {
@@ -237,6 +249,7 @@ public partial class EditorWindow : Window
 
     private void LspGoToDefinition()
     {
+        FlushPendingLspChange();
         var (line, col, _) = CurrentPosition();
         _lsp?.DefinitionAsync(_lspUri, line, col, pos =>
         {
@@ -262,6 +275,7 @@ public partial class EditorWindow : Window
 
     private void LspCompletion()
     {
+        FlushPendingLspChange();
         var (line, col, offset) = CurrentPosition();
         _lsp?.CompletionAsync(_lspUri, line, col, items =>
         {
