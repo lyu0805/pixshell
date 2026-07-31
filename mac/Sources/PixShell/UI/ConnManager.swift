@@ -102,13 +102,15 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
         // 列表：高度跟窗口走（可缩放），不再钉死 440
         listStack.orientation = .vertical; listStack.alignment = .leading; listStack.spacing = 8
         listStack.translatesAutoresizingMaskIntoConstraints = false
-        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = false
+        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(listStack); scroll.documentView = doc
         NSLayoutConstraint.activate([
             listStack.topAnchor.constraint(equalTo: doc.topAnchor), listStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
             listStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor), listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            doc.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            doc.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
         ])
 
@@ -230,19 +232,22 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
                 for h in hosts { hostsStack.addArrangedSubview(hostRow(h)) }
                 let hostScroll = NSScrollView()
                 hostScroll.drawsBackground = false
-                hostScroll.hasVerticalScroller = false
+                hostScroll.hasVerticalScroller = true
+                hostScroll.scrollerStyle = .overlay
                 hostScroll.translatesAutoresizingMaskIntoConstraints = false
                 let hostDoc = FlippedView(); hostDoc.translatesAutoresizingMaskIntoConstraints = false
                 hostDoc.addSubview(hostsStack)
                 hostScroll.documentView = hostDoc
                 NSLayoutConstraint.activate([
                     hostScroll.heightAnchor.constraint(equalToConstant: 140),
+                    hostDoc.topAnchor.constraint(equalTo: hostScroll.contentView.topAnchor),
+                    hostDoc.leadingAnchor.constraint(equalTo: hostScroll.contentView.leadingAnchor),
                     hostDoc.widthAnchor.constraint(equalTo: hostScroll.contentView.widthAnchor),
                     hostsStack.topAnchor.constraint(equalTo: hostDoc.topAnchor),
                     hostsStack.leadingAnchor.constraint(equalTo: hostDoc.leadingAnchor),
                     hostsStack.trailingAnchor.constraint(equalTo: hostDoc.trailingAnchor),
                     hostsStack.bottomAnchor.constraint(equalTo: hostDoc.bottomAnchor),
-                    hostsStack.widthAnchor.constraint(equalTo: hostDoc.widthAnchor),
+                    hostsStack.widthAnchor.constraint(equalTo: hostDoc.widthAnchor)
                 ])
                 inner.addArrangedSubview(hostScroll)
                 hostScroll.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true

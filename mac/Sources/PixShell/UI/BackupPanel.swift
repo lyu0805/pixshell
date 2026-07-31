@@ -98,11 +98,18 @@ final class BackupPanel: NSWindowController {
 
         let scroll = NSScrollView()
         scroll.drawsBackground = false
-        scroll.hasVerticalScroller = false
+        scroll.hasVerticalScroller = true
+        scroll.scrollerStyle = .overlay
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(grid); scroll.documentView = doc
-
+        NSLayoutConstraint.activate([
+            grid.topAnchor.constraint(equalTo: doc.topAnchor), grid.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            grid.bottomAnchor.constraint(equalTo: doc.bottomAnchor), grid.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            doc.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            doc.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
+        ])
         let exportB = PillButton("导出本地包…", style: .secondary, hPad: 10, height: 26, target: self, action: #selector(exportAction))
         let importB = PillButton("导入本地包…", style: .secondary, hPad: 10, height: 26, target: self, action: #selector(importAction))
         let cancelB = PillButton("取消", style: .secondary, hPad: 12, height: 26, target: self, action: #selector(hideAction))
