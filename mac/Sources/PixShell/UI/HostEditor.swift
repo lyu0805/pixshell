@@ -30,7 +30,9 @@ final class HostFormView: NSView {
     private let keyPathButton = NSButton(title: "选择…", target: nil, action: nil)
     private var hostLabel: NSTextField?
     private var webUrlLabel: NSTextField?
-    private var webUrlRow: NSGridCell?
+    private var webUrlRow: NSGridRow?
+    /// 首次布局后锁定的 accessory 高度（NSAlert 高度变化布局有 bug，见 applyTypeUI）
+    private var fixedHeight: CGFloat = 0
     private var grid: NSGridView!
 
     init(host: Host?, password: String?) {
@@ -103,14 +105,16 @@ final class HostFormView: NSView {
             }
             grid.addRow(with: [lab, view])
         }
-        // URL 行索引 3（类型0 名称1 主机2 URL3）
-        webUrlRow = grid.cell(atColumnIndex: 1, rowIndex: 3)
+        // URL 行索引 3（类型0 名称1 主机2 URL3）。持整行以便折叠（NSGridRow.isHidden
+        // 会释放行空间；只藏 view 行仍占位 → 手动压窗口高度时行被压缩 → 控件重叠）
+        webUrlRow = grid.row(at: 3)
         addSubview(grid)
         NSLayoutConstraint.activate([
             grid.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             grid.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             grid.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            grid.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+            // 不约束 bottom：grid 高度 = 内容自然高度（fittingSize）。约束到底会让
+            // NSGrid 把多余空间塞给个别行（折叠/恢复过的行尤甚）→ 行间大空隙。
         ])
         applyTypeUI(animated: false)
     }
@@ -132,7 +136,9 @@ final class HostFormView: NSView {
 
     private func applyTypeUI(animated: Bool) {
         let isWeb = typePopup.indexOfSelectedItem == 2
-        // URL 行：Web 显示，其它隐藏（row 仍占位用 isHidden）
+        // URL 行：Web 显示，其它隐藏。折叠整行（不占位），避免
+        // 窗口高度收缩时剩余行被 NSGrid 压缩导致控件重叠。
+        webUrlRow?.isHidden = !isWeb
         webUrlField.isHidden = !isWeb
         webUrlLabel?.isHidden = !isWeb
         if isWeb {
@@ -144,12 +150,21 @@ final class HostFormView: NSView {
         } else {
             hostField.placeholderString = ""
         }
-        // 缩表单高度：Web 多一行
-        let h: CGFloat = isWeb ? 310 : 274
+        // 高度锁定策略：NSAlert 对 accessory 高度变化布局有 bug（从底部锚定，
+        // 高度变大后 accessory 顶部上移 → 类型行与 message 标题重叠）。因此
+        // accessory 高度恒定为最大形态（Web 9 行 grid 252 + 16），切换类型只
+        // 折叠/展开行（窗口不动 → 无重叠）；SSH 模式表现为 grid 底部留白。
+        if fixedHeight <= 0 {
+            fixedHeight = 268
+        }
+        let h = fixedHeight
         if abs(frame.height - h) > 1 {
+            if let win = enclosingAlert()?.window {
+                let delta = h - frame.height
+                win.setContentSize(NSSize(width: win.frame.width, height: win.frame.height + delta))
+            }
             setFrameSize(NSSize(width: frame.width, height: h))
             if animated, let alert = enclosingAlert() {
-                // NSAlert accessory 变高时尽量刷新
                 needsLayout = true
                 alert.window.layoutIfNeeded()
             }
