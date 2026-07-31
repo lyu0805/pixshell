@@ -2,7 +2,7 @@
 
 <img src="./docs/assets/pixshell-title.svg" alt="PixShell" width="820">
 
-[![Version](https://img.shields.io/badge/version-0.1.3-blue)](https://github.com/lyu0805/pixshell)
+[![Version](https://img.shields.io/badge/version-0.1.4-blue)](https://github.com/lyu0805/pixshell)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)](https://github.com/lyu0805/pixshell)
 [![macOS](https://img.shields.io/badge/macOS-Swift%20%2B%20SwiftTerm%20%2B%20SwiftNIO-000000.svg)](./mac)
 [![Windows](https://img.shields.io/badge/Windows-WPF%20%2B%20WebView2%20%2B%20SSH.NET-0078D6.svg)](./win)
@@ -90,8 +90,8 @@ dotnet publish PixShell.csproj -c Release -r win-x64 --self-contained true -o pu
 
 Pre-built packages: [GitHub Releases](https://github.com/lyu0805/pixshell/releases)
 
-- macOS: `PixShell-0.1.3-mac-arm64.dmg` / `PixShell-0.1.3-mac-x64.dmg`
-- Windows: `PixShell-0.1.3-win-x64-setup.exe` / `PixShell-0.1.3-win-x64.zip`
+- macOS: `PixShell-0.1.4-mac-arm64.dmg` / `PixShell-0.1.4-mac-x64.dmg`
+- Windows: `PixShell-0.1.4-win-x64-setup.exe` / `PixShell-0.1.4-win-x64.zip`
 
 ## Project structure
 
