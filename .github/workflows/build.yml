@@ -87,7 +87,6 @@ jobs:
           path: |
             mac/dist/artifacts/PixShell-${{ steps.ver.outputs.version }}-mac-${{ matrix.arch_label }}.dmg
           if-no-files-found: error
-          if-no-files-found: error
 
   # ─────────────────────────────────────────────
   # Windows: self-contained publish → zip + Inno
