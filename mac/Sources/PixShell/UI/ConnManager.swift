@@ -102,12 +102,15 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
         // 列表：高度跟窗口走（可缩放），不再钉死 440
         listStack.orientation = .vertical; listStack.alignment = .leading; listStack.spacing = 8
         listStack.translatesAutoresizingMaskIntoConstraints = false
-        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = false
-        scroll.scrollerStyle = .legacy
+        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(listStack); scroll.documentView = doc
+        NSLayoutConstraint.activate([
+            listStack.topAnchor.constraint(equalTo: doc.topAnchor), listStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            listStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor), listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
+        ])
 
         card.addSubview(head); card.addSubview(searchRow); card.addSubview(scroll)
         NSLayoutConstraint.activate([
@@ -227,9 +230,7 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
                 for h in hosts { hostsStack.addArrangedSubview(hostRow(h)) }
                 let hostScroll = NSScrollView()
                 hostScroll.drawsBackground = false
-                hostScroll.hasVerticalScroller = true
-                hostScroll.autohidesScrollers = false
-                hostScroll.scrollerStyle = .legacy
+                hostScroll.hasVerticalScroller = false
                 hostScroll.translatesAutoresizingMaskIntoConstraints = false
                 let hostDoc = FlippedView(); hostDoc.translatesAutoresizingMaskIntoConstraints = false
                 hostDoc.addSubview(hostsStack)

@@ -98,9 +98,7 @@ final class BackupPanel: NSWindowController {
 
         let scroll = NSScrollView()
         scroll.drawsBackground = false
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = false
-        scroll.scrollerStyle = .legacy
+        scroll.hasVerticalScroller = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(grid); scroll.documentView = doc
