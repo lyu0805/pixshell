@@ -28,13 +28,15 @@ final class HostFormView: NSView {
     private let groupField = NSTextField()
     private let keyPathField = NSTextField()
     private let keyPathButton = NSButton(title: "选择…", target: nil, action: nil)
+    private let proxyPopup = NSPopUpButton()
+    private var proxyIds: [String] = [""]
     private var hostLabel: NSTextField?
     private var webUrlLabel: NSTextField?
     private var webUrlRow: NSGridCell?
     private var grid: NSGridView!
 
     init(host: Host?, password: String?) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 400, height: 310))
+        super.init(frame: NSRect(x: 0, y: 0, width: 400, height: 342))
         // 连接类型：SSH / RDP / Web。
         // Web = 应用内 WKWebView：可填外部 https（noVNC/面板），或留空 URL 走本地桥 WebSSH。
         typePopup.addItems(withTitles: ["SSH", "RDP（远程桌面）", "Web（应用内页面/终端）"])
@@ -71,6 +73,16 @@ final class HostFormView: NSView {
         keyRow.spacing = 6
         keyRow.translatesAutoresizingMaskIntoConstraints = false
 
+        // 每台主机独立选择代理。空 id = 直连；实际 SSH、重连、SFTP 都读取 Host.proxyId。
+        proxyPopup.addItem(withTitle: "无（直连）")
+        for proxy in ProxyStore().list() {
+            let title = proxy.name.isEmpty ? proxy.host : proxy.name
+            proxyPopup.addItem(withTitle: "\(title)（\(proxy.type.rawValue) \(proxy.host):\(proxy.port)）")
+            proxyIds.append(proxy.id)
+        }
+        let selectedProxy = proxyIds.firstIndex(of: host?.proxyId ?? "") ?? 0
+        proxyPopup.selectItem(at: selectedProxy)
+
         let hostLab = NSTextField(labelWithString: "主机")
         hostLab.alignment = .right
         hostLabel = hostLab
@@ -88,6 +100,7 @@ final class HostFormView: NSView {
             (NSTextField(labelWithString: "密码"), passField),
             (NSTextField(labelWithString: "分组"), groupField),
             (NSTextField(labelWithString: "私钥"), keyRow),
+            (NSTextField(labelWithString: "代理"), proxyPopup),
         ]
         let grid = NSGridView(numberOfColumns: 2, rows: 0)
         self.grid = grid
@@ -145,7 +158,7 @@ final class HostFormView: NSView {
             hostField.placeholderString = ""
         }
         // 缩表单高度：Web 多一行
-        let h: CGFloat = isWeb ? 310 : 274
+        let h: CGFloat = isWeb ? 342 : 306
         if abs(frame.height - h) > 1 {
             setFrameSize(NSSize(width: frame.width, height: h))
             if animated, let alert = enclosingAlert() {
@@ -206,6 +219,8 @@ final class HostFormView: NSView {
         let u = userField.stringValue.trimmingCharacters(in: .whitespaces)
         h.group = groupField.stringValue.trimmingCharacters(in: .whitespaces)
         h.keyPath = keyPathField.stringValue.trimmingCharacters(in: .whitespaces)
+        let proxyIndex = max(0, proxyPopup.indexOfSelectedItem)
+        h.proxyId = proxyIndex < proxyIds.count ? proxyIds[proxyIndex] : ""
         switch typePopup.indexOfSelectedItem {
         case 1: h.connectionType = 200   // RDP
         case 2: h.connectionType = 400   // Web（外部页 或 本地桥终端）

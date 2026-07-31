@@ -927,42 +927,17 @@ extension AppDelegate {
             (nil, nil),
             ("系统信息", #selector(openSysInfo)), ("进程管理", #selector(menuToolProcess)), ("网络监控", #selector(menuToolNetwork)),
         ]))
-        m.addItem(sub("选项", [
-            ("设置…", #selector(openSettings)), ("代理服务器…", #selector(openProxy)),
-        ]))
+        m.addItem(item("设置…", #selector(openSettings)))
         m.addItem(.separator())
-        m.addItem(item("密钥管理器", #selector(menuKeyMgr)))
-        m.addItem(item("主机指纹管理…", #selector(menuFingerprintMgr)))
-        // AI 对接：后端 AgentBridge / AgentCLI / AgentMCP 已就绪，汉堡菜单提供一键入口
-        m.addItem(sub("AI 对接", [
-            ("接入 AI 工具…", #selector(openAIIntegration)),
-            ("一键注册 AI 默认 SSH…", #selector(openAiSshBridge)),
-            (nil, nil),
-            ("复制 CLI 用法", #selector(copyCLIUsage)),
-            ("复制 MCP 注册命令", #selector(copyMCPRegister)),
-            ("复制 Desktop MCP 配置", #selector(copyMCPDesktop)),
-            (nil, nil),
-            ("打开 CLI 脚本目录", #selector(openCLIBinDir)),
-            ("重新安装 CLI / MCP", #selector(reinstallCLIBridge)),
-        ]))
-        // Web 主路径：新建连接 → 类型 Web；此处仅调试入口
-        m.addItem(item("打开桥接镜像页（调试）…", #selector(openWebSSHEmbedded)))
         m.addItem(sub("云端同步", [
-            ("备份选项配置…", #selector(openBackup)),
-            (nil, nil),
-            ("WebDAV 设置…", #selector(webdavConfigure)),
             ("上传到 WebDAV", #selector(webdavPush)), ("从 WebDAV 恢复", #selector(webdavPull)),
             (nil, nil),
             ("立即导出本地包…", #selector(exportHosts)), ("从本地包导入…", #selector(importHosts)),
         ]))
-        m.addItem(item("软件更新", #selector(checkUpdate)))
         m.addItem(.separator())
         m.addItem(sub("帮助", [
             ("关于 PixShell", #selector(menuAbout)),
-            ("接入 AI 工具…", #selector(openAIIntegration)),
-            ("一键注册 AI 默认 SSH…", #selector(openAiSshBridge)),
-            ("打开桥接镜像页（调试）…", #selector(openWebSSHEmbedded)),
-            ("在系统浏览器打开桥接页…", #selector(openWebSSHInSystemBrowser)),
+            ("授权本地网络…", #selector(menuLocalNetworkAuth)),
             ("项目仓库", #selector(menuRepo)),
         ]))
         if let btn = menuBtn { m.popUp(positioning: nil, at: NSPoint(x: 0, y: btn.bounds.height + 4), in: btn) }

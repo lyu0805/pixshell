@@ -41,6 +41,7 @@ public partial class CommandPanel : UserControl
     private readonly Dictionary<string, ComboBox> _paramInputs = new();
     private readonly Dictionary<string, List<string>> _paramHistory = LoadParamHistory();
     private int _paramHistoryLimit = LoadParamHistoryLimit();
+    public int ParamHistoryLimit => _paramHistoryLimit;
     private static readonly string ParamHistoryPath =
         Path.Combine(HostStore.AppDir, "quick-command-param-history.json");
     private static readonly string ParamSettingsPath =
@@ -370,12 +371,9 @@ public partial class CommandPanel : UserControl
         return new();
     }
 
-    private void SetParamHistoryLimit()
+    public void SetParamHistoryLimit(int requested)
     {
-        var raw = Ask("参数历史数量", "每个参数保存多少个历史值（1–500）",
-            _paramHistoryLimit.ToString());
-        if (!int.TryParse(raw, out var value)) return;
-        _paramHistoryLimit = Math.Clamp(value, 1, 500);
+        _paramHistoryLimit = Math.Clamp(requested, 1, 500);
         foreach (var list in _paramHistory.Values)
             if (list.Count > _paramHistoryLimit)
                 list.RemoveRange(_paramHistoryLimit, list.Count - _paramHistoryLimit);
@@ -423,8 +421,6 @@ public partial class CommandPanel : UserControl
             var c = _selectedCmdId == null ? null : CommandStore.Commands.FirstOrDefault(x => x.Id == _selectedCmdId);
             if (c != null) Editor.Text = c.Command;
         }));
-        m.Items.Add(new Separator());
-        m.Items.Add(MenuItem($"参数历史数量…（当前 {_paramHistoryLimit}）", SetParamHistoryLimit));
         m.Items.Add(new Separator());
         m.Items.Add(MenuItem("存为新命令…", SaveEditorAsCommand));
         m.PlacementTarget = (UIElement)sender;

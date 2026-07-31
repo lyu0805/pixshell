@@ -1827,9 +1827,6 @@ public partial class MainWindow : Window
         file.Items.Add(Item("断开", MenuDisconnect));
         file.Items.Add(Item("重新连接", MenuReconnect));
         file.Items.Add(new Separator());
-        file.Items.Add(Item("密钥管理…", OpenKeyManager));
-        file.Items.Add(Item("主机指纹管理…", OpenFingerprintManager));
-        file.Items.Add(new Separator());
         file.Items.Add(Item("导入主机…", ImportHosts));
         file.Items.Add(Item("导出主机…", ExportHosts));
         menu.Items.Add(file);
@@ -1845,19 +1842,9 @@ public partial class MainWindow : Window
         view.Items.Add(Item("网络监控", () => MenuToolRun(UI.ToolsPanel.CmdNetwork, "网络监控")));
         menu.Items.Add(view);
 
-        var options = new MenuItem { Header = "选项" };
-        options.Items.Add(Item("设置…", OpenSettings));
-        options.Items.Add(Item("代理服务器…", OpenProxyWindow));
-        menu.Items.Add(options);
-
-        menu.Items.Add(new Separator());
-        menu.Items.Add(Item("密钥管理器", OpenKeyManager));   // 对齐 mac 顶层 menuKeyMgr（原先误接到自定义加速）
-        menu.Items.Add(Item("主机指纹管理…", OpenFingerprintManager));
+        menu.Items.Add(Item("设置…", OpenSettings));
 
         var cloud = new MenuItem { Header = "云端同步" };
-        cloud.Items.Add(Item("备份选项配置…", OpenBackupWindow));
-        cloud.Items.Add(new Separator());
-        cloud.Items.Add(Item("WebDAV 设置…", WebdavConfigure));
         cloud.Items.Add(Item("上传到 WebDAV", WebdavPush));
         cloud.Items.Add(Item("从 WebDAV 恢复", WebdavPull));
         cloud.Items.Add(new Separator());
@@ -1865,31 +1852,9 @@ public partial class MainWindow : Window
         cloud.Items.Add(Item("从本地包导入…", ImportHosts));
         menu.Items.Add(cloud);
 
-        menu.Items.Add(Item("软件更新", CheckUpdate));   // 对齐 mac 顶层 checkUpdate
-
-        // AI 对接：后端 AgentBridge / AgentCLI 已就绪，汉堡菜单提供一键入口
-        var ai = new MenuItem { Header = "AI 对接" };
-        ai.Items.Add(Item("一键注册 AI 默认 SSH…", OpenAiBridgeWindow));
-        ai.Items.Add(Item("接入 AI 工具…", OpenAIIntegration));
-        ai.Items.Add(new Separator());
-        ai.Items.Add(Item("复制 CLI 用法", CopyCLIUsage));
-        ai.Items.Add(Item("复制 MCP 注册命令", CopyMCPRegister));
-        ai.Items.Add(Item("复制 Desktop MCP 配置", CopyMCPDesktop));
-        ai.Items.Add(new Separator());
-        ai.Items.Add(Item("打开 CLI 脚本目录", OpenCLIBinDir));
-        ai.Items.Add(Item("重新安装 CLI / MCP", ReinstallCLIBridge));
-        menu.Items.Add(ai);
-
-        // Web 主路径：新建连接 → 类型 Web；此处仅调试入口
-        menu.Items.Add(Item("打开桥接镜像页（调试）…", () => _ = OpenWebSshEmbeddedAsync()));
-
         menu.Items.Add(new Separator());
         var help = new MenuItem { Header = "帮助" };
         help.Items.Add(Item("关于 PixShell", () => MessageBox.Show(this, $"PixShell {AppVersion}\nWindows 原生 SSH / SFTP 客户端\nWPF + WebView2/xterm.js + SSH.NET\nhttps://github.com/lyu0805/pixshell", "关于")));
-        help.Items.Add(Item("接入 AI 工具…", OpenAIIntegration));
-        help.Items.Add(Item("打开桥接镜像页（调试）…", () => _ = OpenWebSshEmbeddedAsync()));
-        help.Items.Add(Item("在系统浏览器打开桥接页…", OpenWebSshInSystemBrowser));
-        help.Items.Add(new Separator());
         help.Items.Add(Item("项目仓库", () => { try { Process.Start(new ProcessStartInfo("https://github.com/lyu0805/pixshell") { UseShellExecute = true }); } catch { } }));
         menu.Items.Add(help);
 
@@ -2539,8 +2504,8 @@ public partial class MainWindow : Window
         {
             Background = (System.Windows.Media.Brush)Application.Current.Resources["BrushBg"],
             Foreground = (System.Windows.Media.Brush)Application.Current.Resources["BrushText"],
-            Title = "设置", Width = 360, MinWidth = 300, MinHeight = 280,
-            SizeToContent = SizeToContent.Manual, Height = 420, Owner = this,
+            Title = "设置", Width = 440, MinWidth = 360, MinHeight = 420,
+            SizeToContent = SizeToContent.Manual, Height = 650, Owner = this,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             ResizeMode = ResizeMode.CanResizeWithGrip, ShowInTaskbar = false,
         };
@@ -2569,6 +2534,35 @@ public partial class MainWindow : Window
         sp.Children.Add(plainBox);
         var hlChk = new CheckBox { Content = "终端语义高亮", IsChecked = TerminalSession.HighlightEnabled, Margin = new Thickness(0, 10, 0, 0) };
         sp.Children.Add(hlChk);
+        sp.Children.Add(new TextBlock { Text = "快捷命令参数历史数量（1–500）", Margin = new Thickness(0, 12, 0, 4) });
+        var historyBox = new TextBox { Text = Cmds.ParamHistoryLimit.ToString() };
+        sp.Children.Add(historyBox);
+
+        void AddSection(string title, params (string Label, Action Open)[] actions)
+        {
+            sp.Children.Add(new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 18, 0, 6) });
+            var row = new WrapPanel();
+            foreach (var action in actions)
+            {
+                var button = new Button { Content = action.Label, MinWidth = 94, Margin = new Thickness(0, 0, 8, 8), Padding = new Thickness(10, 5, 10, 5) };
+                button.Click += (_, _) =>
+                {
+                    win.Close();
+                    Dispatcher.BeginInvoke(action.Open);
+                };
+                row.Children.Add(button);
+            }
+            sp.Children.Add(row);
+        }
+        AddSection("连接与安全",
+            ("代理服务器", OpenProxyWindow),
+            ("密钥管理", OpenKeyManager),
+            ("主机指纹", OpenFingerprintManager));
+        AddSection("集成与维护",
+            ("AI 对接", OpenAIIntegration),
+            ("备份", OpenBackupWindow),
+            ("WebDAV", WebdavConfigure),
+            ("软件更新", CheckUpdate));
 
         var btnRow = new StackPanel
         {
@@ -2600,12 +2594,19 @@ public partial class MainWindow : Window
             }
             TerminalSession.HighlightEnabled = hlChk.IsChecked == true;
             HighlightColors.Set(hlBox.Text, plainBox.Text);
+            if (int.TryParse(historyBox.Text, out var historyLimit))
+                Cmds.SetParamHistoryLimit(historyLimit);
             win.Close();
         };
         btnRow.Children.Add(cancelBtn);
         btnRow.Children.Add(doneBtn);
         sp.Children.Add(btnRow);
-        win.Content = sp;
+        win.Content = new ScrollViewer
+        {
+            Content = sp,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
         win.ShowInTaskbar = false;
         win.ShowDialog();
     }

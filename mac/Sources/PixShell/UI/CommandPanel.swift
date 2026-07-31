@@ -40,7 +40,7 @@ final class CommandPanel: NSView {
     private var pendingTarget: SendTarget = .current
     private static let paramHistoryKey = "pixshell.quickCommand.paramHistory"
     private static let paramHistoryLimitKey = "pixshell.quickCommand.paramHistoryLimit"
-    private var paramHistoryLimit: Int {
+    var parameterHistoryLimit: Int {
         let saved = UserDefaults.standard.integer(forKey: Self.paramHistoryLimitKey)
         return saved == 0 ? 50 : min(500, max(1, saved))
     }
@@ -456,7 +456,7 @@ final class CommandPanel: NSView {
         var values = all[name] ?? []
         values.removeAll { $0 == value }
         values.insert(value, at: 0)
-        all[name] = Array(values.prefix(paramHistoryLimit))
+        all[name] = Array(values.prefix(parameterHistoryLimit))
         UserDefaults.standard.set(all, forKey: Self.paramHistoryKey)
     }
 
@@ -489,8 +489,6 @@ final class CommandPanel: NSView {
         add("清空编辑器", #selector(clearEditor))
         add("把选中项载入编辑器", #selector(loadSelectedIntoEditor))
         m.addItem(.separator())
-        add("参数历史数量…（当前 \(paramHistoryLimit)）", #selector(setParamHistoryLimit))
-        m.addItem(.separator())
         add("存为新命令…", #selector(saveEditorAsCommand))
         m.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
     }
@@ -499,11 +497,8 @@ final class CommandPanel: NSView {
         guard let id = selectedCmdId, let c = store.commands.first(where: { $0.id == id }) else { return }
         editor.string = c.command
     }
-    @objc private func setParamHistoryLimit() {
-        guard let raw = ask("参数历史数量", "每个参数保存多少个历史值（1–500）",
-                            defaultValue: "\(paramHistoryLimit)"),
-              let parsed = Int(raw) else { return }
-        let value = min(500, max(1, parsed))
+    func setParameterHistoryLimit(_ requested: Int) {
+        let value = min(500, max(1, requested))
         UserDefaults.standard.set(value, forKey: Self.paramHistoryLimitKey)
         var all = UserDefaults.standard.dictionary(forKey: Self.paramHistoryKey) as? [String: [String]] ?? [:]
         for (name, values) in all { all[name] = Array(values.prefix(value)) }

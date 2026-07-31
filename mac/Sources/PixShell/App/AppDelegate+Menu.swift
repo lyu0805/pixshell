@@ -1,6 +1,36 @@
 import AppKit
 import SwiftTerm
 
+/// 设置页中的管理入口。先关闭设置 sheet，再打开对应管理界面，避免多个模态层叠。
+private final class SettingsHubActionTarget: NSObject {
+    weak var app: AppDelegate?
+    weak var alert: NSAlert?
+
+    init(app: AppDelegate, alert: NSAlert) {
+        self.app = app
+        self.alert = alert
+    }
+
+    @objc func open(_ sender: NSButton) {
+        if let alert, let parent = alert.window.sheetParent {
+            parent.endSheet(alert.window, returnCode: .alertSecondButtonReturn)
+        }
+        guard let app else { return }
+        DispatchQueue.main.async {
+            switch sender.tag {
+            case 1: app.openProxy()
+            case 2: app.openKeyManager()
+            case 3: app.openFingerprintManager()
+            case 4: app.openAIIntegration()
+            case 5: app.openBackup()
+            case 6: app.webdavConfigure()
+            case 7: app.checkUpdate()
+            default: break
+            }
+        }
+    }
+}
+
 // 汉堡菜单各项的实现（文件 / 查看 / 选项 / 云端同步 / 帮助）。
 // 结构对齐老仓库 index.html #mainMenu；此处只放动作，菜单构建在 AppDelegate+Layout。
 extension AppDelegate {
@@ -301,6 +331,8 @@ extension AppDelegate {
         themeBox.selectItem(at: kinds.firstIndex(of: Theme.kind) ?? 0)
         let sizeField = NSTextField(string: String(Int(currentFontSize())))
         sizeField.frame = NSRect(x: 0, y: 0, width: 60, height: 22)
+        let historyField = NSTextField(string: String(cmdPanel?.parameterHistoryLimit ?? 50))
+        historyField.frame = NSRect(x: 0, y: 0, width: 60, height: 22)
         let hl = NSButton(checkboxWithTitle: "终端语义高亮", target: nil, action: nil)
         hl.state = highlightEnabled ? .on : .off
 
@@ -332,13 +364,34 @@ extension AppDelegate {
         grid.addRow(with: [NSTextField(labelWithString: "主题"), themeBox])
         grid.addRow(with: [NSTextField(labelWithString: "终端配色"), schemeBox])
         grid.addRow(with: [NSTextField(labelWithString: "终端字号"), sizeField])
+        grid.addRow(with: [NSTextField(labelWithString: "参数历史数量（1–500）"), historyField])
         grid.addRow(with: [NSTextField(labelWithString: "高亮文字颜色"), hlRow])
         grid.addRow(with: [NSTextField(labelWithString: "普通文字颜色"), plainWell])
         grid.addRow(with: [NSTextField(labelWithString: ""), hl])
-        grid.frame = NSRect(x: 0, y: 0, width: 360, height: 186)
+
+        let hubTarget = SettingsHubActionTarget(app: self, alert: a)
+        func hubButton(_ title: String, _ tag: Int) -> NSButton {
+            let b = PillButton(title, style: .secondary, hPad: 10, height: 24,
+                               font: Theme.ui(11), target: hubTarget, action: #selector(SettingsHubActionTarget.open(_:)))
+            b.tag = tag
+            return b
+        }
+        let connectionTools = NSStackView(views: [
+            hubButton("代理服务器", 1), hubButton("密钥管理", 2), hubButton("主机指纹", 3)
+        ])
+        connectionTools.spacing = 6
+        let serviceTools = NSStackView(views: [
+            hubButton("AI 对接", 4), hubButton("备份", 5),
+            hubButton("WebDAV", 6), hubButton("软件更新", 7)
+        ])
+        serviceTools.spacing = 6
+        grid.addRow(with: [NSTextField(labelWithString: "连接与安全"), connectionTools])
+        grid.addRow(with: [NSTextField(labelWithString: "集成与维护"), serviceTools])
+        grid.frame = NSRect(x: 0, y: 0, width: 440, height: 280)
         a.accessoryView = grid
 
         a.beginSheetModal(for: window) { [weak self] resp in
+            _ = hubTarget // 保持按钮 target 到 sheet 关闭
             guard let self = self else { return }
             // 仅「完成」落盘；「取消」直接丢弃
             guard resp == .alertFirstButtonReturn else { return }
@@ -347,6 +400,9 @@ extension AppDelegate {
                 let size = CGFloat(max(9, min(24, n)))
                 TermTheme.fontSize = size
                 self.setFontSize(size)
+            }
+            if let n = Int(historyField.stringValue) {
+                self.cmdPanel?.setParameterHistoryLimit(n)
             }
             // 配色方案：0 = 跟随主题
             let si = schemeBox.indexOfSelectedItem

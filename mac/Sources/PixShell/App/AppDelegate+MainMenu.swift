@@ -26,8 +26,6 @@ extension AppDelegate {
         fileMenu.addItem(mi("连接管理器…", #selector(openConnMgr), "l"))
         fileMenu.addItem(mi("新建连接…", #selector(addHost), "n"))
         fileMenu.addItem(mi("快速连接", #selector(newQuickTab), "t"))
-        fileMenu.addItem(mi("密钥管理…", #selector(openKeyManager), "k"))
-        fileMenu.addItem(mi("主机指纹管理…", #selector(openFingerprintManager)))
         fileMenu.addItem(.separator())
         fileMenu.addItem(mi("断开", #selector(menuDisconnect)))
         fileMenu.addItem(mi("重新连接", #selector(menuReconnect), "r"))
@@ -90,27 +88,15 @@ extension AppDelegate {
         sesMenu.addItem(mi("关闭当前标签", #selector(closeCurrentTab), "w"))
         sesItem.submenu = sesMenu; main.addItem(sesItem)
 
-        // 工具 / AI SSH 注册（Web 连接主入口在「新建连接 → 类型 Web」，不在菜单硬开）
+        // 工具。代理/密钥/AI/同步等配置入口统一放到「设置」。
         let toolsItem = NSMenuItem(); let toolsMenu = NSMenu(title: "工具")
         toolsMenu.addItem(mi("工具面板", #selector(openTools)))
-        toolsMenu.addItem(.separator())
-        toolsMenu.addItem(mi("接入 AI 工具…", #selector(openAIIntegration)))
-        toolsMenu.addItem(mi("一键注册 AI 默认 SSH…", #selector(openAiSshBridge)))
         toolsItem.submenu = toolsMenu; main.addItem(toolsItem)
 
-        // 云端同步 / 帮助
+        // 帮助
         let helpItem = NSMenuItem(); let helpMenu = NSMenu(title: "帮助")
-        helpMenu.addItem(mi("接入 AI 工具…", #selector(openAIIntegration)))
-        helpMenu.addItem(mi("一键注册 AI 默认 SSH…", #selector(openAiSshBridge)))
-        helpMenu.addItem(.separator())
         helpMenu.addItem(mi("授权本地网络…", #selector(menuLocalNetworkAuth)))
         helpMenu.addItem(mi("打开本地网络设置", #selector(menuOpenLocalNetworkSettings)))
-        helpMenu.addItem(.separator())
-        // 开发者：桥接镜像页 / 外开浏览器仅调试，主路径是「新建连接 → Web」
-        helpMenu.addItem(mi("打开桥接镜像页（调试）…", #selector(openWebSSHEmbedded)))
-        helpMenu.addItem(mi("在系统浏览器打开桥接页…", #selector(openWebSSHInSystemBrowser)))
-        helpMenu.addItem(.separator())
-        helpMenu.addItem(mi("备份选项配置…", #selector(openBackup)))
         helpMenu.addItem(.separator())
         helpMenu.addItem(mi("项目仓库", #selector(menuRepo)))
         helpItem.submenu = helpMenu; main.addItem(helpItem)
