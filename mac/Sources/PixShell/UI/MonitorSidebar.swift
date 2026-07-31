@@ -503,4 +503,5 @@ final class Sparkline: NSView {
             }
             color.setStroke(); path.stroke()
         }
+    }
 }
