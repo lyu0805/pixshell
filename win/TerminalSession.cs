@@ -143,6 +143,11 @@ public sealed class TerminalSession : IDisposable
     /// <summary>本机 shell 进程（ConnectionType=300）；与 _ssh/_shell 互斥。</summary>
     private Process? _localProc;
     private Stream? _localStdin;
+    /// <summary>FIDO2 硬件密钥会话的 OpenSSH 子进程（ssh.exe）；与 _ssh/_shell/_localProc 互斥。
+    /// SSH.NET 不支持 sk-* 密钥，检测到 FIDO2 私钥时整个会话走系统 OpenSSH 客户端。</summary>
+    private Process? _ossProc;
+    private Stream? _ossStdin;
+    private volatile bool _isOpenSSH;
     private Thread? _readThread;
     // SizeChanged → pixFit 防抖（拖坞/resize 风暴）；MainWindow.SuppressTerminalFit 时全跳
     private DispatcherTimer? _fitTimer;
@@ -700,6 +705,13 @@ public sealed class TerminalSession : IDisposable
         // 局域网 IP 直连时跳过 DNS/反向查找带来的数秒停顿：把主机名解析成 IP 再拨。
         // 解析失败则原样回退（主机名仍可连，只是可能慢）。
         var connectHost = ResolveFast(host);
+        // FIDO2 硬件安全密钥（sk-*）：SSH.NET 无 sk 算法支持 → 整个会话走系统 OpenSSH 客户端。
+        var expandedKey = keyPath != null ? ExpandKeyPath(keyPath) : null;
+        if (expandedKey != null && IsFIDO2Key(expandedKey))
+        {
+            ConnectViaOpenSSH(connectHost, port, user, expandedKey);
+            return;
+        }
         var info = BuildConnectionInfo(connectHost, port, user, pass, keyPath, proxy);
 
         var ssh = new SshClient(info);
@@ -875,6 +887,15 @@ public sealed class TerminalSession : IDisposable
                 stdin.Flush();
                 return;
             }
+            // FIDO2/OpenSSH 会话：写 ssh.exe stdin
+            if (_isOpenSSH)
+            {
+                var stdin = _ossStdin;
+                if (stdin == null) return;
+                stdin.Write(bytes, 0, bytes.Length);
+                stdin.Flush();
+                return;
+            }
             var shell = _shell;
             if (shell == null) return;
             shell.Write(bytes, 0, bytes.Length);
@@ -922,6 +943,52 @@ public sealed class TerminalSession : IDisposable
             {
                 return "执行失败: " + ex.Message;
             }
+        }
+        // FIDO2/OpenSSH 会话：另起一次性 ssh.exe 执行（-T 无 tty，跑完拿输出即退出），
+        // 不干扰交互式 -tt 会话。host key 用 accept-new 与交互会话一致。
+        if (_isOpenSSH)
+        {
+            var sshExe = LocateOpenSSH();
+            if (sshExe == null) return "执行失败: 未找到系统 OpenSSH 客户端";
+            return await Task.Run(() =>
+            {
+                try
+                {
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = sshExe,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        RedirectStandardInput = true,
+                        CreateNoWindow = true,
+                        StandardOutputEncoding = Encoding.UTF8,
+                        StandardErrorEncoding = Encoding.UTF8,
+                    };
+                    psi.ArgumentList.Add("-T");
+                    psi.ArgumentList.Add("-p"); psi.ArgumentList.Add(_port.ToString());
+                    psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(ExpandKeyPath(_keyPath ?? ""));
+                    psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("IdentitiesOnly=yes");
+                    psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("StrictHostKeyChecking=accept-new");
+                    psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("ServerAliveInterval=30");
+                    // 只走密钥：禁止密码/交互提示（stdin 重定向下会卡死 ReadToEnd），
+                    // FIDO2 的 Windows Hello PIN/触摸是 GUI 对话框，不受影响。
+                    psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("PreferredAuthentications=publickey");
+                    psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("NumberOfPasswordPrompts=0");
+                    psi.ArgumentList.Add($"{_user}@{_host}");
+                    psi.ArgumentList.Add(command);
+                    using var p = Process.Start(psi);
+                    if (p == null) return "";
+                    var stdout = p.StandardOutput.ReadToEnd();
+                    var stderr = p.StandardError.ReadToEnd();
+                    p.WaitForExit(20_000);
+                    return string.IsNullOrEmpty(stdout) ? stderr : stdout;
+                }
+                catch (Exception ex)
+                {
+                    return "执行失败: " + ex.Message;
+                }
+            });
         }
         if (_ssh is not { IsConnected: true }) return "";
         _execCts?.Cancel(); _execCts?.Dispose();
@@ -1034,6 +1101,10 @@ public sealed class TerminalSession : IDisposable
     {
         if (!_connected) throw new InvalidOperationException("会话未连接");
         if (_isLocal) throw new InvalidOperationException("本机终端无远端 SFTP");
+        if (_isOpenSSH)
+            throw new InvalidOperationException(
+                "FIDO2 硬件密钥会话暂不支持 SFTP 面板（SSH.NET 无 sk-* 算法支持）。" +
+                "文件传输请改用密码或普通密钥登录，或直接使用 scp/sftp 命令。");
         var info = BuildConnectionInfo(_host, _port, _user, _pass, _keyPath, _proxy);
         info.Timeout = TimeSpan.FromSeconds(30);
         var sftp = new SftpClient(info)
@@ -1049,6 +1120,10 @@ public sealed class TerminalSession : IDisposable
     {
         if (!_connected) throw new InvalidOperationException("会话未连接");
         if (_isLocal) throw new InvalidOperationException("本机终端无远端 SCP");
+        if (_isOpenSSH)
+            throw new InvalidOperationException(
+                "FIDO2 硬件密钥会话暂不支持 SCP 面板（SSH.NET 无 sk-* 算法支持）。" +
+                "文件传输请改用密码或普通密钥登录，或直接使用 scp/sftp 命令。");
         var info = BuildConnectionInfo(_host, _port, _user, _pass, _keyPath, _proxy);
         info.Timeout = TimeSpan.FromSeconds(30);
         return new ScpClient(info);
@@ -1063,6 +1138,189 @@ public sealed class TerminalSession : IDisposable
         if (path.StartsWith("~/") || path.StartsWith("~\\"))
             path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path[2..]);
         return Environment.ExpandEnvironmentVariables(path);
+    }
+
+    /// <summary>
+    /// FIDO2 硬件安全密钥检测（sk-* 密钥，对齐 mac OpenSSHSession.isFIDO2Key）：
+    /// 私钥 openssh-key-v1 的 public 段未加密，base64 解码后含
+    /// `sk-ssh-ed25519@openssh.com` / `sk-ecdsa-sha2-nistp256@openssh.com` 类型字符串；
+    /// 同名 .pub 是明文（第一段即类型），优先检查。
+    /// </summary>
+    internal static bool IsFIDO2Key(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        var expanded = ExpandKeyPath(path);
+        var skTypes = new[] { "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com" };
+        try
+        {
+            var pub = File.ReadAllText(expanded + ".pub");
+            foreach (var t in skTypes)
+                if (pub.StartsWith(t, StringComparison.Ordinal)) return true;
+        }
+        catch { /* 无 .pub 或不可读，走私钥检测 */ }
+        string text;
+        try { text = File.ReadAllText(expanded); }
+        catch { return false; }
+        var b64 = string.Concat(text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Where(l => !l.StartsWith("-----", StringComparison.Ordinal)));
+        byte[] decoded;
+        try { decoded = Convert.FromBase64String(b64); }
+        catch { return false; }
+        var s = System.Text.Encoding.UTF8.GetString(decoded);
+        return skTypes.Any(s.Contains);
+    }
+
+    /// <summary>定位系统 OpenSSH 客户端（Win10 22H2+/Win11 标准自带，且支持 FIDO2/Windows Hello）。</summary>
+    internal static string? LocateOpenSSH()
+    {
+        try
+        {
+            var sys = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                "System32", "OpenSSH", "ssh.exe");
+            if (File.Exists(sys)) return sys;
+        }
+        catch { }
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (!string.IsNullOrEmpty(path))
+        {
+            foreach (var dir in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                try
+                {
+                    var f = Path.Combine(dir.Trim(), "ssh.exe");
+                    if (File.Exists(f)) return f;
+                }
+                catch { }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// FIDO2 会话：起系统 OpenSSH 子进程（-tt 伪终端），stdin/stdout 对接现有终端泵
+    /// （对齐 StartLocalShell 的进程模式）。触摸/PIN 提示由 Windows OpenSSH 弹原生
+    /// Windows Hello 对话框，无需应用介入。
+    /// </summary>
+    private void ConnectViaOpenSSH(string host, int port, string user, string keyPath)
+    {
+        var sshExe = LocateOpenSSH();
+        if (sshExe == null)
+        {
+            throw new InvalidOperationException(
+                "FIDO2 硬件密钥需要系统 OpenSSH 客户端（C:\\Windows\\System32\\OpenSSH\\ssh.exe），当前系统未安装。\n" +
+                "可在「设置 → 系统 → 可选功能 → 添加功能 → OpenSSH 客户端」安装后重试。");
+        }
+        Log.Info($"FIDO2 硬件密钥会话，走系统 OpenSSH：{sshExe}", "ssh");
+        var psi = new ProcessStartInfo
+        {
+            FileName = sshExe,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+            StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+        };
+        psi.ArgumentList.Add("-tt");                                            // 强制伪终端
+        psi.ArgumentList.Add("-p"); psi.ArgumentList.Add(port.ToString());
+        psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(keyPath);
+        psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("IdentitiesOnly=yes"); // 只用自己的 key
+        psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("StrictHostKeyChecking=accept-new"); // 首次自动记，之后校验
+        psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("ServerAliveInterval=30");
+        psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("PubkeyAuthentication=yes");
+        psi.ArgumentList.Add($"{user}@{host}");
+        // 不设 BatchMode：FIDO2 需要交互（Windows Hello PIN/触摸）。
+        // 不传算法白名单：Windows OpenSSH 默认即含 sk-*，且旧版（8.x）无 PubkeyAcceptedAlgorithms 选项。
+        psi.Environment["TERM"] = "xterm-256color";
+        psi.Environment["COLORTERM"] = "truecolor";
+        psi.Environment["PIXSHELL_FIDO2"] = "1";
+        try { psi.Environment["COLUMNS"] = _cols.ToString(); } catch { }
+        try { psi.Environment["LINES"] = _rows.ToString(); } catch { }
+
+        var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+        if (!proc.Start())
+            throw new InvalidOperationException("无法启动 OpenSSH 客户端：" + sshExe);
+
+        _ossProc = proc;
+        _ossStdin = proc.StandardInput.BaseStream;
+        _isOpenSSH = true;
+        proc.Exited += (_, _) =>
+        {
+            View.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_connected)
+                {
+                    _connected = false;
+                    Log.Info($"FIDO2 SSH 会话退出 {user}@{host}:{port}", "ssh");
+                    SetStatus("连接已关闭");
+                    try { ConnectedChanged?.Invoke(this, false); } catch { }
+                }
+            }));
+        };
+        _readThread = new Thread(() => OpenSSHReadPump(proc))
+        {
+            IsBackground = true,
+            Name = "openssh-read-pump"
+        };
+        _readThread.Start();
+    }
+
+    /// <summary>
+    /// FIDO2 会话读泵：读 stdout（-tt 下远程全部输出在此），UTF-8 状态解码 + 语义高亮，
+    /// base64 推 xterm（与 ReadPump 同通路）。stderr（ssh 自身连接消息）并行读出来丢弃，
+    /// 只防管道写满阻塞（不往终端推，避免与远程输出混流）。
+    /// </summary>
+    private void OpenSSHReadPump(Process proc)
+    {
+        var outThread = new Thread(() =>
+        {
+            var buf = new byte[4096];
+            var decoder = Encoding.UTF8.GetDecoder();
+            var chars = new char[Encoding.UTF8.GetMaxCharCount(buf.Length)];
+            try
+            {
+                while (true)
+                {
+                    int n;
+                    try { n = proc.StandardOutput.BaseStream.Read(buf, 0, buf.Length); }
+                    catch { break; }
+                    if (n <= 0) break;
+                    int c = decoder.GetChars(buf, 0, n, chars, 0, flush: false);
+                    var text = c > 0 ? new string(chars, 0, c) : "";
+                    if (text.Length > 0) AppendOutputBuffer(text);
+                    string b64;
+                    if (HighlightEnabled && c > 0)
+                    {
+                        b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                            Highlight.SemanticHighlight.Decorate(text, ThemeManager.IsDark)));
+                    }
+                    else
+                    {
+                        b64 = Convert.ToBase64String(buf, 0, n);
+                    }
+                    View.Dispatcher.BeginInvoke(new Action(() => SendToTerm("out", b64)));
+                }
+            }
+            catch { /* 进程退出 */ }
+        })
+        { IsBackground = true, Name = "openssh-out" };
+        var errThread = new Thread(() =>
+        {
+            try
+            {
+                var sink = new byte[8192];
+                while (proc.StandardError.BaseStream.Read(sink, 0, sink.Length) > 0) { }
+            }
+            catch { /* 进程退出 */ }
+        })
+        { IsBackground = true, Name = "openssh-err" };
+        outThread.Start();
+        errThread.Start();
+        try { outThread.Join(); } catch { }
+        try { errThread.Join(); } catch { }
+        try { proc.WaitForExit(500); } catch { }
     }
 
     /// <summary>
@@ -1408,6 +1666,20 @@ public sealed class TerminalSession : IDisposable
         try { _localProc?.Dispose(); } catch { }
         _localStdin = null;
         _localProc = null;
+        // FIDO2/OpenSSH 子进程
+        try
+        {
+            if (_ossProc is { HasExited: false })
+            {
+                try { _ossProc.Kill(entireProcessTree: true); } catch { try { _ossProc.Kill(); } catch { } }
+            }
+        }
+        catch { }
+        try { _ossStdin?.Dispose(); } catch { }
+        try { _ossProc?.Dispose(); } catch { }
+        _ossStdin = null;
+        _ossProc = null;
+        _isOpenSSH = false;
         // 取消所有正在执行的 SshCommand（防止 SSH.NET CancelAsync 在连接已断开后回调）
         try { _execCts?.Cancel(); } catch { }
         try { _execCts?.Dispose(); } catch { }
