@@ -121,6 +121,26 @@ final class HostFormView: NSView {
 
     required init?(coder: NSCoder) { fatalError("no coder") }
 
+    /// NSAlert 模态会话中主菜单被禁用 → ⌘V/⌘X/⌘Z 等编辑快捷键失去 key equivalent
+    /// （⌘C 实测可用，一并覆盖更稳）。在表单层拦截转发给 field editor。
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
+           let editor = window?.firstResponder as? NSTextView,
+           let chars = event.charactersIgnoringModifiers?.lowercased() {
+            switch chars {
+            case "v": editor.paste(nil)
+            case "x": editor.cut(nil)
+            case "a": editor.selectAll(nil)
+            case "z":
+                if event.modifierFlags.contains(.shift) { editor.undoManager?.redo() }
+                else { editor.undoManager?.undo() }
+            default: return super.performKeyEquivalent(with: event)
+            }
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     var password: String { passField.stringValue }
 
     /// 切到 RDP 且端口还是 SSH 默认 22 → 顺手改成 3389；
