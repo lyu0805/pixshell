@@ -265,3 +265,11 @@ final class HoverCardView: NSView {
         if event.clickCount >= 2 { onDoubleClick?() } else { super.mouseDown(with: event) }
     }
 }
+
+/// 完全隐藏轨道的滚动条（防止 macOS 在插入鼠标时强行显示白底轨道）
+final class InvisibleScroller: NSScroller {
+    override class var isCompatibleWithOverlayScrollers: Bool { return true }
+    override func draw(_ dirtyRect: NSRect) {
+        self.drawKnob()
+    }
+}

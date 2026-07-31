@@ -54,6 +54,7 @@ final class MonitorSidebar: NSView {
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
         let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
+        scroll.verticalScroller = InvisibleScroller()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false   // 内容顶到最上
         doc.addSubview(stack); scroll.documentView = doc
@@ -191,7 +192,7 @@ final class MonitorSidebar: NSView {
         c.addSubview(v)
         NSLayoutConstraint.activate([
             v.topAnchor.constraint(equalTo: c.topAnchor, constant: t), v.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: l),
-            v.bottomAnchor.constraint(equalTo: c.bottomAnchor, constant: -b), v.trailingAnchor.constraint(lessThanOrEqualTo: c.trailingAnchor, constant: -r),
+            v.bottomAnchor.constraint(equalTo: c.bottomAnchor, constant: -b), v.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -r),
         ]); return c
     }
     private func padCenter(_ v: NSView, _ t: CGFloat, _ b: CGFloat) -> NSView {
@@ -496,5 +497,4 @@ final class Sparkline: NSView {
             }
             color.setStroke(); path.stroke()
         }
-    }
 }
