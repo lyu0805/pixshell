@@ -53,7 +53,7 @@ final class MonitorSidebar: NSView {
 
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
-        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
+        let scroll = OverlayScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
         scroll.verticalScroller = InvisibleScroller()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false   // 内容顶到最上
@@ -63,7 +63,7 @@ final class MonitorSidebar: NSView {
             scroll.topAnchor.constraint(equalTo: topAnchor), scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
             doc.topAnchor.constraint(equalTo: scroll.contentView.topAnchor), doc.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            doc.widthAnchor.constraint(equalTo: scroll.widthAnchor),
             stack.topAnchor.constraint(equalTo: doc.topAnchor), stack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: doc.trailingAnchor), stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
         ])
@@ -241,7 +241,7 @@ final class MonitorSidebar: NSView {
             row.heightAnchor.constraint(equalToConstant: 22),
             aL.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 10), aL.centerYAnchor.constraint(equalTo: row.centerYAnchor), aL.widthAnchor.constraint(equalToConstant: 52),
             bL.leadingAnchor.constraint(equalTo: aL.trailingAnchor, constant: 2), bL.centerYAnchor.constraint(equalTo: row.centerYAnchor), bL.widthAnchor.constraint(equalToConstant: 46),
-            cL.leadingAnchor.constraint(equalTo: bL.trailingAnchor, constant: 6), cL.centerYAnchor.constraint(equalTo: row.centerYAnchor), cL.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
+            cL.leadingAnchor.constraint(equalTo: bL.trailingAnchor, constant: 6), cL.centerYAnchor.constraint(equalTo: row.centerYAnchor), cL.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -18),
         ])
         return row
     }
@@ -256,7 +256,7 @@ final class MonitorSidebar: NSView {
 	        NSLayoutConstraint.activate([
 	            row.heightAnchor.constraint(equalToConstant: header ? 22 : 24),
 	            pL.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 10), pL.centerYAnchor.constraint(equalTo: row.centerYAnchor), pL.widthAnchor.constraint(equalToConstant: 82),
-	            sL.leadingAnchor.constraint(equalTo: pL.trailingAnchor, constant: 4), sL.centerYAnchor.constraint(equalTo: row.centerYAnchor), sL.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
+	            sL.leadingAnchor.constraint(equalTo: pL.trailingAnchor, constant: 4), sL.centerYAnchor.constraint(equalTo: row.centerYAnchor), sL.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -18),
 	        ])
 	        return row
 	    }

@@ -96,7 +96,7 @@ final class BackupPanel: NSWindowController {
         grid.cardSize = NSSize(width: 180, height: 108)
         grid.setCards(Self.providers.map { providerCard($0) })
 
-        let scroll = NSScrollView()
+        let scroll = OverlayScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.scrollerStyle = .overlay
@@ -109,7 +109,7 @@ final class BackupPanel: NSWindowController {
             grid.bottomAnchor.constraint(equalTo: doc.bottomAnchor), grid.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
             doc.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             doc.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
+            doc.widthAnchor.constraint(equalTo: scroll.widthAnchor)
         ])
         let exportB = PillButton("导出本地包…", style: .secondary, hPad: 10, height: 26, target: self, action: #selector(exportAction))
         let importB = PillButton("导入本地包…", style: .secondary, hPad: 10, height: 26, target: self, action: #selector(importAction))
@@ -134,7 +134,7 @@ final class BackupPanel: NSWindowController {
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 160),
             doc.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             doc.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            doc.widthAnchor.constraint(equalTo: scroll.widthAnchor),
             grid.topAnchor.constraint(equalTo: doc.topAnchor),
             grid.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
             grid.trailingAnchor.constraint(equalTo: doc.trailingAnchor),

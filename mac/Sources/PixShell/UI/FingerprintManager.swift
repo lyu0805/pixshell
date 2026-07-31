@@ -75,7 +75,7 @@ final class FingerprintManager: NSWindowController {
 
         listStack.orientation = .vertical; listStack.alignment = .leading; listStack.spacing = 8
         listStack.translatesAutoresizingMaskIntoConstraints = false
-        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
+        let scroll = OverlayScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
         scroll.verticalScroller = InvisibleScroller()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
@@ -85,7 +85,7 @@ final class FingerprintManager: NSWindowController {
             listStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor), listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
             doc.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             doc.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
+            doc.widthAnchor.constraint(equalTo: scroll.widthAnchor)
         ])
 
         card.addSubview(head); card.addSubview(countLabel); card.addSubview(scroll)

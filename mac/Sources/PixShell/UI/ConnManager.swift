@@ -102,7 +102,7 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
         // 列表：高度跟窗口走（可缩放），不再钉死 440
         listStack.orientation = .vertical; listStack.alignment = .leading; listStack.spacing = 8
         listStack.translatesAutoresizingMaskIntoConstraints = false
-        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
+        let scroll = OverlayScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
         scroll.verticalScroller = InvisibleScroller()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
@@ -112,7 +112,7 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
             listStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor), listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
             doc.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             doc.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
+            doc.widthAnchor.constraint(equalTo: scroll.widthAnchor)
         ])
 
         card.addSubview(head); card.addSubview(searchRow); card.addSubview(scroll)
@@ -128,7 +128,7 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
             scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
             scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
-            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            doc.widthAnchor.constraint(equalTo: scroll.widthAnchor),
             listStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 4),
             listStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 4),
             listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -4),
@@ -231,7 +231,7 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
                 hostsStack.alignment = .leading; hostsStack.spacing = 4
                 hostsStack.translatesAutoresizingMaskIntoConstraints = false
                 for h in hosts { hostsStack.addArrangedSubview(hostRow(h)) }
-                let hostScroll = NSScrollView()
+                let hostScroll = OverlayScrollView()
                 hostScroll.drawsBackground = false
                 hostScroll.hasVerticalScroller = true
                 hostScroll.scrollerStyle = .overlay
@@ -244,7 +244,7 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
                     hostScroll.heightAnchor.constraint(equalToConstant: 140),
                     hostDoc.topAnchor.constraint(equalTo: hostScroll.contentView.topAnchor),
                     hostDoc.leadingAnchor.constraint(equalTo: hostScroll.contentView.leadingAnchor),
-                    hostDoc.widthAnchor.constraint(equalTo: hostScroll.contentView.widthAnchor),
+                    hostDoc.widthAnchor.constraint(equalTo: hostScroll.widthAnchor),
                     hostsStack.topAnchor.constraint(equalTo: hostDoc.topAnchor),
                     hostsStack.leadingAnchor.constraint(equalTo: hostDoc.leadingAnchor),
                     hostsStack.trailingAnchor.constraint(equalTo: hostDoc.trailingAnchor),

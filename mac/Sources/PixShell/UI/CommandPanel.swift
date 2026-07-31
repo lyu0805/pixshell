@@ -58,7 +58,7 @@ final class CommandPanel: NSView {
 
         // ── 左栏：命令列表（带边框盒子 + 换行 + 可滚动）──
         let listBox = CardView(radius: Theme.radiusSm, bg: Theme.bg2, border: Theme.border)
-        let listScroll = NSScrollView()
+        let listScroll = OverlayScrollView()
         listScroll.drawsBackground = false
         listScroll.hasVerticalScroller = true
         listScroll.hasHorizontalScroller = false
