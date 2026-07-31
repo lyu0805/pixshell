@@ -36,12 +36,14 @@ extension AppDelegate {
         fileMenu.addItem(mi("导出主机…", #selector(exportHosts)))
         fileItem.submenu = fileMenu; main.addItem(fileItem)
 
-        // 编辑：输入框聚焦时走 NSTextField/NSTextView；否则复制/粘贴/全选走终端
+        // 编辑：target=nil 让 AppKit 通过 responder chain 自动路由。
+        // 模态弹窗（NSAlert 新建连接等）中 field editor 优先接收 ⌘C/⌘V；
+        // 主窗口中 responder chain 最终到达 AppDelegate（termCopy/termPaste）操作终端。
         let editItem = NSMenuItem(); let editMenu = NSMenu(title: "编辑")
-        editMenu.addItem(mi("剪切", #selector(termCut), "x"))
-        editMenu.addItem(mi("复制", #selector(termCopy), "c"))
-        editMenu.addItem(mi("粘贴", #selector(termPaste), "v"))
-        editMenu.addItem(mi("全选", #selector(termSelectAll), "a"))
+        editMenu.addItem(NSMenuItem(title: "剪切", action: #selector(termCut), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "复制", action: #selector(termCopy), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "粘贴", action: #selector(termPaste), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "全选", action: #selector(termSelectAll), keyEquivalent: "a"))
         editMenu.addItem(.separator())
         editMenu.addItem(mi("清屏", #selector(termClear), "k"))
         editItem.submenu = editMenu; main.addItem(editItem)
