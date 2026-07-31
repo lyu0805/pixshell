@@ -110,7 +110,7 @@ final class MonitorSidebar: NSView {
         let sysBtn = PillButton("系统信息", style: .secondary, hPad: 12, height: 28, target: self, action: #selector(sysInfoTap))
         sysBtn.attributedTitle = NSAttributedString(string: "系统信息", attributes: [.foregroundColor: Theme.accent, .font: Theme.ui(12, .semibold)])
         sysBtn.rounded(Theme.radiusSm, bg: Theme.accentSoft)
-        addRow(pad(sysBtn, 8, 10, 8, 10), border: false)
+        addRow(padCenter(sysBtn, 8, 8), border: false)
 
         // 实时监控
         secTitle("实时监控", first: true)
@@ -120,7 +120,7 @@ final class MonitorSidebar: NSView {
 
         // 进程 TOP
         secTitle("进程 TOP")
-        procBody.orientation = .vertical; procBody.alignment = .leading; procBody.spacing = 0
+        procBody.orientation = .vertical; procBody.alignment = .width; procBody.spacing = 0
         addRow(pad(vstackFull([procHeader(), procBody]), 0, 0, 0, 0), border: true)
 
         // 网络
@@ -139,7 +139,7 @@ final class MonitorSidebar: NSView {
 
         // 磁盘
         secTitle("磁盘")
-        diskBody.orientation = .vertical; diskBody.alignment = .leading; diskBody.spacing = 0
+        diskBody.orientation = .vertical; diskBody.alignment = .width; diskBody.spacing = 0
         addRow(pad(vstackFull([diskHeader(), diskBody]), 0, 0, 0, 0), border: false)
     }
 
@@ -185,13 +185,21 @@ final class MonitorSidebar: NSView {
         return s
     }
     private func vstack(_ v: [NSView], gap: CGFloat) -> NSStackView { let s = NSStackView(views: v); s.orientation = .vertical; s.alignment = .leading; s.spacing = gap; return s }
-    private func vstackFull(_ v: [NSView]) -> NSStackView { let s = NSStackView(views: v); s.orientation = .vertical; s.alignment = .leading; s.spacing = 0; s.distribution = .fill; return s }
+    private func vstackFull(_ v: [NSView]) -> NSStackView { let s = NSStackView(views: v); s.orientation = .vertical; s.alignment = .width; s.spacing = 0; s.distribution = .fill; return s }
     private func pad(_ v: NSView, _ t: CGFloat, _ l: CGFloat, _ b: CGFloat, _ r: CGFloat) -> NSView {
         let c = NSView(); c.translatesAutoresizingMaskIntoConstraints = false; v.translatesAutoresizingMaskIntoConstraints = false
         c.addSubview(v)
         NSLayoutConstraint.activate([
             v.topAnchor.constraint(equalTo: c.topAnchor, constant: t), v.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: l),
             v.bottomAnchor.constraint(equalTo: c.bottomAnchor, constant: -b), v.trailingAnchor.constraint(lessThanOrEqualTo: c.trailingAnchor, constant: -r),
+        ]); return c
+    }
+    private func padCenter(_ v: NSView, _ t: CGFloat, _ b: CGFloat) -> NSView {
+        let c = NSView(); c.translatesAutoresizingMaskIntoConstraints = false; v.translatesAutoresizingMaskIntoConstraints = false
+        c.addSubview(v)
+        NSLayoutConstraint.activate([
+            v.topAnchor.constraint(equalTo: c.topAnchor, constant: t), v.centerXAnchor.constraint(equalTo: c.centerXAnchor),
+            v.bottomAnchor.constraint(equalTo: c.bottomAnchor, constant: -b),
         ]); return c
     }
     /// 满宽内边距（trailing 用 =）：侧栏「IP · 复制」这种需要 spacer 顶右的行必须用这个
@@ -224,9 +232,9 @@ final class MonitorSidebar: NSView {
         row.addSubview(aL); row.addSubview(bL); row.addSubview(cL)
         NSLayoutConstraint.activate([
             row.heightAnchor.constraint(equalToConstant: 22),
-            aL.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 6), aL.centerYAnchor.constraint(equalTo: row.centerYAnchor), aL.widthAnchor.constraint(equalToConstant: 48),
-            bL.leadingAnchor.constraint(equalTo: aL.trailingAnchor), bL.centerYAnchor.constraint(equalTo: row.centerYAnchor), bL.widthAnchor.constraint(equalToConstant: 40),
-            cL.leadingAnchor.constraint(equalTo: bL.trailingAnchor, constant: 4), cL.centerYAnchor.constraint(equalTo: row.centerYAnchor), cL.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -6),
+            aL.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 10), aL.centerYAnchor.constraint(equalTo: row.centerYAnchor), aL.widthAnchor.constraint(equalToConstant: 52),
+            bL.leadingAnchor.constraint(equalTo: aL.trailingAnchor, constant: 2), bL.centerYAnchor.constraint(equalTo: row.centerYAnchor), bL.widthAnchor.constraint(equalToConstant: 46),
+            cL.leadingAnchor.constraint(equalTo: bL.trailingAnchor, constant: 6), cL.centerYAnchor.constraint(equalTo: row.centerYAnchor), cL.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
         ])
         return row
     }
@@ -467,16 +475,16 @@ final class Sparkline: NSView {
         let w = bounds.width, h = bounds.height
         if barMode {
             let unit = w / CGFloat(values.count)
-            let barW = unit * 0.55
-            let gap = unit * 0.45
-            let maxH = h * 0.7
-            let barColor = color.withAlphaComponent(0.6)
+            let barW = unit * 0.85
+            let gap = unit * 0.15
+            let maxH = h * 0.85
+            let barColor = color.withAlphaComponent(0.8)
             barColor.setFill()
             for (i, v) in values.enumerated() {
                 let ratio = CGFloat((v - mn) / span)
                 let barH = max(maxH * ratio, 1)
                 let x = CGFloat(i) * (barW + gap)
-                let y = h - barH
+                let y: CGFloat = 0
                 NSBezierPath(roundedRect: NSRect(x: x, y: y, width: barW, height: barH), xRadius: 1, yRadius: 1).fill()
             }
         } else {
