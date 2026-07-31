@@ -10,5 +10,6 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="..\LSP\LSPClient.cs" />
+    <Compile Include="..\Logging\Log.cs" />
   </ItemGroup>
 </Project>

@@ -219,6 +219,14 @@ final class LSPClient {
             let msg: [String: Any] = ["jsonrpc": "2.0", "id": id, "method": method, "params": params]
             self.pending[id] = (msg: msg, done: done, retries: 0)
             self.write(msg)
+            // 10s 超时：不响应时回调空结果，避免挂起泄漏。
+            // -32801 重试会把 pending 换新 id，旧 id 超时不会误伤新请求。
+            self.queue.asyncAfter(deadline: .now() + 10) { [weak self] in
+                guard let self else { return }
+                if let entry = self.pending.removeValue(forKey: id) {
+                    entry.done(Data())
+                }
+            }
         }
     }
 

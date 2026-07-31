@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using PixShell.Logging;
 
 namespace PixShell.LSP;
 
@@ -204,7 +205,21 @@ public sealed class LSPClient : IDisposable
             msg["id"] = id;
             _pending[id] = new Pending { Done = done, Msg = msg };
         }
+        _ = TimeoutAfterAsync(id);
         Write(msg);
+    }
+
+    /// <summary>请求超时（10s）：rust-analyzer 不响应时回调空结果，避免挂起泄漏。
+    /// -32801 重试会把 pending 换新 id，旧 id 超时不会误伤新请求。</summary>
+    private async Task TimeoutAfterAsync(int id)
+    {
+        await Task.Delay(10_000);
+        Pending? entry = null;
+        lock (_lock)
+        {
+            if (_pending.TryGetValue(id, out var e)) { _pending.Remove(id); entry = e; }
+        }
+        entry?.Done(null);
     }
 
     private void Write(Dictionary<string, object?> obj)
@@ -221,7 +236,7 @@ public sealed class LSPClient : IDisposable
                 _stdin.BaseStream.Flush();
             }
         }
-        catch { }
+        catch (Exception ex) { Log.Warn($"LSP 发送失败：{ex.Message}", "lsp"); }
     }
 
     /// <summary>读循环：accumulate 到 MemoryStream，按 Content-Length 切帧。JSON body 里的换行
@@ -242,7 +257,7 @@ public sealed class LSPClient : IDisposable
                 }
             }
         }
-        catch { }
+        catch (Exception ex) { Log.Warn($"LSP 读取循环退出：{ex.Message}", "lsp"); }
     }
 
     private void DrainFrames()
