@@ -83,7 +83,7 @@ final class QuickConnect: NSView {
         rule.layer?.backgroundColor = Theme.border.cgColor
         rule.translatesAutoresizingMaskIntoConstraints = false
 
-        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true
+        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(grid); grid.translatesAutoresizingMaskIntoConstraints = false
