@@ -497,7 +497,7 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
         onInsertToCommand?(paths.isEmpty ? remotePath : paths.joined(separator: " "))
     }
     private func scroll(_ doc: NSView) -> NSScrollView {
-        let s = NSScrollView(); s.documentView = doc; s.hasVerticalScroller = false
+        let s = NSScrollView(); s.documentView = doc; s.hasVerticalScroller = true; s.scrollerStyle = .overlay
         s.verticalScroller = InvisibleScroller()
         s.drawsBackground = true; s.backgroundColor = Theme.bg2
         s.rounded(Theme.radiusSm, border: Theme.border)

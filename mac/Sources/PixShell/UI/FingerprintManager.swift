@@ -76,6 +76,7 @@ final class FingerprintManager: NSWindowController {
         listStack.orientation = .vertical; listStack.alignment = .leading; listStack.spacing = 8
         listStack.translatesAutoresizingMaskIntoConstraints = false
         let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
+        scroll.verticalScroller = InvisibleScroller()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(listStack); scroll.documentView = doc

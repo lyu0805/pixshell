@@ -84,6 +84,7 @@ final class QuickConnect: NSView {
         rule.translatesAutoresizingMaskIntoConstraints = false
 
         let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
+        scroll.verticalScroller = InvisibleScroller()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(grid); grid.translatesAutoresizingMaskIntoConstraints = false

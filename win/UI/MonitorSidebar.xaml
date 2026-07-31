@@ -83,12 +83,12 @@
                 <StackPanel>
                     <Grid Background="{DynamicResource BrushBg2}" Height="22">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="52"/>
-                            <ColumnDefinition Width="42"/>
+                            <ColumnDefinition Width="65"/>
+                            <ColumnDefinition Width="60"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="内存" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="8,0,0,0" VerticalAlignment="Center"/>
-                        <TextBlock Grid.Column="1" Text="CPU" FontSize="10" Foreground="{DynamicResource BrushMuted}" TextAlignment="Center" VerticalAlignment="Center"/>
+                        <TextBlock Text="内存" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="1" Text="CPU" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="4,0,0,0" VerticalAlignment="Center"/>
                         <TextBlock Grid.Column="2" Text="命令" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="4,0,0,0" VerticalAlignment="Center"/>
                     </Grid>
                     <StackPanel x:Name="ProcBody"/>
@@ -122,11 +122,11 @@
                 <StackPanel>
                     <Grid Background="{DynamicResource BrushBg2}" Height="22">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="90"/>
                             <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="路径" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="10,0,0,0" VerticalAlignment="Center"/>
-                        <TextBlock Grid.Column="1" Text="可用/大小" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="4,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="1" Text="可用/大小" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="4,0,12,0" VerticalAlignment="Center" HorizontalAlignment="Right"/>
                     </Grid>
                     <StackPanel x:Name="DiskBody"/>
                 </StackPanel>

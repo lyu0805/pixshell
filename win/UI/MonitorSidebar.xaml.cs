@@ -249,14 +249,14 @@ public partial class MonitorSidebar : UserControl
     private static UIElement ProcRow(string mem, string cpu, string cmd, bool even)
     {
         var row = new Grid { Height = 17, Background = even ? EvenRowBg : OddRowBg };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(52) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(42) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(65) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(60) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var mono = (FontFamily)Application.Current.Resources["FontMono"];
-        var memT = new TextBlock { Text = mem, FontSize = 10, FontFamily = mono, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Foreground = MemFg };
+        var memT = new TextBlock { Text = mem, FontSize = 10, FontFamily = mono, Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Foreground = MemFg };
         var cpuT = new TextBlock { Text = cpu, FontSize = 10, FontFamily = mono, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Foreground = CpuFg };
         Grid.SetColumn(cpuT, 1);
-        var cmdT = new TextBlock { Text = cmd, FontSize = 10, FontFamily = mono, Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = (Brush)Application.Current.Resources["BrushText"] };
+        var cmdT = new TextBlock { Text = cmd, FontSize = 10, FontFamily = mono, Margin = new Thickness(4, 0, 14, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = (Brush)Application.Current.Resources["BrushText"] };
         Grid.SetColumn(cmdT, 2);
         row.Children.Add(memT); row.Children.Add(cpuT); row.Children.Add(cmdT);
         return row;
@@ -265,12 +265,12 @@ public partial class MonitorSidebar : UserControl
     private static UIElement DiskRow(string path, string sizeInfo, bool even)
     {
         var row = new Grid { Height = 17, Background = even ? EvenRowBg : OddRowBg };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(82) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0, GridUnitType.Auto) });
         var mono = (FontFamily)Application.Current.Resources["FontMono"];
         var text = (Brush)Application.Current.Resources["BrushText"];
-        var pT = new TextBlock { Text = path, FontSize = 10, FontFamily = mono, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = text };
-        var sT = new TextBlock { Text = sizeInfo, FontSize = 10, FontFamily = mono, Margin = new Thickness(4, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center, Foreground = text };
+        var pT = new TextBlock { Text = path, FontSize = 10, FontFamily = mono, Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = text };
+        var sT = new TextBlock { Text = sizeInfo, FontSize = 10, FontFamily = mono, Margin = new Thickness(4, 0, 14, 0), VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right, Foreground = text };
         Grid.SetColumn(sT, 1);
         row.Children.Add(pT); row.Children.Add(sT);
         return row;
