@@ -34,11 +34,11 @@
             </StackPanel>
         </DockPanel>
 
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" VerticalAlignment="Stretch">
             <Grid>
-                <WrapPanel x:Name="CardsPanel" Orientation="Horizontal"/>
+                <WrapPanel x:Name="CardsPanel" Orientation="Horizontal" HorizontalAlignment="Center"/>
                 <TextBlock x:Name="EmptyHint" Text="暂无历史记录 —— 点右上角 ＋ 新建连接，或打开连接管理器"
-                           Foreground="{DynamicResource BrushMuted}" FontSize="13" Margin="0,24,0,0"
+                           Foreground="{DynamicResource BrushMuted}" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center"
                            Visibility="Collapsed"/>
             </Grid>
         </ScrollViewer>
