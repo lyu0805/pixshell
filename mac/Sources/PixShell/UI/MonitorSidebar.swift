@@ -46,8 +46,14 @@ final class MonitorSidebar: NSView {
 
     private static func val() -> NSTextField { let l = NSTextField(labelWithString: "-"); l.font = Theme.ui(11); l.textColor = Theme.text; return l }
 
+    override var wantsUpdateLayer: Bool { return true }
+    override func updateLayer() {
+        super.updateLayer()
+        layer?.backgroundColor = Theme.side.cgColor
+    }
+
     private func build() {
-        wantsLayer = true; layer?.backgroundColor = Theme.side.cgColor
+        wantsLayer = true
         netSpark.barMode = true
         pingSpark.barMode = true
 

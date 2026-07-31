@@ -276,6 +276,11 @@ final class InvisibleScroller: NSScroller {
 
 /// 强制内容铺满全宽、滚动条完全悬浮的滚动视图
 final class OverlayScrollView: NSScrollView {
+    override var scrollerStyle: NSScroller.Style {
+        get { return .overlay }
+        set { super.scrollerStyle = .overlay }
+    }
+    
     override func tile() {
         super.tile()
         contentView.frame = bounds
