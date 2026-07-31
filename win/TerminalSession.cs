@@ -1269,11 +1269,16 @@ public sealed class TerminalSession : IDisposable
 
     /// <summary>
     /// FIDO2 会话读泵：读 stdout（-tt 下远程全部输出在此），UTF-8 状态解码 + 语义高亮，
-    /// base64 推 xterm（与 ReadPump 同通路）。stderr（ssh 自身连接消息）并行读出来丢弃，
-    /// 只防管道写满阻塞（不往终端推，避免与远程输出混流）。
+    /// base64 推 xterm（与 ReadPump 同通路）。stderr（ssh 自身连接消息）并行读出缓冲，
+    /// 防管道写满阻塞；正常会话不往终端推（避免与远程输出混流），但连接失败
+    /// （stdout 从未有数据且进程已退出）时把 stderr 原样推给终端 —— 用户必须看到
+    /// "Bad owner or permissions" / "Host key verification failed" 这类真实失败原因。
     /// </summary>
     private void OpenSSHReadPump(Process proc)
     {
+        var stderrBuf = new byte[64 * 1024];
+        var stderrLen = 0;
+        var hadOutput = false;
         var outThread = new Thread(() =>
         {
             var buf = new byte[4096];
@@ -1287,6 +1292,7 @@ public sealed class TerminalSession : IDisposable
                     try { n = proc.StandardOutput.BaseStream.Read(buf, 0, buf.Length); }
                     catch { break; }
                     if (n <= 0) break;
+                    hadOutput = true;
                     int c = decoder.GetChars(buf, 0, n, chars, 0, flush: false);
                     var text = c > 0 ? new string(chars, 0, c) : "";
                     if (text.Length > 0) AppendOutputBuffer(text);
@@ -1311,7 +1317,19 @@ public sealed class TerminalSession : IDisposable
             try
             {
                 var sink = new byte[8192];
-                while (proc.StandardError.BaseStream.Read(sink, 0, sink.Length) > 0) { }
+                while (true)
+                {
+                    int n;
+                    try { n = proc.StandardError.BaseStream.Read(sink, 0, sink.Length); }
+                    catch { break; }
+                    if (n <= 0) break;
+                    lock (stderrBuf)
+                    {
+                        var room = stderrBuf.Length - stderrLen;
+                        if (room > 0) Array.Copy(sink, 0, stderrBuf, stderrLen, Math.Min(n, room));
+                        stderrLen = Math.Min(stderrBuf.Length, stderrLen + n);
+                    }
+                }
             }
             catch { /* 进程退出 */ }
         })
@@ -1321,6 +1339,31 @@ public sealed class TerminalSession : IDisposable
         try { outThread.Join(); } catch { }
         try { errThread.Join(); } catch { }
         try { proc.WaitForExit(500); } catch { }
+        // 连接失败诊断：stdout 从未有数据（无 MOTD/提示符）且进程已退出 → 把 ssh 报错推给终端。
+        if (!hadOutput)
+        {
+            string errText;
+            lock (stderrBuf) { errText = Encoding.UTF8.GetString(stderrBuf, 0, stderrLen).Trim(); }
+            if (errText.Length > 0)
+            {
+                // 用户反馈：Win11 目标机默认防火墙拦 22 → ssh 报 refused/timed out，
+                // 附放行指引（与 MainWindow.IsFirewallLikely 同一诊断口径）。
+                if (errText.Contains("refused", StringComparison.OrdinalIgnoreCase)
+                    || errText.Contains("timed out", StringComparison.OrdinalIgnoreCase))
+                {
+                    errText += "\r\n—— 连接被拒绝/超时：若目标是 Windows 主机，可能是防火墙拦截了 SSH 22 端口。" +
+                               "管理员 PowerShell 执行：New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server' " +
+                               "-Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22";
+                }
+                var lines = errText.Replace("\r\n", "\n").Split('\n');
+                for (int i = 0; i < lines.Length; i++)
+                    lines[i] = "\x1b[38;5;196m" + lines[i] + "\x1b[0m";   // 红色，对齐主题错误色
+                errText = string.Join("\r\n", lines);
+                View.Dispatcher.BeginInvoke(new Action(() => SendToTerm("out",
+                    Convert.ToBase64String(Encoding.UTF8.GetBytes(errText)))));
+                Log.Error($"FIDO2/OpenSSH 连接失败：{Encoding.UTF8.GetString(stderrBuf, 0, stderrLen).Trim().Replace("\n", " | ")}", "ssh");
+            }
+        }
     }
 
     /// <summary>

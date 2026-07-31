@@ -577,14 +577,49 @@ public partial class MainWindow : Window
         {
             Log.Error($"会话打开失败 {host.Username}@{host.Host}: {ex.Message}", "session");
             var authFail = IsAuthFailure(ex);
+            // 用户反馈：Win11 目标机默认防火墙拦截 22 入站 → 报"积极拒绝/超时"，
+            // 用户误以为是密钥/证书问题。Socket 层失败时给出放行指引。
+            var fw = !authFail && IsFirewallLikely(ex);
             // 仅认证失败才清 DPAPI 密码；断网/超时/算法协商等保留凭据，避免误伤。
             if (authFail) CredentialStore.Remove(host.Id);
-            ConnectAnim.Fail(authFail ? "认证失败" : "连接失败");
-            SetStatus((authFail ? "认证失败: " : "连接失败: ") + ex.Message);
+            ConnectAnim.Fail(authFail ? "认证失败" : fw ? "连接失败（疑似防火墙拦截）" : "连接失败");
+            SetStatus((authFail ? "认证失败: " : "连接失败: ") + ex.Message
+                + (fw ? "（若目标是 Windows 主机，可能被防火墙拦截：管理员 PowerShell 执行 New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22）" : ""));
+            if (fw)
+                Log.Info($"防火墙提示：{host.Host}:{host.Port} Socket 层失败，若为 Windows 主机请放行 22 端口入站", "session");
             // 认证失败且非私钥路径：当场重弹密码框（对齐 mac promptRetryPassword）。
             // 私钥登录失败不弹密码框——那是 key 的问题。
             if (authFail && string.IsNullOrEmpty(host.KeyPath)) PromptRetryPassword(host, item);
         }
+    }
+
+    /// <summary>连接失败疑似防火墙拦截：Socket 层拒绝/超时/不可达（区别于认证失败）。
+    /// 覆盖 SSH.NET 与系统 OpenSSH 两条路径的异常形态。</summary>
+    private static bool IsFirewallLikely(Exception ex)
+    {
+        for (Exception? e = ex; e != null; e = e.InnerException)
+        {
+            if (e is System.Net.Sockets.SocketException se)
+            {
+                var code = se.SocketErrorCode;
+                if (code is System.Net.Sockets.SocketError.ConnectionRefused
+                    or System.Net.Sockets.SocketError.TimedOut
+                    or System.Net.Sockets.SocketError.HostUnreachable
+                    or System.Net.Sockets.SocketError.NetworkUnreachable
+                    or System.Net.Sockets.SocketError.AccessDenied)
+                    return true;
+            }
+            var msg = e.Message ?? "";
+            if (msg.Contains("refused", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("unreachable", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("无法访问", StringComparison.Ordinal)
+                || msg.Contains("超时", StringComparison.Ordinal)
+                || msg.Contains("积极拒绝", StringComparison.Ordinal)
+                || msg.Contains("拒绝连接", StringComparison.Ordinal))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>区分 SSH 认证失败 vs 网络/超时/其它。只有前者才应清掉已存密码。</summary>
