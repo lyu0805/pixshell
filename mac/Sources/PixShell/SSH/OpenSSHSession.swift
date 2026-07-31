@@ -123,6 +123,26 @@ public final class OpenSSHSession: SSHSession {
         watchExit()
     }
 
+    /// FIDO2 硬件安全密钥检测（sk-* 密钥）：私钥 openssh-key-v1 的 public 段未加密，
+    /// base64 解码后含 `sk-ssh-ed25519@openssh.com` / `sk-ecdsa-sha2-nistp256@openssh.com`
+    /// 类型字符串；同名 .pub 是明文（第一段即类型），优先检查。
+    static func isFIDO2Key(_ path: String) -> Bool {
+        guard !path.isEmpty else { return false }
+        let expanded = (path as NSString).expandingTildeInPath
+        let skTypes = ["sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com"]
+        if let pubText = try? String(contentsOfFile: expanded + ".pub", encoding: .utf8) {
+            for t in skTypes where pubText.hasPrefix(t) { return true }
+        }
+        guard let data = FileManager.default.contents(atPath: expanded),
+              let text = String(data: data, encoding: .utf8) else { return false }
+        let b64 = text.components(separatedBy: .newlines)
+            .filter { !$0.hasPrefix("-----") && !$0.isEmpty }
+            .joined()
+        guard let decoded = Data(base64Encoded: b64) else { return false }
+        let s = String(decoding: decoded, as: UTF8.self)
+        return skTypes.contains(where: s.contains)
+    }
+
     /// 组装 ssh 参数。只放"让它在 App 里行为可预期"的选项，不去替用户决定安全策略。
     private static func buildArguments(_ c: SSHCredentials, term: String) -> [String] {
         var a: [String] = []
@@ -145,6 +165,11 @@ public final class OpenSSHSession: SSHSession {
         if let kp = c.keyPath, !kp.isEmpty {
             a += ["-i", (kp as NSString).expandingTildeInPath]
             a += ["-o", "IdentitiesOnly=yes"]
+            // FIDO2 硬件安全密钥（sk-*）：系统 OpenSSH 需要 SecurityKeyProvider
+            // 才弹出 Touch ID / 安全密钥触摸提示（macOS 12.3+，默认未启用）。
+            if isFIDO2Key(kp) {
+                a += ["-o", "SecurityKeyProvider=Security.framework"]
+            }
             if c.password == nil || c.password?.isEmpty == true {
                 a += ["-o", "PreferredAuthentications=publickey"]
                 if batchIfKeyOnly {
@@ -183,6 +208,10 @@ public final class OpenSSHSession: SSHSession {
             "rsa-sha2-512",
             "rsa-sha2-256",
             "ssh-rsa",
+            // FIDO2 硬件安全密钥（sk-*）：绝对列表必须显式加入，否则被
+            // PubkeyAcceptedAlgorithms 拒绝 → 安全密钥认证直接失败。
+            "sk-ssh-ed25519@openssh.com",
+            "sk-ecdsa-sha2-nistp256@openssh.com",
         ]
         // macOS 26 的 /usr/bin/ssh 已从二进制中完全移除 ssh-dss；把不受支持的算法
         // 放进绝对列表会让整条选项报 "Bad key types" 并在认证前退出。不要按系统版本
