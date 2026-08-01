@@ -105,11 +105,13 @@ public static class SemanticHighlight
     private static readonly Regex RRustTestSum = Re(@"test result:\s+\w+\.");
 
     private static readonly Regex RErrEn = Re(@"\b(?:error|errors|fail(?:ed|ure|ures)?|fatal|critical|exception|denied|refused|panic|traceback|segfault|oom|killed|unable|cannot|can't|not found|no such|permission denied|connection refused|timed?\s*out|timeout|unauthorized|forbidden|invalid|corrupt(?:ed)?|broken|crash(?:ed)?)\b", RegexOptions.IgnoreCase);
-    private static readonly Regex RErrZh = Re(@"(?:错误|失败|异常|崩溃|拒绝|超时|未找到|无权限|权限不足|连接拒绝|致命)");
+    // 中文词：\b 对 CJK 无效，须用 Unicode 属性前后夹紧（只认独立词，防"正常范围/异常子串"误亮）。
+    private static readonly string ZhW = @"\p{IsCJKUnifiedIdeographs}";
+    private static readonly Regex RErrZh = Re($@"(?<!{ZhW})(?:错误|失败|异常|崩溃|拒绝|超时|未找到|无权限|权限不足|连接拒绝|致命)(?!{ZhW})");
     private static readonly Regex RWarnEn = Re(@"\b(?:warn(?:ing|ings)?|deprecated|caution|notice|restart required|system restart required)\b", RegexOptions.IgnoreCase);
-    private static readonly Regex RWarnZh = Re(@"(?:警告|注意|弃用|即将过期)");
+    private static readonly Regex RWarnZh = Re($@"(?<!{ZhW})(?:警告|注意|弃用|即将过期)(?!{ZhW})");
     private static readonly Regex ROkEn = Re(@"\b(?:ok|okay|success(?:ful(?:ly)?)?|done|ready|passed|complete(?:d)?|enabled|active|running|listening|connected|online|healthy|available)\b", RegexOptions.IgnoreCase);
-    private static readonly Regex ROkZh = Re(@"(?:成功|完成|就绪|已连接|正常|在线|健康)");
+    private static readonly Regex ROkZh = Re($@"(?<!{ZhW})(?:成功|完成|就绪|已连接|正常|在线|健康)(?!{ZhW})");
     private static readonly Regex RPct9 = Re(@"\b(9\d(?:\.\d+)?%)");
     private static readonly Regex RPct8 = Re(@"\b(8\d(?:\.\d+)?%)");
     private static readonly Regex RPct17 = Re(@"\b([1-7]?\d(?:\.\d+)?%)");
