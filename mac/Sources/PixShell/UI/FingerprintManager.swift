@@ -101,8 +101,6 @@ final class FingerprintManager: NSWindowController {
             scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
             scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 240),
-            doc.topAnchor.constraint(equalTo: scroll.topAnchor), doc.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
-            doc.trailingAnchor.constraint(equalTo: scroll.trailingAnchor), doc.widthAnchor.constraint(equalTo: scroll.widthAnchor),
             listStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 4),
             listStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 4),
             listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -4),

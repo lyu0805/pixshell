@@ -128,7 +128,6 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
             scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
             scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
-            doc.widthAnchor.constraint(equalTo: scroll.widthAnchor),
             listStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 4),
             listStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 4),
             listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -4),

@@ -430,13 +430,15 @@ public partial class EditorWindow : Window
             e.Handled = true;
             return;
         }
-        if (e.Key == Key.H && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && _lspAvailable)
+        var mods = Keyboard.Modifiers;
+        // 位掩码比较而非精确相等：CapsLock/AltGr 等其它修饰键位会让精确相等失败（如 CapsLock 下 Ctrl+Shift+H 失效）
+        if (e.Key == Key.H && (mods & (ModifierKeys.Control | ModifierKeys.Shift)) == (ModifierKeys.Control | ModifierKeys.Shift) && _lspAvailable)
         {
             LspHover();
             e.Handled = true;
             return;
         }
-        if (e.Key == Key.G && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && _lspAvailable)
+        if (e.Key == Key.G && (mods & (ModifierKeys.Control | ModifierKeys.Shift)) == (ModifierKeys.Control | ModifierKeys.Shift) && _lspAvailable)
         {
             LspGoToDefinition();
             e.Handled = true;

@@ -21,6 +21,10 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
     private var completionKeyMonitor: Any?
     private var lspMenuItems: (hover: NSMenuItem, goto: NSMenuItem, complete: NSMenuItem)?
 
+    deinit {
+        if let m = completionKeyMonitor { NSEvent.removeMonitor(m) }
+    }
+
 
     // MARK: 对外 API
 
@@ -499,7 +503,13 @@ final class EditorPanel: NSView, NSTextViewDelegate, NSTextStorageDelegate {
     private func installCompletionKeyMonitor() {
         removeCompletionKeyMonitor()
         completionKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.completionPopup != nil else { return event }
+            guard let self else { return event }
+            // .transient popover 点击外部会自动关闭，但不会走 closeCompletionPopup()。
+            // 用 isShown 判断：弹窗已自动消失 → 顺手清掉泄漏的 monitor，恢复正常键盘。
+            guard self.completionPopup?.isShown == true else {
+                self.removeCompletionKeyMonitor()
+                return event
+            }
             let vc = self.completionPopup?.contentViewController as? CompletionListVC
             switch event.keyCode {
             case 125: vc?.moveSelection(delta: 1); return nil   // ↓
@@ -896,6 +906,10 @@ private final class CompletionListVC: NSViewController, NSTableViewDataSource, N
         tableView.delegate = self
         tableView.rowHeight = 22
         scroll.documentView = tableView
+        // 打开即预选第 0 项：否则刚弹窗时 selectedRow == -1，按 ⏎ 会 pickSelected() no-op 却把事件吞掉
+        if items.count > 0 {
+            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
         view = scroll
     }
 
