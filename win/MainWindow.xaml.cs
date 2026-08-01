@@ -36,7 +36,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<HostEntry> _hosts = new();
     private string _htmlPath = "";
     /// <summary>与 csproj / mac CFBundleShortVersionString 对齐的展示与更新比较版本。</summary>
-    private const string AppVersion = "0.1.5";
+    public const string AppVersion = "0.1.5";
 
     private bool _sideCollapsed;
     private double _sidebarWidth = UiStore.Load().SidebarWidth;
