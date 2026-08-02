@@ -394,14 +394,15 @@ public static class BridgeRouter
         try
         {
             normalized = Path.GetFullPath(path);
+            var local = normalized;
             var downloads = Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"));
             var temp = Path.GetFullPath(Path.GetTempPath());
-            
+
             bool IsUnder(string root) =>
-                normalized.StartsWith(root, StringComparison.OrdinalIgnoreCase) &&
-                (normalized.Length == root.Length || 
-                 normalized[root.Length] == Path.DirectorySeparatorChar || 
-                 normalized[root.Length] == Path.AltDirectorySeparatorChar || 
+                local.StartsWith(root, StringComparison.OrdinalIgnoreCase) &&
+                (local.Length == root.Length ||
+                 local[root.Length] == Path.DirectorySeparatorChar ||
+                 local[root.Length] == Path.AltDirectorySeparatorChar ||
                  root.EndsWith(Path.DirectorySeparatorChar.ToString()));
 
             return IsUnder(downloads) || IsUnder(temp);
