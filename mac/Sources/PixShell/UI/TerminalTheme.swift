@@ -22,8 +22,14 @@ enum TermTheme {
         }
         let bg = dark ? "#1e1f29" : "#d4d6dc"
         let fg = dark ? "#f2f2f7" : "#0b0b0d"
-        tv.nativeBackgroundColor = ns(bg)
-        tv.nativeForegroundColor = ns(fg)
+        
+        let nBg = ns(bg)
+        tv.nativeBackgroundColor = nBg
+        tv.layer?.backgroundColor = nBg.cgColor
+        tv.enclosingScrollView?.backgroundColor = nBg
+        
+        let nFg = ns(fg)
+        tv.nativeForegroundColor = nFg
         tv.caretColor = ns(dark ? "#f2f2f7" : "#0055d4")
         tv.installColors(dark ? darkPalette : lightPalette)
         if let f = NSFont(name: "Menlo", size: fontSize) { tv.font = f }
@@ -32,11 +38,11 @@ enum TermTheme {
 
     /// 应用一套 TermSchemes 方案（NSColor → SwiftTerm.Color）
     static func apply(scheme s: TermScheme, to tv: TerminalView) {
-        if s.id == "ink_wash" {
-            tv.nativeBackgroundColor = .clear
-        } else {
-            tv.nativeBackgroundColor = s.background
-        }
+        let nBg: NSColor = s.id == "ink_wash" ? .clear : s.background
+        tv.nativeBackgroundColor = nBg
+        tv.layer?.backgroundColor = nBg.cgColor
+        tv.enclosingScrollView?.backgroundColor = nBg
+        
         tv.nativeForegroundColor = s.foreground
         tv.caretColor = s.cursor
         tv.installColors(s.ansi.map(term))

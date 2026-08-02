@@ -142,6 +142,15 @@ public partial class MainWindow : Window
         ToolsFlyout.OnOpenDownloadDir = () => { try { Process.Start(new ProcessStartInfo(_downloadDir) { UseShellExecute = true }); } catch { } };
         // 工具面板走独立 Owner 窗口（ToolsPanel.Show/EnsureHost），不再藏 WebView2。
         ToolsFlyout.OnClose = () => { /* HideFlyout 已关窗；终端 HWND 从未隐藏 */ };
+        
+        ConnectAnim.OnCancel += () =>
+        {
+            if (Sessions.SelectedItem is TabItem item) CloseTab(item);
+        };
+        ConnectAnim.OnRetry += () =>
+        {
+            if (Sessions.SelectedItem is TabItem item) _ = ReconnectInPlaceAsync(item);
+        };
         ToolsFlyout.SetDownloadPath(_downloadDir);
 
         // 侧栏监控仪表盘。
@@ -439,22 +448,7 @@ public partial class MainWindow : Window
         if (host.IsRdp) { LaunchRdp(host); return; }
         // Web 连接：和 SSH 同一入口，开应用内 Web 终端标签（host_id 自动连）。
         if (host.IsWebSsh) { _ = OpenWebHostSessionAsync(host); return; }
-        var pass = CredentialStore.GetPassword(host.Id);
-        if (pass == null)
-        {
-            if (HasUsablePrivateKey(host))
-            {
-                // 私钥文件在：允许空密码走公钥认证，不再无条件弹框。
-                pass = "";
-            }
-            else
-            {
-                var (entered, remember) = PromptPassword(host);
-                if (entered == null) return;
-                pass = entered;
-                if (remember) CredentialStore.SetPassword(host.Id, pass);
-            }
-        }
+        var pass = CredentialStore.GetPassword(host.Id) ?? "";
         RecentsStore.NoteRecent(host.Id);
         QuickConnectPanel.Reload();
         _ = OpenSessionTab(host, pass);
@@ -633,7 +627,7 @@ public partial class MainWindow : Window
             var fw = !authFail && IsFirewallLikely(ex);
             // 仅认证失败才清 DPAPI 密码；断网/超时/算法协商等保留凭据，避免误伤。
             if (authFail) CredentialStore.Remove(host.Id);
-            ConnectAnim.Fail(authFail ? "认证失败" : fw ? "连接失败（疑似防火墙拦截）" : "连接失败");
+            ConnectAnim.Fail(authFail ? "认证失败" : fw ? $"连接失败（疑似防火墙拦截）\n{ex.Message}" : $"连接失败\n{ex.Message}", autoHide: authFail);
             SetStatus((authFail ? "认证失败: " : "连接失败: ") + ex.Message
                 + (fw ? "（若目标是 Windows 主机，可能被防火墙拦截：管理员 PowerShell 执行 New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22）" : ""));
             if (fw)
@@ -870,15 +864,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var pass = session.Password ?? CredentialStore.GetPassword(host.Id);
-        // 没有可用密码且没有可用私钥 → 要一次密码（框里带"记住密码"）。
-        if (string.IsNullOrEmpty(pass) && !HasUsablePrivateKey(host))
-        {
-            var (entered, remember) = PromptPassword(host);
-            if (entered == null) return;
-            pass = entered;
-            if (remember) CredentialStore.SetPassword(host.Id, pass);
-        }
+        var pass = session.Password ?? CredentialStore.GetPassword(host.Id) ?? "";
 
         try
         {
@@ -1689,6 +1675,7 @@ public partial class MainWindow : Window
         }
         catch { }
         _sysInfoWin = null;
+        try { ConnectAnim.HideNow(); } catch { }
     }
 
     /// <summary>命令栏「历史」按钮：按当前输入过滤历史，弹出选取菜单。</summary>

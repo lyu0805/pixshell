@@ -29,12 +29,8 @@ extension AppDelegate {
         if !host.keyPath.isEmpty {
             beginSession(to: host, password: ""); return
         }
-        // 密码认证路径：无 key、无已存密码 → 必须向用户要密码；空串直接 return（与 key auth 区分）。
-        promptPassword(for: host, prefill: "") { [weak self] pw, remember in
-            guard let self = self, let pw = pw, !pw.isEmpty else { return }
-            if remember { Keychain.setPassword(pw, for: host.id, label: host.host.isEmpty ? host.name : host.host) }
-            self.beginSession(to: host, password: pw)
-        }
+        // 密码认证路径：无 key、无已存密码 → 留空直接连。若连通但认证失败，由 didCloseWith 触发 promptRetryPassword。
+        beginSession(to: host, password: "")
     }
 
     /// Web 主机：开应用内 WKWebView 标签。
@@ -280,7 +276,8 @@ extension AppDelegate {
             for k in ["connection refused", "connection reset", "timed out", "timeout",
                       "could not resolve", "no route", "network is unreachable",
                       "operation timed out", "connection timed out", "nodename",
-                      "host key verification failed"] {
+                      "host key verification failed", "host is down", "network is down",
+                      "host unreachable", "broken pipe", "connect failed"] {
                 if h.contains(k) { return false }
             }
             for k in ["permission denied", "authentication failed", "auth fail",
@@ -380,15 +377,6 @@ extension AppDelegate {
         }
 
         let pass = sess.password ?? Keychain.password(for: sess.host.id) ?? ""
-        if pass.isEmpty, sess.host.keyPath.isEmpty {
-            promptPassword(for: sess.host, prefill: "") { [weak self, weak sess] pw, remember in
-                guard let self = self, let sess = sess, let pw = pw, !pw.isEmpty else { return }
-                if remember { Keychain.setPassword(pw, for: sess.host.id, label: sess.host.host.isEmpty ? sess.host.name : sess.host.host) }
-                self.startSSH(for: sess, password: pw)
-                self.rebuildTabs()
-            }
-            return
-        }
         startSSH(for: sess, password: pass)
         rebuildTabs()
     }
@@ -444,6 +432,14 @@ extension AppDelegate {
     func showConnectOverlay(for host: Host) {
         let ov = connectOverlay ?? ConnectOverlay(frame: .zero)
         connectOverlay = ov
+        ov.onCancel = { [weak self] in
+            guard let self = self, self.sessions.indices.contains(self.current) else { return }
+            self.closeSession(self.current)
+        }
+        ov.onRetry = { [weak self] in
+            guard let self = self else { return }
+            self.reconnectCurrent()
+        }
         ov.show(in: termContainer, title: host.subtitle)
     }
 
@@ -822,6 +818,7 @@ extension AppDelegate {
         let wasUp = sess.shellOpened
         sess.connected = false
         let t = sess.termView.getTerminal()
+        if !wasUp { t.feed(text: "\u{1b}[2J\u{1b}[3J\u{1b}[H") }
         // 认证前网络失败会写具体文案；末尾不要用笼统「连接失败」盖掉。
         var statusDetail: String? = nil
         if !wasUp {
@@ -860,13 +857,11 @@ extension AppDelegate {
                         detail = error?.localizedDescription ?? "网络不可达 (\(endpoint))"
                     }
                     Log.warn("系统 ssh 回落后网络失败 \(sess.host.subtitle): \(detail)（保留钥匙串）", "session")
-                    t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：\(detail)\u{1b}[0m\r\n")
-                    connectOverlay?.fail("网络失败")
+                    connectOverlay?.fail("连接失败\n\(detail)", autoHide: false)
                     statusDetail = "✗ 连接失败：\(detail)"
                 } else {
                     Log.warn("系统 ssh 回落后仍失败 \(sess.host.subtitle): \(error?.localizedDescription ?? "未知")", "ssh")
-                    t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：算法/协议不兼容（系统 ssh 亦失败）。\u{1b}[0m\r\n")
-                    connectOverlay?.fail("协议不兼容")
+                    connectOverlay?.fail("连接失败\n算法/协议不兼容", autoHide: false)
                 }
             case .network:
                 // P0：网络/超时/DNS/代理失败 —— 保留 Keychain，禁止当认证失败清密码。
@@ -897,8 +892,7 @@ extension AppDelegate {
                     detail = error?.localizedDescription ?? "网络不可达 (\(endpoint))"
                 }
                 Log.warn("网络/连接失败 \(sess.host.subtitle): \(detail)（保留钥匙串）", "session")
-                t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：\(detail)\u{1b}[0m\r\n")
-                connectOverlay?.fail("网络失败")
+                connectOverlay?.fail("连接失败\n\(detail)", autoHide: false)
                 statusDetail = "✗ 连接失败：\(detail)"
             case .auth:
                 // 仅认证失败才清 Keychain +（无 keyPath 时）弹密码重试。

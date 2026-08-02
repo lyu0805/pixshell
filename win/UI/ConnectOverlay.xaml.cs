@@ -13,6 +13,8 @@ namespace PixShell.UI;
 /// </summary>
 public partial class ConnectOverlay : UserControl
 {
+    public event Action? OnCancel;
+    public event Action? OnRetry;
     /// <summary>分步文案（对齐真实 SSH 流程的观感；不是真进度，只表达"在动"）。</summary>
     private static readonly string[] Steps = { "正在建立 TCP 连接…", "SSH 握手…", "身份认证…", "打开会话…" };
 
@@ -37,6 +39,7 @@ public partial class ConnectOverlay : UserControl
         StepText.Foreground = (Brush)Application.Current.Resources["BrushMuted"];
         PulseCore.Fill = (Brush)Application.Current.Resources["BrushAccent"];
         PulseRing.Opacity = 0.35;
+        RetryBtn.Visibility = Visibility.Collapsed;
         Opacity = 1;
         Visibility = Visibility.Visible;
         StartAnimations();
@@ -55,14 +58,18 @@ public partial class ConnectOverlay : UserControl
     }
 
     /// <summary>失败：红字提示后淡出（密码重试框由调用方弹）。</summary>
-    public void Fail(string reason)
+    public void Fail(string reason, bool autoHide = true)
     {
         if (Visibility != Visibility.Visible) return;
         _stepTimer.Stop();
         StepText.Text = reason;
         StepText.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x45, 0x3A));
         StopPulse(ok: false);
-        FadeOut(TimeSpan.FromMilliseconds(900));
+        if (autoHide) {
+            FadeOut(TimeSpan.FromMilliseconds(900));
+        } else {
+            RetryBtn.Visibility = Visibility.Visible;
+        }
     }
 
     public void HideNow()
@@ -104,5 +111,13 @@ public partial class ConnectOverlay : UserControl
         var fade = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(250)) { BeginTime = delay };
         fade.Completed += (_, _) => { Visibility = Visibility.Collapsed; Opacity = 1; };
         BeginAnimation(OpacityProperty, fade);
+    }
+
+    private void CancelBtn_Click(object sender, RoutedEventArgs e) => OnCancel?.Invoke();
+
+    private void RetryBtn_Click(object sender, RoutedEventArgs e)
+    {
+        RetryBtn.Visibility = Visibility.Collapsed;
+        OnRetry?.Invoke();
     }
 }

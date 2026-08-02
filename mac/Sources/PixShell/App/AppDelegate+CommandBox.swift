@@ -133,6 +133,7 @@ extension AppDelegate: NSTextFieldDelegate {
         }
         sysInfoWindow?.orderOut(nil as Any?)
         stopMonitor()
+        connectOverlay?.hideNow()
     }
 
     // MARK: 历史弹出（命令栏「历史」按钮）
