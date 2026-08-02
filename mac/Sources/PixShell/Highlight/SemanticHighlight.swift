@@ -412,14 +412,21 @@ enum SemanticHighlight {
             var ansi = ns.substring(with: r)
 
             // 追踪是否有程序自带的上色，避免 SemanticHighlight 破坏程序原生的高亮（如红底白字被染成红底红字）
-            if ansi == "\u{1b}[0m" || ansi == "\u{1b}[39m" || ansi == "\u{1b}[49m" {
+            if ansi == "\u{1b}[0m" || ansi == "\u{1b}[39m" || ansi == "\u{1b}[49m" || ansi == "\u{1b}[0;39m" {
                 activeColor = false
             } else if ansi.contains("m") {
                 activeColor = true
             }
 
+            // 强制将 37m (前景色白) 转换为 TrueColor 的纯白，这样既能保证“红底白字”清晰可见，又不会破坏 47m (背景色白) 对应调色板的浅灰
+            if ansi == "\u{1b}[37m" {
+                ansi = "\u{1b}[38;2;255;255;255m"
+            } else if ansi == "\u{1b}[0;37m" {
+                ansi = "\u{1b}[0m\u{1b}[38;2;255;255;255m"
+            }
+
             // 拦截 2K (清除整行) 和 K (清除到行尾)，前置 0m 以避免背景色溢出成“黑条/彩条”
-            if ansi == "\u{1b}[2K" || ansi == "\u{1b}[K" {
+            if ansi == "\u{1b}[2K" || ansi == "\u{1b}[K" || ansi == "\u{1b}[0K" {
                 ansi = "\u{1b}[0m" + ansi
                 activeColor = false
             }
