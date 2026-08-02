@@ -357,7 +357,8 @@ final class CommandPanel: NSView {
             }
             text = CommandParams.render(text, values: vals)
         }
-        onSendTo?(text + "\r", tgt)
+        let suffix = (c.autoReturn ?? true) ? "\r" : ""
+        onSendTo?(text + suffix, tgt)
     }
 
     @objc private func gearClicked(_ sender: NSButton) {
@@ -475,14 +476,17 @@ final class CommandPanel: NSView {
         let name = NSTextField(string: existing?.name ?? "")
         let group = NSTextField(string: existing?.group ?? "默认")
         let cmd = NSTextField(string: existing?.command ?? "")
+        let autoReturn = NSButton(checkboxWithTitle: "末尾添加回车符CR", target: nil, action: nil)
+        autoReturn.state = (existing?.autoReturn ?? true) ? .on : .off
         for f in [name, group, cmd] { f.translatesAutoresizingMaskIntoConstraints = false
             f.widthAnchor.constraint(equalToConstant: 300).isActive = true }
         let grid = NSGridView(numberOfColumns: 2, rows: 0); grid.rowSpacing = 8; grid.columnSpacing = 10
         grid.addRow(with: [NSTextField(labelWithString: "名称"), name])
         grid.addRow(with: [NSTextField(labelWithString: "分组"), group])
         grid.addRow(with: [NSTextField(labelWithString: "命令"), cmd])
+        grid.addRow(with: [NSTextField(labelWithString: ""), autoReturn])
         grid.addRow(with: [NSTextField(labelWithString: ""), NSTextField(labelWithString: "支持 ${参数}，发送时会提示填写")])
-        grid.frame = NSRect(x: 0, y: 0, width: 400, height: 120)
+        grid.frame = NSRect(x: 0, y: 0, width: 400, height: 150)
         a.accessoryView = grid
         guard a.runModal() == .alertFirstButtonReturn else { return }
         let n = name.stringValue.trimmingCharacters(in: .whitespaces)
@@ -491,6 +495,7 @@ final class CommandPanel: NSView {
         var item = existing ?? QuickCommand(name: n, command: c)
         item.name = n; item.command = c
         item.group = group.stringValue.trimmingCharacters(in: .whitespaces).isEmpty ? "默认" : group.stringValue
+        item.autoReturn = autoReturn.state == .on
         store.upsert(item)
         reloadGroups(); reloadChips()
     }

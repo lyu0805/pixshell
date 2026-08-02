@@ -277,7 +277,8 @@ public partial class CommandPanel : UserControl
             }
             text = CommandParams.Render(text, vals);
         }
-        OnSendTo?.Invoke(text + "\r", tgt);
+        var suffix = (c.AutoReturn ?? true) ? "\r" : "";
+        OnSendTo?.Invoke(text + suffix, tgt);
     }
 
 
@@ -413,6 +414,8 @@ public partial class CommandPanel : UserControl
         sp.Children.Add(new TextBlock { Text = "命令" });
         var cmdBox = new TextBox { Text = existing?.Command ?? "", Margin = new Thickness(0, 2, 0, 4) };
         sp.Children.Add(cmdBox);
+        var autoReturnBox = new CheckBox { Content = "末尾添加回车符CR", IsChecked = existing?.AutoReturn ?? true, Margin = new Thickness(0, 4, 0, 8) };
+        sp.Children.Add(autoReturnBox);
         sp.Children.Add(new TextBlock
         {
             Text = "支持 ${参数}，发送时会提示填写", FontSize = 11,
@@ -436,6 +439,7 @@ public partial class CommandPanel : UserControl
         item.Name = nm;
         item.Command = cm;
         item.Group = string.IsNullOrWhiteSpace(groupBox.Text) ? "默认" : groupBox.Text.Trim();
+        item.AutoReturn = autoReturnBox.IsChecked;
         CommandStore.Upsert(item);
         ReloadGroups();
         ReloadChips();

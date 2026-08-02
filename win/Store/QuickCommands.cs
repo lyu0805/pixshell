@@ -24,6 +24,7 @@ public class QuickCommand
     public string Group { get; set; } = "默认";
     public string Command { get; set; } = "";
     public List<QuickCommandParam>? Params { get; set; }
+    public bool? AutoReturn { get; set; } = true;
 }
 
 /// <summary>

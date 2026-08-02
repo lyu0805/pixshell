@@ -13,10 +13,11 @@ struct QuickCommand: Codable, Equatable, Identifiable {
     var group: String
     var command: String
     var params: [QuickParam]?
+    var autoReturn: Bool?
 
     init(id: String = UUID().uuidString, name: String, group: String = "默认",
-         command: String, params: [QuickParam]? = nil) {
-        self.id = id; self.name = name; self.group = group; self.command = command; self.params = params
+         command: String, params: [QuickParam]? = nil, autoReturn: Bool? = true) {
+        self.id = id; self.name = name; self.group = group; self.command = command; self.params = params; self.autoReturn = autoReturn
     }
 }
 
