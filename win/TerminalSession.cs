@@ -1411,7 +1411,7 @@ public sealed class TerminalSession : IDisposable
     /// 被拒即干净失败，不重试，避免反复尝试触发服务器端账号锁定（对齐 mac SSHUserAuthDelegate）。
     /// 私钥文件不存在/格式不受支持/已加密等任何加载失败：记日志并跳过，绝不抛异常、绝不阻塞密码路径。
     /// </summary>
-    private static ConnectionInfo BuildConnectionInfo(string host, int port, string user, string pass, string? keyPath, ProxyConfig? proxy)
+    internal static ConnectionInfo BuildConnectionInfo(string host, int port, string user, string pass, string? keyPath, ProxyConfig? proxy)
     {
         var methods = new List<Renci.SshNet.AuthenticationMethod>();
         if (!string.IsNullOrWhiteSpace(keyPath))
@@ -1499,7 +1499,7 @@ public sealed class TerminalSession : IDisposable
     /// ed25519/ecdsa/rsa-sha2/ssh-rsa/ssh-dss、hmac-sha2/sha1(+etm)。
     /// 注意：blowfish-cbc / cast128-cbc 不在 SSH.NET 2024.2 实现内，无法凭空注册。
     /// </summary>
-    private static void PreferCompatibleAlgorithms(ConnectionInfo info)
+    internal static void PreferCompatibleAlgorithms(ConnectionInfo info)
     {
         PreferOrder(info.Encryptions, new[]
         {

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Media;
@@ -29,16 +30,43 @@ public partial class App : Application
     /// <summary>当前是否走软件渲染（供设置页/诊断显示）。</summary>
     public static bool UsingSoftwareRender { get; private set; }
 
+    /// <summary>无头模式：CLI 自动拉起 / 有头关闭后兜底。只跑本地桥，不建窗；
+    /// 有头打开接管时（收到 /v1/app/shutdown）退出让位。对齐 mac isHeadless。</summary>
+    public static bool IsHeadless { get; private set; }
+
+    /// <summary>无头模式下自建会话的桥宿主（有头时 MainWindow 自己实现 IBridgeHost）。</summary>
+    public static Bridge.HeadlessBridgeHost? HeadlessHost { get; private set; }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         // 先挂全局异常，再碰渲染模式：万一硬件路径启动就炸，能记下 flag。
         DispatcherUnhandledException += OnDispatcherCrash;
         AppDomain.CurrentDomain.UnhandledException += OnDomainCrash;
 
+        IsHeadless = e.Args.Contains("--headless");
+
         var mode = ResolveRenderMode();
         ApplyRenderMode(mode);
 
+        if (IsHeadless)
+        {
+            // 无头模式：不建窗，仅启动本地桥。
+            // WPF 默认 ShutdownMode=OnLastWindowClose——没有窗口会让 Application.Run() 立即返回，
+            // 进程就退了。这里显式改 OnExplicitShutdown：App 靠桥 shutdown 回调主动 Shutdown()
+            // （有头接管 /v1/app/shutdown 或端口被占让位），Dispatcher 一直活着收桥请求。
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            // 渲染/崩溃标记全部跳过。
+            base.OnStartup(e);
+            Log.Banner("0.1.5 [headless]");
+            StartHeadlessBridge();
+            return;
+        }
+
         base.OnStartup(e);
+        // 有头：StartupUri 已去掉，这里手动建窗。
+        var win = new MainWindow();
+        MainWindow = win;
+        win.Show();
 
         // 启动 8 秒内若仍存活且无崩溃 → 清掉「上次疑似硬件崩溃」标记
         var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
@@ -53,6 +81,28 @@ public partial class App : Application
             catch { /* ignore */ }
         };
         t.Start();
+    }
+
+    /// <summary>无头模式启动桥：自建 HeadlessBridgeHost；端口被占（=有头已在）→ 立即退出让位。
+    /// 对齐 mac startHeadlessBridge()。</summary>
+    private static void StartHeadlessBridge()
+    {
+        var host = new Bridge.HeadlessBridgeHost();
+        HeadlessHost = host;
+        host.OnShutdown = () =>
+        {
+            try { Current.Shutdown(); } catch { /* 退出收尾 */ }
+        };
+        var b = new Bridge.AgentBridge(host);
+        // 端口已被有头占用 → 退出（有头接管了桥，无头让位；CLI 会再用到有头）。
+        // OnPortBusy 可能在后台线程触发，跨回 Dispatcher 再 close（CloseAll 会触碰会话、触发 Shutdown）。
+        b.OnPortBusy += () =>
+        {
+            Log.Warn("本地桥端口被占用（有头已在），无头进程退出让位", "bridge");
+            Current?.Dispatcher.Invoke(() => { try { host.CloseAll(); } catch { } });
+        };
+        b.Start();
+        Bridge.AgentCLI.Install(b.Port);
     }
 
     private enum RenderPref { Auto, Hardware, Software }

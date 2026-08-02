@@ -35,6 +35,8 @@ public interface IBridgeHost
     Task<string?> BridgeSftpDownloadAsync(int session, string remote, string local);
     /// <summary>SFTP 上传；返回远端路径，失败抛异常。</summary>
     Task<string?> BridgeSftpUploadAsync(int session, string local, string remote);
+    /// <summary>关闭全部会话并释放桥（有头接管时让无头退出用）。</summary>
+    void BridgeShutdown();
 }
 
 /// <summary>一次已解析的 HTTP 请求：AgentBridge 完成分帧、鉴权、Origin 校验之后，把纯业务部分交给
@@ -132,6 +134,12 @@ public static class BridgeRouter
                 case "/v1/app/sftp/upload":
                     if (method != "POST") return BridgeResponse.Fail(405, "use POST");
                     return await RouteSftpUpload(req, host).ConfigureAwait(false);
+
+                // 有头接管：无头进程收到后关闭全部会话并退出让位（对齐 mac BridgeRoutes.swift）。
+                case "/v1/app/shutdown":
+                    if (method != "POST") return BridgeResponse.Fail(405, "use POST");
+                    host.BridgeShutdown();
+                    return BridgeResponse.Ok(new { ok = true });
 
                 // Web SSH 页由 AgentBridge 直接处理，不走路由层。
 

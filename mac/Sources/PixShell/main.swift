@@ -87,6 +87,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     var retryPrompting = false            // 认证失败重弹密码框的去重标记
 
     var agentBridge: AgentBridge?      // 本地 CLI/AI-Agent 桥（127.0.0.1 + token）
+    /// 无头模式：CLI 自动拉起 / 有头关闭后兜底。只跑本地桥，不建窗、无 Dock 图标；
+    /// 有头打开接管时（收到 /v1/app/shutdown）退出让位。
+    var isHeadless = false
+    /// 无头模式下自建会话的桥宿主（有头时 AppDelegate 自己实现 BridgeHost）。
+    var headlessHost: HeadlessBridgeHost?
     var bridgeTimer: Timer?            // 周期对齐桥状态 → 状态栏三态
     /// CLI 桥状态（与桥实现解耦：桥启动/收到鉴权请求时回填，状态栏据此显示三态）
     var bridgeStatus: (running: Bool, port: Int, clientIdle: TimeInterval?) = (false, 0, nil)
@@ -102,6 +107,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
 
     // MARK: - 生命周期
     func applicationDidFinishLaunching(_ note: Notification) {
+        if isHeadless {
+            // 无头模式：不建 UI，仅启动本地桥。GPU/主题/窗口/菜单全部跳过。
+            Log.banner("0.1.5 [headless]")
+            startAgentBridge()
+            return
+        }
         // GPU 加速：**优先 layer-backed，失败可回落**。
         // 硬开且无兜底会在弱 GPU 场景花屏/黑屏。策略：
         // 1) 环境变量 PIXSHELL_RENDER=sw|hw 可覆盖
@@ -176,6 +187,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    /// 有头正常退出时拉起无头进程接续桥（跟随有头生命周期：有头关了 → 无头继续后台跑）。
+    func applicationWillTerminate(_ notification: Notification) {
+        guard !isHeadless else { return }
+        AgentBridge.spawnHeadlessProcess()
+    }
+
     // MARK: - 通用小工具（供各扩展复用）
     func setStatus(_ s: String) { statusRight?.stringValue = s }
 }
@@ -185,5 +202,8 @@ setbuf(stdout, nil)   // 关掉 stdout 缓冲，便于观察 print（自测/调�
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.regular)
+// 无头模式（--headless，CLI 自动拉起/有头关闭后兜底）：不注册 Dock/菜单栏图标、不建窗，
+// 仅跑本地桥供 MCP/CLI 后台调用；有头打开时接管并让它退出。默认有头。
+delegate.isHeadless = CommandLine.arguments.contains("--headless")
+app.setActivationPolicy(delegate.isHeadless ? .accessory : .regular)
 app.run()
