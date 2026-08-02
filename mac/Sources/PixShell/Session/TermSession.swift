@@ -57,6 +57,9 @@ final class TermSession {
     private(set) var outputBuffer = ""
     static let maxBufferChars = 500_000
 
+    /// 用于跨块缓冲不完整的 ANSI 转义序列，防止被 SemanticHighlight 破坏
+    var ansiBuffer: [UInt8] = []
+
     func appendOutput(_ s: String) {
         outputBuffer += s
         if outputBuffer.count > Self.maxBufferChars {

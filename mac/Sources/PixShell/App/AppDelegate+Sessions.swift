@@ -755,20 +755,55 @@ extension AppDelegate {
     """
 
     // MARK: - SSHSessionDelegate（主线程）
+    private func extractIncompleteANSI(from bytes: [UInt8]) -> (complete: [UInt8], incomplete: [UInt8]) {
+        let maxLookback = min(bytes.count, 2048)
+        for i in stride(from: bytes.count - 1, through: bytes.count - maxLookback, by: -1) {
+            if bytes[i] == 0x1B {
+                if i + 1 >= bytes.count { return (Array(bytes[0..<i]), Array(bytes[i...])) }
+                let next = bytes[i+1]
+                if next == 0x5B { // '['
+                    var complete = false
+                    for j in (i+2)..<bytes.count {
+                        if bytes[j] >= 0x40 && bytes[j] <= 0x7E { complete = true; break }
+                    }
+                    if !complete { return (Array(bytes[0..<i]), Array(bytes[i...])) }
+                } else if next == 0x5D { // ']'
+                    var complete = false
+                    for j in (i+2)..<bytes.count {
+                        if bytes[j] == 0x07 { complete = true; break }
+                        if bytes[j] == 0x1B && j+1 < bytes.count && bytes[j+1] == 0x5C { complete = true; break }
+                    }
+                    if !complete { return (Array(bytes[0..<i]), Array(bytes[i...])) }
+                } else if next == 0x28 || next == 0x29 { // '(' or ')'
+                    if i + 2 >= bytes.count { return (Array(bytes[0..<i]), Array(bytes[i...])) }
+                }
+                break // Found the last ESC and it was complete
+            }
+        }
+        return (bytes, [])
+    }
+
     func sshSession(_ s: SSHSession, didReceive data: [UInt8]) {
         guard let sess = session(forSSH: s) else { return }
+        
+        // 修复：缓冲跨网络包的残缺 ANSI 序列，防止被 SemanticHighlight 破坏
+        let fullData = sess.ansiBuffer + data
+        let (completeBytes, incompleteBytes) = extractIncompleteANSI(from: fullData)
+        sess.ansiBuffer = incompleteBytes
+        if completeBytes.isEmpty { return }
+
         // 语义高亮：仅对能完整 UTF-8 解码的块染色（保留已有转义），否则回退原始字节。
         // 关键：染色后仍走 termView.feed(byteArray:)（会触发视图重绘）——不要用
         // getTerminal().feed(text:)，那只更新终端模型、不刷新 NSView，导致画面空白。
-        if highlightEnabled, let str = String(bytes: data, encoding: .utf8) {
+        if highlightEnabled, let str = String(bytes: completeBytes, encoding: .utf8) {
             sess.appendOutput(str)          // 会话输出缓冲（上限 500KB，保留尾部）
             let __t0 = CFAbsoluteTimeGetCurrent()
             let decorated = SemanticHighlight.decorate(str, dark: darkTheme)
-            AppDelegate.perfNote(kind: "decorate", ms: (CFAbsoluteTimeGetCurrent() - __t0) * 1000, bytes: data.count)
+            AppDelegate.perfNote(kind: "decorate", ms: (CFAbsoluteTimeGetCurrent() - __t0) * 1000, bytes: completeBytes.count)
             sess.termView.feed(byteArray: ArraySlice(Array(decorated.utf8)))
         } else {
-            if let str = String(bytes: data, encoding: .utf8) { sess.appendOutput(str) }
-            sess.termView.feed(byteArray: ArraySlice(data))
+            if let str = String(bytes: completeBytes, encoding: .utf8) { sess.appendOutput(str) }
+            sess.termView.feed(byteArray: ArraySlice(completeBytes))
         }
     }
     func sshSessionDidOpenShell(_ s: SSHSession) {
