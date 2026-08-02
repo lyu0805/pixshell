@@ -574,7 +574,6 @@ final class NetworkChart: NSView {
 final class LatencyChart: NSView {
     private var values: [Double] = []
     private let maxCount = 60
-    private let color = Theme.accent.withAlphaComponent(0.8)
     
     init() {
         super.init(frame: .zero)
@@ -638,11 +637,17 @@ final class LatencyChart: NSView {
         let gap = unit * 0.15
         let maxH = h * 0.95
         
-        color.setFill()
+        let cGreen = Theme.c("#30d158").withAlphaComponent(0.8)
+        let cYellow = Theme.c("#ff9f0a").withAlphaComponent(0.8)
+        let cRed = Theme.c("#ff453a").withAlphaComponent(0.8)
+        
         for i in 0..<values.count {
             let x = chartX + CGFloat(i) * (barW + gap)
-            let barH = maxH * CGFloat(values[i] / mx)
+            let val = values[i]
+            let barH = maxH * CGFloat(val / mx)
             if barH > 0 {
+                let col = val < 100 ? cGreen : (val < 200 ? cYellow : cRed)
+                col.setFill()
                 NSBezierPath(rect: NSRect(x: x, y: 0, width: barW, height: max(1, barH))).fill()
             }
         }

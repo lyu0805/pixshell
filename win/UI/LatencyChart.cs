@@ -13,7 +13,9 @@ public class LatencyChart : FrameworkElement
     private int _head;
 
     private readonly Pen _gridPen;
-    private readonly Brush _brush;
+    private readonly Brush _greenBrush;
+    private readonly Brush _yellowBrush;
+    private readonly Brush _redBrush;
     private readonly Brush _textBrush;
     private readonly Typeface _typeface;
 
@@ -25,10 +27,9 @@ public class LatencyChart : FrameworkElement
         };
         _gridPen.Freeze();
 
-        // Theme.accent.withAlphaComponent(0.8) - ColorAccent in WPF
-        var accentColor = (Color)Application.Current.Resources["ColorAccent"];
-        _brush = new SolidColorBrush(Color.FromArgb(204, accentColor.R, accentColor.G, accentColor.B));
-        _brush.Freeze();
+        _greenBrush = new SolidColorBrush(Color.FromArgb(204, 0x30, 0xD1, 0x58)); _greenBrush.Freeze();
+        _yellowBrush = new SolidColorBrush(Color.FromArgb(204, 0xFF, 0x9F, 0x0A)); _yellowBrush.Freeze();
+        _redBrush = new SolidColorBrush(Color.FromArgb(204, 0xFF, 0x45, 0x3A)); _redBrush.Freeze();
 
         _textBrush = new SolidColorBrush(Color.FromRgb(128, 128, 128)); // muted
         _textBrush.Freeze();
@@ -118,11 +119,13 @@ public class LatencyChart : FrameworkElement
         for (int i = 0; i < _count; i++)
         {
             double x = chartX + i * (barW + gap);
-            double barH = maxH * (At(i) / mx);
+            double val = At(i);
+            double barH = maxH * (val / mx);
 
             if (barH > 0)
             {
-                dc.DrawRectangle(_brush, null, new Rect(x, h - barH, barW, Math.Max(1, barH)));
+                Brush b = val < 100 ? _greenBrush : (val < 200 ? _yellowBrush : _redBrush);
+                dc.DrawRectangle(b, null, new Rect(x, h - barH, barW, Math.Max(1, barH)));
             }
         }
     }

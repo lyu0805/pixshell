@@ -399,7 +399,7 @@ public partial class CommandPanel : UserControl
             Background = (Brush)Application.Current.Resources["BrushBg"],
             Foreground = (Brush)Application.Current.Resources["BrushText"],
             Title = existing == null ? "新建快捷命令" : "编辑快捷命令",
-            Width = 380, SizeToContent = SizeToContent.Height,
+            Width = 480, SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = Window.GetWindow(this),
             ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false,
@@ -412,7 +412,15 @@ public partial class CommandPanel : UserControl
         var groupBox = new TextBox { Text = existing?.Group ?? (_selectedGroup ?? "默认"), Margin = new Thickness(0, 2, 0, 8) };
         sp.Children.Add(groupBox);
         sp.Children.Add(new TextBlock { Text = "命令" });
-        var cmdBox = new TextBox { Text = existing?.Command ?? "", Margin = new Thickness(0, 2, 0, 4) };
+        var cmdBox = new TextBox { 
+            Text = existing?.Command ?? "", 
+            Margin = new Thickness(0, 2, 0, 4),
+            AcceptsReturn = true,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            TextWrapping = TextWrapping.Wrap,
+            Height = 120,
+            FontFamily = new FontFamily("Consolas")
+        };
         sp.Children.Add(cmdBox);
         var autoReturnBox = new CheckBox { Content = "末尾添加回车符CR", IsChecked = existing?.AutoReturn ?? true, Margin = new Thickness(0, 4, 0, 8) };
         sp.Children.Add(autoReturnBox);
