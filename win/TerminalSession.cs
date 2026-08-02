@@ -1736,6 +1736,8 @@ public sealed class TerminalSession : IDisposable
         _channel = null;
         _windowChange = null;
         _isLocal = false;
+        try { _readThread?.Join(2000); } catch { }
+        _readThread = null;
         if (was)
         {
             try { ConnectedChanged?.Invoke(this, false); } catch { }

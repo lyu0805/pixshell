@@ -249,6 +249,11 @@ final class LSPClient {
                 .first(where: { $0.lowercased().hasPrefix("content-length:") }),
                 let len = Int(lenLine.split(separator: ":").last!.trimmingCharacters(in: .whitespaces))
             else { return }
+            if len > 50 * 1024 * 1024 {
+                Log.warn("LSP response too large (\(len) bytes)", "lsp")
+                shutdown()
+                return
+            }
             let bodyStart = headerEnd.upperBound
             guard buffer.count >= bodyStart + len else { return }
             let body = Data(buffer[bodyStart..<(bodyStart + len)])
@@ -270,6 +275,9 @@ final class LSPClient {
                 msg["id"] = newId
                 pending[newId] = (msg: msg, done: entry.done, retries: entry.retries + 1)
                 queue.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.write(msg) }
+                queue.asyncAfter(deadline: .now() + 10) { [weak self] in
+                    if let e = self?.pending.removeValue(forKey: newId) { e.done(Data()) }
+                }
                 return
             }
             // 请求的响应：result 可能为 null（如 hover 无内容）→ 空 Data 表示"无结果"

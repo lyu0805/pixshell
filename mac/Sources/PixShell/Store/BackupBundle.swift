@@ -39,10 +39,19 @@ enum WebDAVBackup {
     private static let key = "pixshell.webdav"
     static func load() -> Config? {
         guard let d = UserDefaults.standard.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(Config.self, from: d)
+        guard var c = try? JSONDecoder().decode(Config.self, from: d) else { return nil }
+        if let kp = Keychain.password(for: "webdav-backup-password"), !kp.isEmpty {
+            c.password = kp
+        } else if !c.password.isEmpty {
+            save(c)
+        }
+        return c
     }
     static func save(_ c: Config) {
-        if let d = try? JSONEncoder().encode(c) { UserDefaults.standard.set(d, forKey: key) }
+        Keychain.setPassword(c.password, for: "webdav-backup-password")
+        var safe = c
+        safe.password = ""
+        if let d = try? JSONEncoder().encode(safe) { UserDefaults.standard.set(d, forKey: key) }
     }
 
     private static func request(_ c: Config, method: String, body: Data?) -> URLRequest? {

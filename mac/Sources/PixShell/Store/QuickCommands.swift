@@ -39,8 +39,10 @@ final class QuickCommandStore {
     }
 
     private func load() {
-        if let d = try? Data(contentsOf: url), let a = try? JSONDecoder().decode([QuickCommand].self, from: d), !a.isEmpty {
-            commands = a
+        if FileManager.default.fileExists(atPath: url.path) {
+            if let d = try? Data(contentsOf: url), let a = try? JSONDecoder().decode([QuickCommand].self, from: d) {
+                commands = a
+            }
         } else {
             commands = Self.defaults
             save()

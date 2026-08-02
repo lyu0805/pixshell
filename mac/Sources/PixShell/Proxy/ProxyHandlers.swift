@@ -365,7 +365,8 @@ final class HTTPConnectProxyHandler: ChannelInboundHandler, RemovableChannelHand
     private func start(context: ChannelHandlerContext) {
         guard !started else { return }
         started = true
-        let hostPort = "\(destHost):\(destPort)"
+        let hostStr = destHost.contains(":") ? "[\(destHost)]" : destHost
+        let hostPort = "\(hostStr):\(destPort)"
         var req = "CONNECT \(hostPort) HTTP/1.1\r\nHost: \(hostPort)\r\n"
         if let u = username {
             let token = Data("\(u):\(password ?? "")".utf8).base64EncodedString()

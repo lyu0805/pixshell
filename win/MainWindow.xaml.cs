@@ -1914,8 +1914,8 @@ public partial class MainWindow : Window
         cloud.Items.Add(Item("备份选项配置…", OpenBackupWindow));
         cloud.Items.Add(new Separator());
         cloud.Items.Add(Item("WebDAV 设置…", WebdavConfigure));
-        cloud.Items.Add(Item("上传到 WebDAV", WebdavPush));
-        cloud.Items.Add(Item("从 WebDAV 恢复", WebdavPull));
+        cloud.Items.Add(Item("上传到 WebDAV", async () => { try { await WebdavPush(); } catch (Exception ex) { Log.Error("上传 WebDAV 异常: " + ex.Message, "backup"); } }));
+        cloud.Items.Add(Item("从 WebDAV 恢复", async () => { try { await WebdavPull(); } catch (Exception ex) { Log.Error("恢复 WebDAV 异常: " + ex.Message, "backup"); } }));
         cloud.Items.Add(new Separator());
         cloud.Items.Add(Item("立即导出本地包…", ExportHosts));
         cloud.Items.Add(Item("从本地包导入…", ImportHosts));
@@ -2791,7 +2791,7 @@ public partial class MainWindow : Window
         if (win.ShowDialog() == true) MessageBox.Show(this, "已保存，接下来可用「上传到 WebDAV / 从 WebDAV 恢复」", "PixShell");
     }
 
-    private async void WebdavPush()
+    private async Task WebdavPush()
     {
         var c = Store.WebDavBackup.Load();
         if (c is not { Url.Length: > 0 }) { WebdavConfigure(); return; }
@@ -2800,7 +2800,7 @@ public partial class MainWindow : Window
         else MessageBox.Show(this, "备份已推送到 WebDAV", "上传完成");
     }
 
-    private async void WebdavPull()
+    private async Task WebdavPull()
     {
         var c = Store.WebDavBackup.Load();
         if (c is not { Url.Length: > 0 }) { WebdavConfigure(); return; }
@@ -2820,6 +2820,8 @@ public partial class MainWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        if (_sysInfoWin != null) { try { _sysInfoWin.Close(); } catch { } }
+        if (_connMgrWin != null) { try { _connMgrWin.Close(); } catch { } }
         _monitorTimer.Stop();
         _bridgeStatusTimer.Stop();
         try { _agentBridge?.Stop(); } catch { }

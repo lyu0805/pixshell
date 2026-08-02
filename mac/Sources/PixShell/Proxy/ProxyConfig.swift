@@ -86,9 +86,16 @@ public struct ProxyConfig: Codable, Identifiable, Equatable, Sendable {
         }
     }
 
+    private static var idCounter: Int = 0
+    private static let idLock = NSLock()
+
     /// 对齐 JS `'px_' + Date.now().toString(36)`。公开：作为 public init 的默认参数值必须可见。
     public static func newId() -> String {
-        "px_" + String(Int(Date().timeIntervalSince1970 * 1000), radix: 36)
+        idLock.lock()
+        idCounter += 1
+        let count = idCounter
+        idLock.unlock()
+        return "px_" + String(Int(Date().timeIntervalSince1970 * 1000), radix: 36) + "-\(count)"
     }
 }
 

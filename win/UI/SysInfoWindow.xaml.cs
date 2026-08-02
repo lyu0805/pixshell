@@ -406,7 +406,11 @@ esac
         ShowPlaceholder("采集中…");
     }
 
-    private async void RefreshBtn_Click(object sender, RoutedEventArgs e) => await Reload();
+    private async void RefreshBtn_Click(object sender, RoutedEventArgs e)
+    {
+        try { await Reload(); }
+        catch (Exception ex) { MessageBox.Show(this, "刷新失败: " + ex.Message, "系统信息", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    }
     private void CloseBtn_Click(object sender, RoutedEventArgs e) => Close();
 
     /// <summary>调用方（MainWindow）在窗口打开后调用一次触发首次采集。</summary>

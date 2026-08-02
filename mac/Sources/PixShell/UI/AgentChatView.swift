@@ -25,6 +25,7 @@ final class AgentChatView: NSView {
     private let spinner = NSProgressIndicator()
 
     private var running: Process?
+    private var isRunning: Bool = false
     /// 最近几轮对话，拼进下一次 prompt 当简易上下文（一次性调用没有服务端会话）。
     private var history: [(role: String, text: String)] = []
     private static let historyKeep = 6
@@ -112,9 +113,11 @@ final class AgentChatView: NSView {
 
     @objc private func send() {
         // 正在跑就当"停止"用
-        if let p = running {
-            Log.info("用户取消 agent 调用 pid=\(p.processIdentifier)", "agent")
-            p.terminate(); running = nil
+        if isRunning {
+            if let p = running {
+                Log.info("用户取消 agent 调用 pid=\(p.processIdentifier)", "agent")
+                p.terminate(); running = nil
+            }
             finishRunning()
             append("系统", "已取消。")
             return
@@ -176,11 +179,13 @@ final class AgentChatView: NSView {
     }
 
     private func startRunning() {
+        isRunning = true
         spinner.startAnimation(nil)
         sendBtn.title = "停止"
         sendBtn.style = .danger
     }
     private func finishRunning() {
+        isRunning = false
         running = nil
         spinner.stopAnimation(nil)
         sendBtn.title = "发送"

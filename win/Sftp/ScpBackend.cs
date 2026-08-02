@@ -106,5 +106,8 @@ public class ScpBackend
     }
 
     private static string EscapeArg(string s)
-        => s.Contains(' ') || s.Contains('"') ? $"\"{s.Replace("\"", "\\\"")}\"" : s;
+    {
+        if (string.IsNullOrEmpty(s)) return "''";
+        return $"'{s.Replace("'", "'\\''")}'";
+    }
 }

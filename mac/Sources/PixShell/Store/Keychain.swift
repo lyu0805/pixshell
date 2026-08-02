@@ -148,7 +148,10 @@ enum Keychain {
 
     // MARK: - Public API（兼容老接口）
 
+    private static let lock = NSLock()
+
     static func setPassword(_ password: String, for id: String, label hostHint: String? = nil) {
+        lock.lock(); defer { lock.unlock() }
         var map = loadMap()
         if password.isEmpty {
             map.removeValue(forKey: id)
@@ -160,17 +163,20 @@ enum Keychain {
     }
 
     static func password(for id: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
         let map = loadMap()
         guard let pw = map[id], !pw.isEmpty else { return nil }
         return pw
     }
 
     static func has(_ id: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
         let map = loadMap()
         return !(map[id]?.isEmpty ?? true)
     }
 
     static func delete(_ id: String) {
+        lock.lock(); defer { lock.unlock() }
         var map = loadMap()
         map.removeValue(forKey: id)
         saveMap(map)

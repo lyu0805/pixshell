@@ -266,9 +266,10 @@ public static class BridgeRouter
         var remote = StringField(req.Body, "remote", "remotePath", "path");
         if (string.IsNullOrEmpty(remote)) return BridgeResponse.Fail(400, "缺少 remote");
         var local = StringField(req.Body, "local", "localPath") ?? DefaultDownloadLocal(remote);
+        if (!IsSafeLocalPath(local, out var safeLocal)) return BridgeResponse.Fail(403, "不允许访问此本地路径");
         try
         {
-            var result = await host.BridgeSftpDownloadAsync(sid, remote, local).ConfigureAwait(false);
+            var result = await host.BridgeSftpDownloadAsync(sid, remote, safeLocal).ConfigureAwait(false);
             return result != null ? BridgeResponse.Ok(new { ok = true, localPath = result }) : BridgeResponse.Fail(400, "download failed");
         }
         catch (Exception ex)
@@ -283,9 +284,10 @@ public static class BridgeRouter
         var local = StringField(req.Body, "local", "localPath");
         var remote = StringField(req.Body, "remote", "remotePath");
         if (string.IsNullOrEmpty(local) || string.IsNullOrEmpty(remote)) return BridgeResponse.Fail(400, "需要 local 与 remote");
+        if (!IsSafeLocalPath(local, out var safeLocal)) return BridgeResponse.Fail(403, "不允许访问此本地路径");
         try
         {
-            var result = await host.BridgeSftpUploadAsync(sid, local, remote).ConfigureAwait(false);
+            var result = await host.BridgeSftpUploadAsync(sid, safeLocal, remote).ConfigureAwait(false);
             return result != null ? BridgeResponse.Ok(new { ok = true, remotePath = result }) : BridgeResponse.Fail(400, "upload failed");
         }
         catch (Exception ex)
@@ -383,5 +385,30 @@ public static class BridgeRouter
         if (string.IsNullOrEmpty(name)) name = "file";
         var safe = name.Replace("/", "_").Replace("\\", "_");
         return Path.Combine(Path.GetTempPath(), "pixshell-dl-" + safe);
+    }
+
+    private static bool IsSafeLocalPath(string path, out string normalized)
+    {
+        normalized = string.Empty;
+        if (string.IsNullOrEmpty(path) || path.Contains("..")) return false;
+        try
+        {
+            normalized = Path.GetFullPath(path);
+            var downloads = Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"));
+            var temp = Path.GetFullPath(Path.GetTempPath());
+            
+            bool IsUnder(string root) =>
+                normalized.StartsWith(root, StringComparison.OrdinalIgnoreCase) &&
+                (normalized.Length == root.Length || 
+                 normalized[root.Length] == Path.DirectorySeparatorChar || 
+                 normalized[root.Length] == Path.AltDirectorySeparatorChar || 
+                 root.EndsWith(Path.DirectorySeparatorChar.ToString()));
+
+            return IsUnder(downloads) || IsUnder(temp);
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

@@ -23,6 +23,7 @@ public sealed class LSPClient : IDisposable
     public event Action<bool>? ReadyChanged;
 
     private readonly object _lock = new();
+    private readonly object _stdinLock = new object();
     private readonly CancellationTokenSource _cts = new();
     private Process? _process;
     private StreamWriter? _stdin;
@@ -168,7 +169,11 @@ public sealed class LSPClient : IDisposable
         {
             Send("shutdown", new Dictionary<string, object?>(), expectResponse: false);
             Send("exit", new Dictionary<string, object?>(), expectResponse: false);
-            _stdin?.Close();
+            lock (_stdinLock)
+            {
+                _stdin?.Close();
+                _stdin = null;
+            }
         }
         catch { }
         try { _process?.Kill(); } catch { }
@@ -225,13 +230,13 @@ public sealed class LSPClient : IDisposable
 
     private void Write(Dictionary<string, object?> obj)
     {
-        if (_stdin == null) return;
         try
         {
             var body = JsonSerializer.SerializeToUtf8Bytes(obj);
             var head = Encoding.UTF8.GetBytes($"Content-Length: {body.Length}\r\n\r\n");
-            lock (_stdin)
+            lock (_stdinLock)
             {
+                if (_stdin == null || _stdin.BaseStream == null || !_stdin.BaseStream.CanWrite) return;
                 _stdin.BaseStream.Write(head, 0, head.Length);
                 _stdin.BaseStream.Write(body, 0, body.Length);
                 _stdin.BaseStream.Flush();
