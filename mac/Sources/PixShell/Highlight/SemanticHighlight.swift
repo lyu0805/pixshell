@@ -395,17 +395,47 @@ enum SemanticHighlight {
         if matches.isEmpty { return decoratePlainChunk(chunk, dark: dark) }
         var out = ""
         var idx = 0
+        var activeColor = false
         for m in matches {
             let r = m.range
             if r.location > idx {
                 let plain = ns.substring(with: NSRange(location: idx, length: r.location - idx))
-                out += decoratePlainChunk(plain, dark: dark)
+                if activeColor {
+                    out += plain
+                } else {
+                    out += decoratePlainChunk(plain, dark: dark)
+                }
             }
-            out += ns.substring(with: r) // 转义序列原样保留
+            var ansi = ns.substring(with: r)
+
+            // 追踪是否有程序自带的上色，避免 SemanticHighlight 破坏程序原生的高亮（如红底白字被染成红底红字）
+            if ansi == "\u{1b}[0m" || ansi == "\u{1b}[39m" || ansi == "\u{1b}[49m" {
+                activeColor = false
+            } else if ansi.contains("m") && ansi != "\u{1b}[37m" && ansi != "\u{1b}[0;37m" {
+                activeColor = true
+            }
+
+            // 拦截 37m (白色前景)，在深浅色模式下强制替换为高对比度颜色，避免在浅色背景上看不清
+            if ansi == "\u{1b}[37m" || ansi == "\u{1b}[0;37m" {
+                ansi = tc(dark ? "#f2f2f7" : "#0b0b0d")
+            }
+
+            // 拦截 2K (清除整行) 和 K (清除到行尾)，前置 0m 以避免背景色溢出成“黑条/彩条”
+            if ansi == "\u{1b}[2K" || ansi == "\u{1b}[K" {
+                ansi = "\u{1b}[0m" + ansi
+                activeColor = false
+            }
+
+            out += ansi // 转义序列保留
             idx = r.location + r.length
         }
         if idx < ns.length {
-            out += decoratePlainChunk(ns.substring(with: NSRange(location: idx, length: ns.length - idx)), dark: dark)
+            let plain = ns.substring(with: NSRange(location: idx, length: ns.length - idx))
+            if activeColor {
+                out += plain
+            } else {
+                out += decoratePlainChunk(plain, dark: dark)
+            }
         }
         return out
     }
