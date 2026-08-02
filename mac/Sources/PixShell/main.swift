@@ -110,6 +110,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
         if isHeadless {
             // 无头模式：不建 UI，仅启动本地桥。GPU/主题/窗口/菜单全部跳过。
             Log.banner("0.1.5 [headless]")
+            // 无头也刷新 AI SSH 桥接注册：保证 `ssh` 包装脚本内容是最新的（随 CLI 一起变）。
+            // 有头时在设置页手动注册/取消；无头静默幂等刷新，已注册过就重写 wrapper 不弹窗。
+            AiSshBridge.register(bridgePort: nil)
             startAgentBridge()
             return
         }

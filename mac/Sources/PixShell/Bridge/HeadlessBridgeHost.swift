@@ -88,6 +88,11 @@ final class HeadlessBridgeHost: BridgeHost {
             completion(.failure(NSError(domain: "PixShell", code: 400,
                 userInfo: [NSLocalizedDescriptionKey: "RDP/本机终端不能经桥连接"]))); return
         }
+        // 复用：同主机已有活跃会话 → 直接返回，不重复建连/不重认证（持久化交互关键）。
+        if let idx = withLock({ sessions.firstIndex { $0.host.id == hostId && $0.connected } }) {
+            withLock { currentIndex = idx }
+            completion(.success(["session": idx, "title": sessions[idx].title])); return
+        }
         let pw = Keychain.password(for: h.id) ?? ""
         guard !pw.isEmpty || !h.keyPath.isEmpty else {
             completion(.failure(NSError(domain: "PixShell", code: 401,

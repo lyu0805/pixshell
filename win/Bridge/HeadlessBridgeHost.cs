@@ -127,6 +127,14 @@ public sealed class HeadlessBridgeHost : IBridgeHost
         var h = HostStore.Load().FirstOrDefault(x => x.Id == hostId);
         if (h == null) throw new Exception($"未找到主机 {hostId}");
 
+        // 复用：同主机已有活跃会话 → 直接返回，不重复建连/不重认证（持久化交互关键）。
+        lock (_lock)
+        {
+            var existing = _sessions.FindIndex(x => x.Host.Id == hostId && x.Connected);
+            if (existing >= 0)
+                return new Dictionary<string, object?> { ["session"] = existing, ["title"] = _sessions[existing].Title, ["ok"] = true };
+        }
+
         // 只用已保存的密码/私钥；桥不弹密码框（无人值守场景不该阻塞）。
         var pw = CredentialStore.GetPassword(h.Id) ?? "";
         if (string.IsNullOrEmpty(pw) && string.IsNullOrEmpty(h.KeyPath))

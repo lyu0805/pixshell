@@ -69,10 +69,11 @@ enum AgentCLI {
           exec  <命令>           在当前会话上执行一条命令并拿到 stdout
           type  <文本>           往终端里"敲字"（会自动补回车，等同人手输入）
           hosts                 列出已保存的主机
+          ssh <主机名|ID> [命令] 直连一台已保存主机（无头自动建会话），可带一条命令执行
           sftp-ls [远端路径]     列远端目录
 
         要点：
-        - 这些都跑在**已经连着的那条 SSH 会话**上，不会为每条命令新建连接。
+        - 默认跑在 `ssh` 直连的会话上；不指定主机时用**已经连着的那条 SSH 会话**，不会为每条命令新建连接。
         - 只读信息优先用 `exec`；需要交互（比如 vim、要确认的提示、top）时用 `type` + `screen` 轮流看。
         - 破坏性操作（rm、覆盖写、重启服务等）**先问我**，不要自己执行。
         """
@@ -136,6 +137,20 @@ enum AgentCLI {
             "# 从返回 JSON 里挑第一个存在的字段打印；挑不到就原样打印整个 JSON",
             "field() { python3 -c 'import json,sys; d=json.load(sys.stdin); ks=[k for k in sys.argv[1:] if isinstance(d,dict) and k in d]; v=d[ks[0]] if ks else d; print(v if isinstance(v,str) else json.dumps(v,ensure_ascii=False))' \"$@\"; }",
             "mkjson() { python3 -c 'import json,sys; print(json.dumps({\"session\":int(sys.argv[1]),sys.argv[2]:sys.argv[3]}))' \"$@\"; }",
+            "# 执行远程命令。exec 是 bash 内建（exec 命令会替换 shell 进程），不能直接用，包一层。",
+            "do_exec() { post exec \"$(mkjson \"$SESSION\" cmd \"$*\")\" | field output text stdout; }",
+            "# 按名称或 ID 挑主机。hosts 返回 {ok,hosts:[...]}。匹配不到就报错退出。",
+            "hostid() {",
+            "  python3 - \"$1\" <<'PY'",
+            "import json,urllib.request,sys,os",
+            "tok=open(os.path.expanduser('~/Library/Application Support/PixShell/agent_token')).read().strip()",
+            "req=urllib.request.Request('http://127.0.0.1:8766/v1/app/hosts',headers={'Authorization':'Bearer '+tok})",
+            "d=json.load(urllib.request.urlopen(req,timeout=10))['hosts']",
+            "q=sys.argv[1].lower()",
+            "hit=[h for h in d if q in (h.get('id') or '').lower() or q in (h.get('name') or '').lower() or q in (h.get('host') or '').lower()]",
+            "print(hit[0]['id'] if hit else '')",
+            "PY",
+            "}",
             "cmd=\"${1:-help}\"; shift || true",
             "log \"调用 cmd=$cmd session=$SESSION args=$*\"",
             "case \"$cmd\" in",
@@ -144,12 +159,20 @@ enum AgentCLI {
             "  screen) get \"screen?session=$SESSION&lines=${1:-200}\" | field text ;;",
             "  exec)",
             "    [ $# -ge 1 ] || { echo '用法: pixshell exec <命令>' >&2; exit 2; }",
-            "    post exec \"$(mkjson \"$SESSION\" cmd \"$*\")\" | field output text stdout ;;",
+            "    do_exec \"$*\" ;;",
             "  type)",
             "    [ $# -ge 1 ] || { echo '用法: pixshell type <文本>' >&2; exit 2; }",
             "    post shell \"$(mkjson \"$SESSION\" text \"$*\")\" >/dev/null; sleep 0.6",
             "    get \"screen?session=$SESSION&lines=40\" | field text ;;",
             "  sftp-ls) post sftp/list \"$(mkjson \"$SESSION\" path \"${1:-.}\")\" | field entries ;;",
+            "  ssh|connect)",
+            "    [ $# -ge 1 ] || { echo '用法: pixshell ssh <主机名|ID> [命令]' >&2; exit 2; }",
+            "    HID=$(hostid \"$1\"); [ -n \"$HID\" ] || { echo \"没找到主机：$1（用 pixshell hosts 看列表）\" >&2; exit 2; }; shift",
+            "    R=$(post connect \"$(mkjson 0 hostId \"$HID\")\")",
+            "    echo \"$R\" | grep -q '\"ok\":true' || { echo \"连接失败：$(echo \"$R\" | field error)\" >&2; exit 2; }",
+            "    S=$(echo \"$R\" | field session); [ -n \"$S\" ] && [ \"$S\" != \"0\" ] && SESSION=\"$S\" || :",
+            "    # 已连接（同主机已开会话）时 connect 不建新会话，沿用 SESSION；否则用返回的 session",
+            "    if [ $# -ge 1 ]; then do_exec \"$*\"; else echo \"已连接：$(echo \"$R\" | field title)（session ${SESSION:-0}）\"; fi ;;",
             "  *)",
             "    echo 'pixshell <子命令>'",
             "    echo '  sessions          列出会话'",
@@ -157,6 +180,7 @@ enum AgentCLI {
             "    echo '  exec <命令>        在当前会话执行并拿 stdout'",
             "    echo '  type <文本>        往终端敲字（自动回车），随后回显 40 行画面'",
             "    echo '  hosts             列出已保存主机'",
+            "    echo '  ssh <主机名|ID> [命令] 直连已保存主机（无头自动建会话），可带命令执行'",
             "    echo '  sftp-ls [路径]     列远端目录'",
             "    echo '环境变量 PIXSHELL_SESSION 可指定会话序号（默认 0）。' ;;",
             "esac",
