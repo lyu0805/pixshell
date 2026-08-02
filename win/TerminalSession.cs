@@ -32,6 +32,44 @@ namespace PixShell;
 /// </summary>
 public sealed class TerminalSession : IDisposable
 {
+    private static void ExtractIncompleteANSI(string text, out string complete, out string incomplete)
+    {
+        int maxLookback = Math.Min(text.Length, 2048);
+        for (int i = text.Length - 1; i >= text.Length - maxLookback; i--)
+        {
+            if (text[i] == '\x1B')
+            {
+                if (i + 1 >= text.Length) { complete = text.Substring(0, i); incomplete = text.Substring(i); return; }
+                char next = text[i+1];
+                if (next == '[')
+                {
+                    bool isComplete = false;
+                    for (int j = i + 2; j < text.Length; j++)
+                    {
+                        if (text[j] >= 0x40 && text[j] <= 0x7E) { isComplete = true; break; }
+                    }
+                    if (!isComplete) { complete = text.Substring(0, i); incomplete = text.Substring(i); return; }
+                }
+                else if (next == ']')
+                {
+                    bool isComplete = false;
+                    for (int j = i + 2; j < text.Length; j++)
+                    {
+                        if (text[j] == 0x07) { isComplete = true; break; }
+                        if (text[j] == '\x1B' && j + 1 < text.Length && text[j+1] == '\\') { isComplete = true; break; }
+                    }
+                    if (!isComplete) { complete = text.Substring(0, i); incomplete = text.Substring(i); return; }
+                }
+                else if (next == '(' || next == ')')
+                {
+                    if (i + 2 >= text.Length) { complete = text.Substring(0, i); incomplete = text.Substring(i); return; }
+                }
+                break;
+            }
+        }
+        complete = text;
+        incomplete = "";
+    }
     /// <summary>本会话独占的 WebView2 控件，放进对应 TabItem 的内容区。
     /// DefaultBackgroundColor 跟配色方案走，避免页面未铺满时露出系统黑底（半截黑屏）。</summary>
     public WebView2 View { get; } = CreateView();
@@ -660,6 +698,7 @@ public sealed class TerminalSession : IDisposable
                 var buf = new byte[4096];
                 var decoder = Encoding.UTF8.GetDecoder();
                 var chars = new char[Encoding.UTF8.GetMaxCharCount(buf.Length)];
+                string incompleteAnsi = "";
                 try
                 {
                     while (true)
@@ -670,15 +709,22 @@ public sealed class TerminalSession : IDisposable
                         if (n <= 0) break;
                         int c = decoder.GetChars(buf, 0, n, chars, 0, flush: false);
                         var text = c > 0 ? new string(chars, 0, c) : "";
-                        if (text.Length > 0) AppendOutputBuffer(text);
+                        
                         string b64;
-                        if (HighlightEnabled && c > 0)
+                        if (HighlightEnabled)
                         {
+                            if (c == 0 && string.IsNullOrEmpty(incompleteAnsi)) continue;
+                            var fullText = incompleteAnsi + text;
+                            ExtractIncompleteANSI(fullText, out var complete, out incompleteAnsi);
+                            if (complete.Length > 0) AppendOutputBuffer(complete);
+                            if (complete.Length == 0) continue;
+                            
                             b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
-                                Highlight.SemanticHighlight.Decorate(text, ThemeManager.IsDark)));
+                                Highlight.SemanticHighlight.Decorate(complete, ThemeManager.IsDark)));
                         }
                         else
                         {
+                            if (text.Length > 0) AppendOutputBuffer(text);
                             b64 = Convert.ToBase64String(buf, 0, n);
                         }
                         View.Dispatcher.BeginInvoke(new Action(() => SendToTerm("out", b64)));
@@ -749,6 +795,7 @@ public sealed class TerminalSession : IDisposable
         // 跨 read 块保持多字节 UTF-8 状态，避免中文/emoji 被截断成 U+FFFD。
         var decoder = Encoding.UTF8.GetDecoder();
         var chars = new char[Encoding.UTF8.GetMaxCharCount(buf.Length)];
+        string incompleteAnsi = "";
         try
         {
             while (true)
@@ -757,20 +804,22 @@ public sealed class TerminalSession : IDisposable
                 if (n <= 0) break;
                 int c = decoder.GetChars(buf, 0, n, chars, 0, flush: false);
                 var text = c > 0 ? new string(chars, 0, c) : "";
-                if (text.Length > 0)
-                    AppendOutputBuffer(text);
-                // 语义高亮：给纯文本段注入 truecolor SGR，已有的 ANSI 转义原样保留。
-                // 关掉开关就走原始字节，一个字节都不改。
+                
                 string b64;
                 if (HighlightEnabled)
                 {
-                    // 高亮必须用状态解码后的完整字符；本块若只有未完成序列则跳过本轮 out。
-                    if (c == 0) continue;
+                    if (c == 0 && string.IsNullOrEmpty(incompleteAnsi)) continue;
+                    var fullText = incompleteAnsi + text;
+                    ExtractIncompleteANSI(fullText, out var complete, out incompleteAnsi);
+                    if (complete.Length > 0) AppendOutputBuffer(complete);
+                    if (complete.Length == 0) continue;
+                    
                     b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
-                        Highlight.SemanticHighlight.Decorate(text, ThemeManager.IsDark)));
+                        Highlight.SemanticHighlight.Decorate(complete, ThemeManager.IsDark)));
                 }
                 else
                 {
+                    if (text.Length > 0) AppendOutputBuffer(text);
                     b64 = Convert.ToBase64String(buf, 0, n);
                 }
                 // 回到 UI 线程调用 WebView2（有线程亲和性）。
@@ -1284,6 +1333,7 @@ public sealed class TerminalSession : IDisposable
             var buf = new byte[4096];
             var decoder = Encoding.UTF8.GetDecoder();
             var chars = new char[Encoding.UTF8.GetMaxCharCount(buf.Length)];
+            string incompleteAnsi = "";
             try
             {
                 while (true)
@@ -1295,15 +1345,22 @@ public sealed class TerminalSession : IDisposable
                     hadOutput = true;
                     int c = decoder.GetChars(buf, 0, n, chars, 0, flush: false);
                     var text = c > 0 ? new string(chars, 0, c) : "";
-                    if (text.Length > 0) AppendOutputBuffer(text);
+                    
                     string b64;
-                    if (HighlightEnabled && c > 0)
+                    if (HighlightEnabled)
                     {
+                        if (c == 0 && string.IsNullOrEmpty(incompleteAnsi)) continue;
+                        var fullText = incompleteAnsi + text;
+                        ExtractIncompleteANSI(fullText, out var complete, out incompleteAnsi);
+                        if (complete.Length > 0) AppendOutputBuffer(complete);
+                        if (complete.Length == 0) continue;
+                        
                         b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
-                            Highlight.SemanticHighlight.Decorate(text, ThemeManager.IsDark)));
+                            Highlight.SemanticHighlight.Decorate(complete, ThemeManager.IsDark)));
                     }
                     else
                     {
+                        if (text.Length > 0) AppendOutputBuffer(text);
                         b64 = Convert.ToBase64String(buf, 0, n);
                     }
                     View.Dispatcher.BeginInvoke(new Action(() => SendToTerm("out", b64)));
