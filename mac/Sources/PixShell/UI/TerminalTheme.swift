@@ -59,15 +59,15 @@ enum TermTheme {
     // ANSI 16 色（照搬老仓库明暗调色板）
     static let darkPalette: [SwiftTerm.Color] = [
         c("#000000"), c("#ff2d20"), c("#0dbc79"), c("#ffcc00"),
-        c("#bd93f9"), c("#ff79c6"), c("#8be9fd"), c("#bbbbbb"),
+        c("#bd93f9"), c("#ff79c6"), c("#8be9fd"), c("#f2f2f7"),
         c("#a0a0a8"), c("#ff453a"), c("#23d18b"), c("#ffd426"),
         c("#d6bbff"), c("#ff92d0"), c("#a4f0ff"), c("#f7f7fa"),
     ]
     static let lightPalette: [SwiftTerm.Color] = [
         c("#0b0b0d"), c("#b00014"), c("#00782a"), c("#9a4200"),
-        c("#0b4db8"), c("#6b2f9a"), c("#0a6a78"), c("#3a3a42"),
+        c("#0b4db8"), c("#6b2f9a"), c("#0a6a78"), c("#0b0b0d"),
         c("#4a4a52"), c("#d4001f"), c("#16825d"), c("#b84f00"),
-        c("#0d5fd4"), c("#8538c0"), c("#0c8496"), c("#0b0b0d"),
+        c("#0d5fd4"), c("#8538c0"), c("#0c8496"), c("#000000"),
     ]
 
     private static func rgb(_ hex: String) -> (Int, Int, Int) {
