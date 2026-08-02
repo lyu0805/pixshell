@@ -64,10 +64,10 @@ public partial class MonitorSidebar : UserControl
         CpuBar.Kind = MetricBar.BarKind.Cpu; CpuBar.SetLabel("CPU");
         MemBar.Kind = MetricBar.BarKind.Mem; MemBar.SetLabel("内存");
         SwapBar.Kind = MetricBar.BarKind.Swap; SwapBar.SetLabel("交换");
-        NetSpark.SetColor(Color.FromRgb(0x30, 0xD1, 0x58));
-        PingSpark.SetColor(Color.FromRgb(0x0A, 0x84, 0xFF));
-        NetSpark.BarMode = true;
+        NetChart.Clear();
+        PingSpark.SetColor((Color)Application.Current.Resources["ColorAccent"]);
         PingSpark.BarMode = true;
+        PingSpark.Clear();
     }
 
     private void CopyIp_Click(object sender, RoutedEventArgs e) => OnCopyIp?.Invoke();
@@ -109,7 +109,7 @@ public partial class MonitorSidebar : UserControl
             _lastUptime = _lastLoad = "\0";
             _lastNetTitle = _lastPingTitle = "\0";
             _cpuIdlePrev = _cpuTotalPrev = -1;
-            NetSpark.Clear();
+            NetChart.Clear();
             PingSpark.Clear();
         }
     }
@@ -191,13 +191,14 @@ public partial class MonitorSidebar : UserControl
         if (!hasRx || !hasTx)
         {
             // 兼容旧脚本只吐 netval（累计和）的情况：无法拆上下行，只推火花线。
-            if (iface != _lastNetTitle) { NetTitle.Text = iface; _lastNetTitle = iface; }
-            if (double.TryParse(m.GetValueOrDefault("netval"), out var nvLegacy)) NetSpark.Push(nvLegacy);
+            if (iface != _lastNetTitle)            NetTitle.Text = $"{iface}  ↑ 0 B/s  ↓ 0 B/s";
+            if (double.TryParse(m.GetValueOrDefault("netval"), out var nvLegacy)) NetChart.Push(nvLegacy, 0);
         }
         else
         {
             var now = DateTime.UtcNow;
             double rxRate = 0, txRate = 0;
+            bool hasRate = false;
             if (_netInited)
             {
                 var dt = (now - _lastNetAt).TotalSeconds;
@@ -205,15 +206,23 @@ public partial class MonitorSidebar : UserControl
                 {
                     rxRate = Math.Max(0, rx - _lastRx) / dt;
                     txRate = Math.Max(0, tx - _lastTx) / dt;
+                    hasRate = true;
                 }
             }
             _lastRx = rx; _lastTx = tx; _lastNetAt = now; _netInited = true;
-            var nt = $"{iface}  ↑ {FormatRate(txRate)}  ↓ {FormatRate(rxRate)}";
-            if (nt != _lastNetTitle) { NetTitle.Text = nt; _lastNetTitle = nt; }
-            NetSpark.Push(rxRate + txRate);
+            if (hasRate)
+            {
+                NetTitle.Text = $"{iface}  ↑ {FormatRate(txRate)}  ↓ {FormatRate(rxRate)}";
+                NetChart.Push(rxRate, txRate);
+            }
+            else
+            {
+                NetTitle.Text = $"{iface}  ↑ 0 B/s  ↓ 0 B/s";
+                NetChart.Push(0, 0);
+            }
         }
 
-        // 延���：由 MainWindow 本地 TCP 测时推送，这里设默认值
+        // 延：由 MainWindow 本地 TCP 测时推送，这里设默认值
         if (_lastPingTitle != "延迟 -") { PingTitle.Text = "延迟 -"; _lastPingTitle = "延迟 -"; }
     }
 

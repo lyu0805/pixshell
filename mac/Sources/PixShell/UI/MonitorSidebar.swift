@@ -15,14 +15,13 @@ final class MonitorSidebar: NSView {
     private let diskBody = NSStackView()
     private let netTitle = MonitorSidebar.val()
     private let pingTitle = MonitorSidebar.val()
-    private let netSpark = Sparkline(color: Theme.c("#30d158"))
+    private let netChart = NetworkChart()
     private let pingSpark = Sparkline(color: Theme.accent)
     private let stack = NSStackView()
     private var copyBtn: NSButton?
 
     init() {
         super.init(frame: .zero)
-        netSpark.barMode = true
         pingSpark.barMode = true
         build()
     }
@@ -54,7 +53,6 @@ final class MonitorSidebar: NSView {
 
     private func build() {
         wantsLayer = true
-        netSpark.barMode = true
         pingSpark.barMode = true
 
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 0
@@ -132,10 +130,11 @@ final class MonitorSidebar: NSView {
 
         // 网络
         secTitle("网络")
-        netTitle.font = Theme.ui(10); netTitle.textColor = Theme.muted
-        addRow(pad(vstack([netTitle, netSpark], gap: 2), 6, 8, 6, 8), border: true)
-        netSpark.widthAnchor.constraint(equalToConstant: 184).isActive = true
-        netSpark.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        netTitle.font = Theme.ui(10); netTitle.textColor = Theme.text; netTitle.alignment = .right
+        let netHeaderRow = hstack([small("网卡流量"), spacer(), netTitle], gap: 4)
+        addRow(pad(vstack([netHeaderRow, netChart], gap: 4), 6, 8, 6, 8), border: true)
+        netChart.widthAnchor.constraint(equalToConstant: 184).isActive = true
+        netChart.heightAnchor.constraint(equalToConstant: 50).isActive = true
 
         // 延迟
         secTitle("延迟")
@@ -348,14 +347,15 @@ final class MonitorSidebar: NSView {
             // 与 Win 一致：↑ 上行(tx)  ↓ 下行(rx)
             if hasRate {
                 netTitle.stringValue = "\(iface)  ↑ \(formatRate(txRate))  ↓ \(formatRate(rxRate))"
+                netChart.push(rx: rxRate, tx: txRate)
             } else {
                 netTitle.stringValue = "\(iface)  ↑ 0 B/s  ↓ 0 B/s"
+                netChart.push(rx: 0, tx: 0)
             }
-            netSpark.push(totalRate)
         } else {
             netTitle.stringValue = "\(iface)  ↑ 0 B/s  ↓ 0 B/s"
             if let v = m["netval"], let d = Double(v) {
-                netSpark.push(d)
+                netChart.push(rx: d, tx: 0)
             }
         }
 
@@ -470,6 +470,104 @@ final class Bar: NSView {
         }
         grad.colors = colors.map { $0.cgColor }
         DispatchQueue.main.async { self.grad.frame = self.fill.bounds }
+    }
+}
+
+/// 重叠双柱状图，带左侧Y轴刻度。用于网络监控。
+final class NetworkChart: NSView {
+    private var rxValues: [Double] = []
+    private var txValues: [Double] = []
+    private let maxCount = 60
+    
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    
+    func push(rx: Double, tx: Double) {
+        rxValues.append(rx)
+        txValues.append(tx)
+        if rxValues.count > maxCount {
+            rxValues.removeFirst()
+            txValues.removeFirst()
+        }
+        needsDisplay = true
+    }
+    
+    private func formatLabel(_ v: Double) -> String {
+        if v < 1000 { return "\(Int(v))" }
+        if v < 1000_000 { return String(format: "%.1fK", v / 1000).replacingOccurrences(of: ".0K", with: "K") }
+        if v < 1000_000_000 { return String(format: "%.1fM", v / 1000_000).replacingOccurrences(of: ".0M", with: "M") }
+        return String(format: "%.1fG", v / 1000_000_000).replacingOccurrences(of: ".0G", with: "G")
+    }
+    
+    override func draw(_ dirty: NSRect) {
+        guard !rxValues.isEmpty else { return }
+        let w = bounds.width
+        let h = bounds.height
+        
+        var mx: Double = 1
+        for i in 0..<rxValues.count {
+            mx = max(mx, rxValues[i], txValues[i])
+        }
+        mx = mx * 1.1 // Add a little headroom
+        
+        let steps = 3
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .right
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: Theme.mono(9),
+            .foregroundColor: Theme.muted,
+            .paragraphStyle: paragraphStyle
+        ]
+        
+        let labelWidth: CGFloat = 28
+        let chartX = labelWidth + 4
+        let chartW = w - chartX
+        
+        for i in 1...steps {
+            let val = mx * Double(i) / Double(steps)
+            let y = h * CGFloat(i) / CGFloat(steps)
+            
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: chartX, y: y))
+            path.line(to: NSPoint(x: w, y: y))
+            let dashes: [CGFloat] = [2, 2]
+            path.setLineDash(dashes, count: 2, phase: 0)
+            Theme.border.setStroke()
+            path.stroke()
+            
+            let text = formatLabel(val)
+            let str = NSAttributedString(string: text, attributes: attrs)
+            let strSize = str.size()
+            str.draw(in: NSRect(x: 0, y: y - strSize.height/2, width: labelWidth, height: strSize.height))
+        }
+        
+        let unit = chartW / CGFloat(maxCount)
+        let barW = max(unit * 0.85, 1)
+        let gap = unit * 0.15
+        let maxH = h * 0.95
+        
+        let rxColor = Theme.c("#30d158").withAlphaComponent(0.6)
+        let txColor = Theme.c("#ff9f0a").withAlphaComponent(0.6)
+        
+        for i in 0..<rxValues.count {
+            let x = chartX + CGFloat(i) * (barW + gap)
+            
+            let rxH = maxH * CGFloat(rxValues[i] / mx)
+            let txH = maxH * CGFloat(txValues[i] / mx)
+            
+            if txH > 0 {
+                txColor.setFill()
+                NSBezierPath(rect: NSRect(x: x, y: 0, width: barW, height: max(1, txH))).fill()
+            }
+            if rxH > 0 {
+                rxColor.setFill()
+                NSBezierPath(rect: NSRect(x: x, y: 0, width: barW, height: max(1, rxH))).fill()
+            }
+        }
     }
 }
 

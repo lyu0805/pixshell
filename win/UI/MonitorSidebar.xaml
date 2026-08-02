@@ -101,7 +101,7 @@
             <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="8,6,8,6">
                 <StackPanel>
                     <TextBlock x:Name="NetTitle" Text="-" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="0,0,0,2"/>
-                    <local:Sparkline x:Name="NetSpark" Height="16"/>
+                    <local:NetworkChart x:Name="NetChart" Height="50"/>
                 </StackPanel>
             </Border>
 
