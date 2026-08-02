@@ -411,13 +411,8 @@ enum SemanticHighlight {
             // 追踪是否有程序自带的上色，避免 SemanticHighlight 破坏程序原生的高亮（如红底白字被染成红底红字）
             if ansi == "\u{1b}[0m" || ansi == "\u{1b}[39m" || ansi == "\u{1b}[49m" {
                 activeColor = false
-            } else if ansi.contains("m") && ansi != "\u{1b}[37m" && ansi != "\u{1b}[0;37m" {
+            } else if ansi.contains("m") {
                 activeColor = true
-            }
-
-            // 拦截 37m (白色前景)，在深浅色模式下强制替换为高对比度颜色，避免在浅色背景上看不清
-            if ansi == "\u{1b}[37m" || ansi == "\u{1b}[0;37m" {
-                ansi = tc(dark ? "#f2f2f7" : "#0b0b0d")
             }
 
             // 拦截 2K (清除整行) 和 K (清除到行尾)，前置 0m 以避免背景色溢出成“黑条/彩条”
