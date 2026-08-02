@@ -698,6 +698,7 @@ public sealed class TerminalSession : IDisposable
                 var buf = new byte[4096];
                 var decoder = Encoding.UTF8.GetDecoder();
                 var chars = new char[Encoding.UTF8.GetMaxCharCount(buf.Length)];
+                bool activeColor = false;
                 string incompleteAnsi = "";
                 try
                 {
@@ -720,7 +721,7 @@ public sealed class TerminalSession : IDisposable
                             if (complete.Length == 0) continue;
                             
                             b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
-                                Highlight.SemanticHighlight.Decorate(complete, ThemeManager.IsDark)));
+                                Highlight.SemanticHighlight.Decorate(complete, ThemeManager.IsDark, ref activeColor)));
                         }
                         else
                         {
@@ -795,6 +796,7 @@ public sealed class TerminalSession : IDisposable
         // 跨 read 块保持多字节 UTF-8 状态，避免中文/emoji 被截断成 U+FFFD。
         var decoder = Encoding.UTF8.GetDecoder();
         var chars = new char[Encoding.UTF8.GetMaxCharCount(buf.Length)];
+        bool activeColor = false;
         string incompleteAnsi = "";
         try
         {
@@ -815,7 +817,7 @@ public sealed class TerminalSession : IDisposable
                     if (complete.Length == 0) continue;
                     
                     b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
-                        Highlight.SemanticHighlight.Decorate(complete, ThemeManager.IsDark)));
+                        Highlight.SemanticHighlight.Decorate(complete, ThemeManager.IsDark, ref activeColor)));
                 }
                 else
                 {
@@ -1333,6 +1335,7 @@ public sealed class TerminalSession : IDisposable
             var buf = new byte[4096];
             var decoder = Encoding.UTF8.GetDecoder();
             var chars = new char[Encoding.UTF8.GetMaxCharCount(buf.Length)];
+            bool activeColor = false;
             string incompleteAnsi = "";
             try
             {
@@ -1356,7 +1359,7 @@ public sealed class TerminalSession : IDisposable
                         if (complete.Length == 0) continue;
                         
                         b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
-                            Highlight.SemanticHighlight.Decorate(complete, ThemeManager.IsDark)));
+                            Highlight.SemanticHighlight.Decorate(complete, ThemeManager.IsDark, ref activeColor)));
                     }
                     else
                     {
