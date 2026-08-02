@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="${1:-debug}"
 APP="$ROOT/dist/PixShell.app"
 # Optional override for CFBundleShortVersionString (CI tag strip / local release).
-VERSION="${VERSION:-0.1.5}"
+VERSION="${VERSION:-0.1.6}"
 VERSION="${VERSION#v}"
 
 # set -u 下空数组 "${BUILD_ARGS[@]}" 会炸；用显式参数列表。
