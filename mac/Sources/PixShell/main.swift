@@ -190,6 +190,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    /// 无头进程收到 reopen（用户 Finder 双击 / `open -a`）：说明想打开界面。
+    /// 无头是 .accessory 不建窗，`open -a` 又只激活已运行实例（不会新启有头），
+    /// 所以这里必须自己退出并重新拉起**有头**，否则用户双击看起来"没反应"。
+    /// 注意：`open -a` 在无头还活着时只会发 reopen 死循环，必须先 terminate 等退出再 open。
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard isHeadless else { return true }
+        // 无头进程收到 reopen（用户 Finder 双击 / `open -a`）：说明想打开界面。
+        // 无头是 .accessory 不建窗，`open -a` 只激活已运行实例不会新启有头，双击会"没反应"。
+        // 解决：用 `open -n` 强制**新实例**启动有头（绕过 LaunchServices 实例复用，不依赖 terminate 时序）。
+        // 新有头启动后走 waitForHeadlessToYield → 让本无头退出（onPortBusy 让位）→ 接管 8766。
+        Log.info("无头收到 reopen（用户想开界面）→ open -n 拉起新有头实例", "ui")
+        let appPath = Bundle.main.bundlePath.hasSuffix(".app") ? Bundle.main.bundlePath : ""
+        let args: [String] = appPath.isEmpty ? ["-n", "-a", "PixShell"] : ["-n", appPath]
+        AgentBridge.spawnOpenApp(args)
+        return false
+    }
+
     /// 有头正常退出时拉起无头进程接续桥（跟随有头生命周期：有头关了 → 无头继续后台跑）。
     func applicationWillTerminate(_ notification: Notification) {
         guard !isHeadless else { return }

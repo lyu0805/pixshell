@@ -117,6 +117,12 @@ final class AgentBridge {
         return result
     }
 
+    /// 无头收到 reopen 后拉起有头进程（不带 --headless）。无头已 terminate，
+    /// 此时 open 会真正启动新有头实例，不再复用无头。参数是 `[appPath]` 或 `["-a","PixShell"]`。
+    static func spawnOpenApp(_ args: [String]) {
+        openProcess(open: "/usr/bin/open", args: args)
+    }
+
     /// 有头退出时拉起无头进程接续桥：`open <App>.app --args --headless`。
     /// 只有 bundle（.app）才有意义；debug 裸二进制（path 是目录）用名字兜底。
     static func spawnHeadlessProcess() {
