@@ -107,11 +107,11 @@ public static class SemanticHighlight
     private static readonly Regex RErrEn = Re(@"\b(?:error|errors|fail(?:ed|ure|ures)?|fatal|critical|exception|denied|refused|panic|traceback|segfault|oom|killed|unable|cannot|can't|not found|no such|permission denied|connection refused|timed?\s*out|timeout|unauthorized|forbidden|invalid|corrupt(?:ed)?|broken|crash(?:ed)?)\b", RegexOptions.IgnoreCase);
     // 中文词：\b 对 CJK 无效，须用 Unicode 属性前后夹紧（只认独立词，防"正常范围/异常子串"误亮）。
     private static readonly string ZhW = @"\p{IsCJKUnifiedIdeographs}";
-    private static readonly Regex RErrZh = Re($@"(?<!{ZhW})(?:错误|失败|异常|崩溃|拒绝|超时|未找到|无权限|权限不足|连接拒绝|致命)(?!{ZhW})");
+    private static readonly Regex RErrZh = Re($@"(?<!{ZhW})(?:错误|异常|崩溃|拒绝|超时|未找到|无权限|权限不足|连接拒绝|致命)(?!{ZhW})");
     private static readonly Regex RWarnEn = Re(@"\b(?:warn(?:ing|ings)?|deprecated|caution|notice|restart required|system restart required)\b", RegexOptions.IgnoreCase);
     private static readonly Regex RWarnZh = Re($@"(?<!{ZhW})(?:警告|注意|弃用|即将过期)(?!{ZhW})");
     private static readonly Regex ROkEn = Re(@"\b(?:ok|okay|success(?:ful(?:ly)?)?|done|ready|passed|complete(?:d)?|enabled|active|running|listening|connected|online|healthy|available)\b", RegexOptions.IgnoreCase);
-    private static readonly Regex ROkZh = Re($@"(?<!{ZhW})(?:成功|完成|就绪|已连接|正常|在线|健康)(?!{ZhW})");
+    private static readonly Regex ROkZh = Re($@"(?<!{ZhW})(?:完成|就绪|已连接|正常|在线|健康)(?!{ZhW})");
     private static readonly Regex RPct9 = Re(@"\b(9\d(?:\.\d+)?%)");
     private static readonly Regex RPct8 = Re(@"\b(8\d(?:\.\d+)?%)");
     private static readonly Regex RPct17 = Re(@"\b([1-7]?\d(?:\.\d+)?%)");
@@ -256,27 +256,71 @@ public static class SemanticHighlight
     // ── 对外入口 ────────────────────────────────────────────────────────
     /// <summary>对一段（可能含已有 ANSI 转义的）终端文本注入语义高亮 SGR。
     /// 已有转义序列原样保留，不重复上色。</summary>
-    public static string Decorate(string chunk, bool dark)
+    public static string Decorate(string chunk, bool dark, ref bool activeColor)
     {
         if (string.IsNullOrEmpty(chunk)) return chunk;
         // 「普通文字颜色」：给整块先铺一层前景色，高亮 token 之后各自覆盖回自己的颜色。
         var plain = HighlightColors.PlainHex;
-        return string.IsNullOrEmpty(plain) ? DecorateBody(chunk, dark) : Tc(plain!) + DecorateBody(chunk, dark);
+        return string.IsNullOrEmpty(plain) ? DecorateBody(chunk, dark, ref activeColor) : Tc(plain!) + DecorateBody(chunk, dark, ref activeColor);
     }
 
-    private static string DecorateBody(string chunk, bool dark)
+    
+    private static string DecorateBody(string chunk, bool dark, ref bool activeColor)
     {
         var ms = AnsiRe.Matches(chunk);
-        if (ms.Count == 0) return DecoratePlainChunk(chunk, dark);
+        if (ms.Count == 0)
+        {
+            if (activeColor) return chunk;
+            return DecoratePlainChunk(chunk, dark);
+        }
         var sb = new StringBuilder(chunk.Length + 64);
         int idx = 0;
         foreach (Match m in ms)
         {
-            if (m.Index > idx) sb.Append(DecoratePlainChunk(chunk.Substring(idx, m.Index - idx), dark));
-            sb.Append(m.Value);   // 转义序列原样保留
+            if (m.Index > idx)
+            {
+                var plain = chunk.Substring(idx, m.Index - idx);
+                if (activeColor)
+                {
+                    sb.Append(plain);
+                }
+                else
+                {
+                    sb.Append(DecoratePlainChunk(plain, dark));
+                }
+            }
+            
+            var ansi = m.Value;
+            if (ansi == "[0m" || ansi == "[39m" || ansi == "[49m")
+            {
+                activeColor = false;
+            }
+            else if (ansi.Contains("m"))
+            {
+                activeColor = true;
+            }
+            if (ansi == "[2K" || ansi == "[K")
+            {
+                ansi = "[0m" + ansi;
+                activeColor = false;
+            }
+            
+            sb.Append(ansi);
             idx = m.Index + m.Length;
         }
-        if (idx < chunk.Length) sb.Append(DecoratePlainChunk(chunk.Substring(idx), dark));
+        if (idx < chunk.Length)
+        {
+            var plain = chunk.Substring(idx, chunk.Length - idx);
+            if (activeColor)
+            {
+                sb.Append(plain);
+            }
+            else
+            {
+                sb.Append(DecoratePlainChunk(plain, dark));
+            }
+        }
         return sb.ToString();
     }
+
 }

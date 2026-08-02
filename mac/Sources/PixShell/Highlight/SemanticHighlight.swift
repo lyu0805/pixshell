@@ -14,7 +14,7 @@ import Foundation
 //  3. 明暗两套 24 位真彩调色板（HL_LIGHT / HL_DARK），十六进制值照搬老仓库最新实现。
 //     err/warn/ok 加粗；url 额外带下划线。
 //
-// 纯逻辑、无 UI 依赖、无第三方依赖。对外入口：SemanticHighlight.decorate(_:dark:)
+// 纯逻辑、无 UI 依赖、无第三方依赖。对外入口：SemanticHighlight.decorate(_:dark:activeColor:)
 // ============================================================================
 
 enum SemanticHighlight {
@@ -157,11 +157,11 @@ enum SemanticHighlight {
     private static let rRustTestSum  = re(#"test result:\s+\w+\."#)
 
     private static let rErrEN    = re(#"\b(?:error|errors|fail(?:ed|ure|ures)?|fatal|critical|exception|denied|refused|panic|traceback|segfault|oom|killed|unable|cannot|can't|not found|no such|permission denied|connection refused|timed?\s*out|timeout|unauthorized|forbidden|invalid|corrupt(?:ed)?|broken|crash(?:ed)?)\b"#, [.caseInsensitive])
-    private static let rErrZH    = re(#"(?:错误|失败|异常|崩溃|拒绝|超时|未找到|无权限|权限不足|连接拒绝|致命)"#)
+    private static let rErrZH    = re(#"(?:错误|异常|崩溃|拒绝|超时|未找到|无权限|权限不足|连接拒绝|致命)"#)
     private static let rWarnEN   = re(#"\b(?:warn(?:ing|ings)?|deprecated|caution|notice|restart required|system restart required)\b"#, [.caseInsensitive])
     private static let rWarnZH   = re(#"(?:警告|注意|弃用|即将过期)"#)
     private static let rOkEN     = re(#"\b(?:ok|okay|success(?:ful(?:ly)?)?|done|ready|passed|complete(?:d)?|enabled|active|running|listening|connected|online|healthy|available)\b"#, [.caseInsensitive])
-    private static let rOkZH     = re(#"(?:成功|完成|就绪|已连接|正常|在线|健康)"#)
+    private static let rOkZH     = re(#"(?:完成|就绪|已连接|正常|在线|健康)"#)
     private static let rPct9     = re(#"\b(9\d(?:\.\d+)?%)\b"#)
     private static let rPct8     = re(#"\b(8\d(?:\.\d+)?%)\b"#)
     private static let rPct17    = re(#"\b([1-7]?\d(?:\.\d+)?%)\b"#)
@@ -378,24 +378,27 @@ enum SemanticHighlight {
     /// - Parameters:
     ///   - chunk: 原始终端输出片段。
     ///   - dark: true 用深色调色板，false 用浅色调色板。
+    ///   - activeColor: 传递当前 ANSI 状态（是否已有程序自带的高亮）。
     /// - Returns: 注入了语义高亮的文本；已有转义序列原样保留，不重复上色。
-    static func decorate(_ chunk: String, dark: Bool) -> String {
-        if chunk.isEmpty { return chunk }
+    static func decorate(_ chunk: String, dark: Bool, activeColor: inout Bool) -> String {
+        guard !chunk.isEmpty else { return chunk }
         // 「普通文字颜色」：给整块先铺一层前景色，高亮 token 之后会各自覆盖回自己的颜色。
         // 只在用户显式设置过时才加，默认一个字节都不多写。
         if let plain = HighlightColors.plainHex {
-            return tc(plain) + decorateBody(chunk, dark: dark)
+            return tc(plain) + decorateBody(chunk, dark: dark, activeColor: &activeColor)
         }
-        return decorateBody(chunk, dark: dark)
+        return decorateBody(chunk, dark: dark, activeColor: &activeColor)
     }
 
-    private static func decorateBody(_ chunk: String, dark: Bool) -> String {
+    private static func decorateBody(_ chunk: String, dark: Bool, activeColor: inout Bool) -> String {
         let ns = chunk as NSString
         let matches = ansiRe.matches(in: chunk, range: NSRange(location: 0, length: ns.length))
-        if matches.isEmpty { return decoratePlainChunk(chunk, dark: dark) }
+        if matches.isEmpty {
+            if activeColor { return chunk }
+            return decoratePlainChunk(chunk, dark: dark)
+        }
         var out = ""
         var idx = 0
-        var activeColor = false
         for m in matches {
             let r = m.range
             if r.location > idx {

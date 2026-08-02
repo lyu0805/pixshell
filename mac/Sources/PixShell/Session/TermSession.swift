@@ -11,6 +11,7 @@ final class TermSession {
     var webSSHView: WebSSHView?
     var ssh: SSHSession?
     var title: String
+    var semanticActiveColor: Bool = false
 
     /// 工作区应显示的内容：Web SSH 用 WKWebView，其它用 SwiftTerm。
     var contentView: NSView { webSSHView ?? termView }

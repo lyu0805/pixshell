@@ -798,7 +798,7 @@ extension AppDelegate {
         if highlightEnabled, let str = String(bytes: completeBytes, encoding: .utf8) {
             sess.appendOutput(str)          // 会话输出缓冲（上限 500KB，保留尾部）
             let __t0 = CFAbsoluteTimeGetCurrent()
-            let decorated = SemanticHighlight.decorate(str, dark: darkTheme)
+            let decorated = SemanticHighlight.decorate(str, dark: darkTheme, activeColor: &sess.semanticActiveColor)
             AppDelegate.perfNote(kind: "decorate", ms: (CFAbsoluteTimeGetCurrent() - __t0) * 1000, bytes: completeBytes.count)
             sess.termView.feed(byteArray: ArraySlice(Array(decorated.utf8)))
         } else {
