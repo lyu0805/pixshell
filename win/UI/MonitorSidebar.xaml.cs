@@ -65,9 +65,7 @@ public partial class MonitorSidebar : UserControl
         MemBar.Kind = MetricBar.BarKind.Mem; MemBar.SetLabel("内存");
         SwapBar.Kind = MetricBar.BarKind.Swap; SwapBar.SetLabel("交换");
         NetChart.Clear();
-        PingSpark.SetColor((Color)Application.Current.Resources["ColorAccent"]);
-        PingSpark.BarMode = true;
-        PingSpark.Clear();
+        PingChart.Clear();
     }
 
     private void CopyIp_Click(object sender, RoutedEventArgs e) => OnCopyIp?.Invoke();
@@ -110,7 +108,7 @@ public partial class MonitorSidebar : UserControl
             _lastNetTitle = _lastPingTitle = "\0";
             _cpuIdlePrev = _cpuTotalPrev = -1;
             NetChart.Clear();
-            PingSpark.Clear();
+            PingChart.Clear();
         }
     }
 
@@ -226,12 +224,11 @@ public partial class MonitorSidebar : UserControl
         if (_lastPingTitle != "延迟 -") { PingTitle.Text = "延迟 -"; _lastPingTitle = "延迟 -"; }
     }
 
-    /// <summary>本地→SSH 延迟(ms)推送：更新柱状图 + 标题。</summary>
     public void PushPing(double ms)
     {
         Dispatcher.InvokeAsync(() =>
         {
-            PingSpark.Push(ms);
+            PingChart.Push(ms);
             PingTitle.Text = $"延迟 {ms:F1} ms";
         });
     }

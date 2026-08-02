@@ -111,7 +111,7 @@
             <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="8,6,8,6">
                 <StackPanel>
                     <TextBlock x:Name="PingTitle" Text="延迟" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="0,0,0,2"/>
-                    <local:Sparkline x:Name="PingSpark" Height="14"/>
+                    <local:LatencyChart x:Name="PingChart" Height="50"/>
                 </StackPanel>
             </Border>
 

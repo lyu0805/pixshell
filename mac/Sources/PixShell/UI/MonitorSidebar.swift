@@ -16,13 +16,12 @@ final class MonitorSidebar: NSView {
     private let netTitle = MonitorSidebar.val()
     private let pingTitle = MonitorSidebar.val()
     private let netChart = NetworkChart()
-    private let pingSpark = Sparkline(color: Theme.accent)
+    private let pingChart = LatencyChart()
     private let stack = NSStackView()
     private var copyBtn: NSButton?
 
     init() {
         super.init(frame: .zero)
-        pingSpark.barMode = true
         build()
     }
 
@@ -53,7 +52,6 @@ final class MonitorSidebar: NSView {
 
     private func build() {
         wantsLayer = true
-        pingSpark.barMode = true
 
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -138,10 +136,11 @@ final class MonitorSidebar: NSView {
 
         // 延迟
         secTitle("延迟")
-        pingTitle.font = Theme.ui(10); pingTitle.textColor = Theme.muted; pingTitle.stringValue = "延迟"
-        addRow(pad(vstack([pingTitle, pingSpark], gap: 2), 6, 8, 6, 8), border: true)
-        pingSpark.widthAnchor.constraint(equalToConstant: 184).isActive = true
-        pingSpark.heightAnchor.constraint(equalToConstant: 16).isActive = true
+        pingTitle.font = Theme.ui(10); pingTitle.textColor = Theme.text; pingTitle.alignment = .right
+        let pingHeaderRow = hstack([small("本机网络延迟"), spacer(), pingTitle], gap: 4)
+        addRow(pad(vstack([pingHeaderRow, pingChart], gap: 4), 6, 8, 6, 8), border: true)
+        pingChart.widthAnchor.constraint(equalToConstant: 184).isActive = true
+        pingChart.heightAnchor.constraint(equalToConstant: 50).isActive = true
 
         // 磁盘
         secTitle("磁盘")
@@ -361,16 +360,16 @@ final class MonitorSidebar: NSView {
 
         // 延迟：本机→SSH 服务器（由本地 ping 填入）
         if let ms = m["pingms"], let d = Double(ms) {
-            pingTitle.stringValue = String(format: "延迟 %.1f ms", d)
-            pingSpark.push(d)
+            pingTitle.stringValue = String(format: "%.1f ms", d)
+            pingChart.push(val: d)
         } else if _lastPingMs > 0 {
-            pingTitle.stringValue = String(format: "延迟 %.1f ms", _lastPingMs)
+            pingTitle.stringValue = String(format: "%.1f ms", _lastPingMs)
         } else {
-            pingTitle.stringValue = "延迟 -"
+            pingTitle.stringValue = "-"
         }
     }
     private var _lastPingMs: Double = 0
-    func pushPingMs(_ ms: Double) { _lastPingMs = ms; pingSpark.push(ms); pingTitle.stringValue = String(format: "延迟 %.1f ms", ms) }
+    func pushPingMs(_ ms: Double) { _lastPingMs = ms; pingChart.push(val: ms); pingTitle.stringValue = String(format: "%.1f ms", ms) }
     private func formatRate(_ bytesPerSec: Double) -> String {
         if bytesPerSec < 0 || bytesPerSec.isNaN || bytesPerSec.isInfinite { return "0 B/s" }
         let units = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
@@ -566,6 +565,85 @@ final class NetworkChart: NSView {
             if rxH > 0 {
                 rxColor.setFill()
                 NSBezierPath(rect: NSRect(x: x, y: 0, width: barW, height: max(1, rxH))).fill()
+            }
+        }
+    }
+}
+
+/// 单柱状图，带左侧Y轴刻度。用于延迟监控。
+final class LatencyChart: NSView {
+    private var values: [Double] = []
+    private let maxCount = 60
+    private let color = Theme.accent.withAlphaComponent(0.8)
+    
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    
+    func push(val: Double) {
+        values.append(val)
+        if values.count > maxCount { values.removeFirst() }
+        needsDisplay = true
+    }
+    
+    private func formatLabel(_ v: Double) -> String {
+        return String(format: "%.0f", v)
+    }
+    
+    override func draw(_ dirty: NSRect) {
+        guard !values.isEmpty else { return }
+        let w = bounds.width
+        let h = bounds.height
+        
+        var mx: Double = 10 // min 10ms
+        for v in values { mx = max(mx, v) }
+        mx = mx * 1.1 
+        
+        let steps = 3
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .right
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: Theme.mono(9),
+            .foregroundColor: Theme.muted,
+            .paragraphStyle: paragraphStyle
+        ]
+        
+        let labelWidth: CGFloat = 20
+        let chartX = labelWidth + 4
+        let chartW = w - chartX
+        
+        for i in 1...steps {
+            let val = mx * Double(i) / Double(steps)
+            let y = h * CGFloat(i) / CGFloat(steps)
+            
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: chartX, y: y))
+            path.line(to: NSPoint(x: w, y: y))
+            let dashes: [CGFloat] = [2, 2]
+            path.setLineDash(dashes, count: 2, phase: 0)
+            Theme.border.setStroke()
+            path.stroke()
+            
+            let text = formatLabel(val)
+            let str = NSAttributedString(string: text, attributes: attrs)
+            let strSize = str.size()
+            str.draw(in: NSRect(x: 0, y: y - strSize.height/2, width: labelWidth, height: strSize.height))
+        }
+        
+        let unit = chartW / CGFloat(maxCount)
+        let barW = max(unit * 0.85, 1)
+        let gap = unit * 0.15
+        let maxH = h * 0.95
+        
+        color.setFill()
+        for i in 0..<values.count {
+            let x = chartX + CGFloat(i) * (barW + gap)
+            let barH = maxH * CGFloat(values[i] / mx)
+            if barH > 0 {
+                NSBezierPath(rect: NSRect(x: x, y: 0, width: barW, height: max(1, barH))).fill()
             }
         }
     }
