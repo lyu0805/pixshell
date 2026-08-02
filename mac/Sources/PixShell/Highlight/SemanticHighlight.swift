@@ -313,9 +313,9 @@ enum SemanticHighlight {
         // 25) 纯中文长句落回默认文字颜色，避免被后续误染（中文不易触发特定 token，安全打底）
         // \p{Han} 匹配任意汉字；如果连续汉字>=2个且未被高亮，则重置颜色。
         s = applyRegex(s, re(#"[\p{Han}]{2,}"#)) { m, ns in
-            // 对于没有任何 ANSI 占位符包围的纯汉字块，给它加上重置（\x1b[0m），
+            // 对于没有任何 ANSI 占位符包围的纯汉字块，给它加上重置（\u{1b}[0m），
             // 防止前景色泄露到这。改为标准高对比度前景色。
-            return tc(dark ? "#f2f2f7" : "#0b0b0d") + m + "\x1b[0m"
+            return tc(dark ? "#f2f2f7" : "#0b0b0d") + m + "\u{1b}[0m"
         }
         // 17) HTTP 状态码（5xx=err / 4xx=warn / 2xx=ok / 其余=num）
         s = replaceSafe(s, rHTTP) { m, g in
