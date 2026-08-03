@@ -122,6 +122,32 @@
                 </Setter>
             </Style>
 
+            <!-- 工具条文字按钮（弹层内的重试/取消等小按钮）：圆角边框 + hover 高亮，不占大体积 -->
+            <Style x:Key="ToolBarButton" TargetType="{x:Type Button}" BasedOn="{StaticResource {x:Type Button}}">
+                <Setter Property="Padding" Value="12,3"/>
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="{x:Type Button}">
+                            <Border x:Name="b" Background="{DynamicResource BrushControl}"
+                                    BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1"
+                                    CornerRadius="6" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="b" Property="Background" Value="{DynamicResource BrushControlHover}"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="b" Property="Background" Value="{DynamicResource BrushAccentSoft}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
             <!-- 文本框 / 密码框 -->
             <Style TargetType="{x:Type TextBox}">
                 <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
