@@ -36,7 +36,7 @@ final class HostFormView: NSView {
     private var grid: NSGridView!
 
     init(host: Host?, password: String?) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 400, height: 342))
+        super.init(frame: NSRect(x: 0, y: 0, width: 400, height: 390))
         // 连接类型：SSH / RDP / Web。
         // Web = 应用内 WKWebView：可填外部 https（noVNC/面板），或留空 URL 走本地桥 WebSSH。
         typePopup.addItems(withTitles: ["SSH", "RDP（远程桌面）", "Web（应用内页面/终端）"])
@@ -96,11 +96,11 @@ final class HostFormView: NSView {
             (hostLab, hostField),
             (urlLab, webUrlField),
             (NSTextField(labelWithString: "端口"), portField),
+            (NSTextField(labelWithString: "代理"), proxyPopup),
             (NSTextField(labelWithString: "用户名"), userField),
             (NSTextField(labelWithString: "密码"), passField),
             (NSTextField(labelWithString: "分组"), groupField),
             (NSTextField(labelWithString: "私钥"), keyRow),
-            (NSTextField(labelWithString: "代理"), proxyPopup),
         ]
         let grid = NSGridView(numberOfColumns: 2, rows: 0)
         self.grid = grid
@@ -158,7 +158,8 @@ final class HostFormView: NSView {
             hostField.placeholderString = ""
         }
         // 缩表单高度：Web 多一行
-        let h: CGFloat = isWeb ? 342 : 306
+        // 代理选择必须始终可见；旧高度会在部分系统字号/缩放下裁掉表单末行。
+        let h: CGFloat = isWeb ? 390 : 350
         if abs(frame.height - h) > 1 {
             setFrameSize(NSSize(width: frame.width, height: h))
             if animated, let alert = enclosingAlert() {

@@ -62,21 +62,25 @@
                        Foreground="{DynamicResource BrushMuted}"/>
             <TextBox   Grid.Row="4" Grid.Column="1" Name="PortBox" Text="22" Margin="8,4,0,4"/>
 
-            <TextBlock Grid.Row="5" Grid.Column="0" Text="用户名" VerticalAlignment="Center" Margin="0,4"
+            <TextBlock Grid.Row="5" Grid.Column="0" Text="代理" VerticalAlignment="Center" Margin="0,4"
                        Foreground="{DynamicResource BrushMuted}"/>
-            <TextBox   Grid.Row="5" Grid.Column="1" Name="UserBox" Margin="8,4,0,4"/>
+            <ComboBox  Grid.Row="5" Grid.Column="1" Name="ProxyBox" Margin="8,4,0,4"/>
 
-            <TextBlock Grid.Row="6" Grid.Column="0" Text="密码" VerticalAlignment="Center" Margin="0,4"
+            <TextBlock Grid.Row="6" Grid.Column="0" Text="用户名" VerticalAlignment="Center" Margin="0,4"
                        Foreground="{DynamicResource BrushMuted}"/>
-            <PasswordBox Grid.Row="6" Grid.Column="1" Name="PassBox" Margin="8,4,0,4"/>
+            <TextBox   Grid.Row="6" Grid.Column="1" Name="UserBox" Margin="8,4,0,4"/>
 
-            <TextBlock Grid.Row="7" Grid.Column="0" Text="分组" VerticalAlignment="Center" Margin="0,4"
+            <TextBlock Grid.Row="7" Grid.Column="0" Text="密码" VerticalAlignment="Center" Margin="0,4"
                        Foreground="{DynamicResource BrushMuted}"/>
-            <TextBox   Grid.Row="7" Grid.Column="1" Name="GroupBox" Text="默认" Margin="8,4,0,4"/>
+            <PasswordBox Grid.Row="7" Grid.Column="1" Name="PassBox" Margin="8,4,0,4"/>
 
-            <TextBlock Grid.Row="8" Grid.Column="0" Text="系统" VerticalAlignment="Center" Margin="0,4"
+            <TextBlock Grid.Row="8" Grid.Column="0" Text="分组" VerticalAlignment="Center" Margin="0,4"
                        Foreground="{DynamicResource BrushMuted}"/>
-            <ComboBox  Grid.Row="8" Grid.Column="1" Name="OsBox" Margin="8,4,0,4" IsEditable="False">
+            <TextBox   Grid.Row="8" Grid.Column="1" Name="GroupBox" Text="默认" Margin="8,4,0,4"/>
+
+            <TextBlock Grid.Row="9" Grid.Column="0" Text="系统" VerticalAlignment="Center" Margin="0,4"
+                       Foreground="{DynamicResource BrushMuted}"/>
+            <ComboBox  Grid.Row="9" Grid.Column="1" Name="OsBox" Margin="8,4,0,4" IsEditable="False">
                 <ComboBoxItem Content=""/>
                 <ComboBoxItem Content="linux"/>
                 <ComboBoxItem Content="ubuntu"/>
@@ -89,9 +93,9 @@
                 <ComboBoxItem Content="web"/>
             </ComboBox>
 
-            <TextBlock Grid.Row="9" Grid.Column="0" Text="私钥" VerticalAlignment="Center" Margin="0,4"
+            <TextBlock Grid.Row="10" Grid.Column="0" Text="私钥" VerticalAlignment="Center" Margin="0,4"
                        Foreground="{DynamicResource BrushMuted}"/>
-            <Grid Grid.Row="9" Grid.Column="1" Margin="8,4,0,4">
+            <Grid Grid.Row="10" Grid.Column="1" Margin="8,4,0,4">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" MinWidth="80"/>
                     <ColumnDefinition Width="Auto"/>
@@ -101,9 +105,6 @@
                 <Button  Grid.Column="1" Content="选择…" MinWidth="56" Padding="8,3" Click="OnChooseKeyFile" Style="{StaticResource PillButton}"/>
             </Grid>
 
-            <TextBlock Grid.Row="10" Grid.Column="0" Text="代理" VerticalAlignment="Center" Margin="0,4"
-                       Foreground="{DynamicResource BrushMuted}"/>
-            <ComboBox  Grid.Row="10" Grid.Column="1" Name="ProxyBox" Margin="8,4,0,4"/>
         </Grid>
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
