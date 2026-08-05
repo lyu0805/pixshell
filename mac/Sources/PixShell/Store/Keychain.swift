@@ -1,18 +1,22 @@
 import Foundation
 import CryptoKit
+import Security
 
-/// 本地加密凭据存储（替代系统 Keychain，避免 ad-hoc/本地签 CDHash 变导致钥匙串弹窗）。
-/// 存 `~/Library/Application Support/PixShell/credentials.dat`，权限 0600。
+/// 本地加密凭据存储。密文存 `~/Library/Application Support/PixShell/credentials.dat`（0600），
+/// 文件主密钥由系统 Keychain 保护。
 ///
-/// 格式：JSON `{ hostId: "v2.<base64(nonce||ciphertext+tag)>" }`
-/// - v2 = AES-GCM（CryptoKit），密钥 = SHA256(固定盐 + 用户名 + home)
-/// - 旧 XOR 值无 `v2.` 前缀 → 读时自动迁移并回写
+/// 格式：JSON `{ hostId: "v3.<base64(nonce||ciphertext+tag)>" }`
+/// - v3 = AES-GCM（CryptoKit），密钥为系统 Keychain 中的随机 256-bit 密钥
+/// - v2 = 旧的可推导密钥格式，仅用于一次迁移
+/// - 旧 XOR 值无前缀 → 读时自动迁移并回写
 ///
-/// 强度对齐 Win DPAPI 意图（本机用户域内不可解明文），不依赖系统钥匙串。
 enum Keychain {
     private static let fileName = "credentials.dat"
+    private static let v3Prefix = "v3."
     private static let v2Prefix = "v2."
-    /// 应用固定盐（不是密钥本身；与用户身份一起进 SHA256）
+    private static let keychainService = "com.pixshell.credentials"
+    private static let keychainAccount = "file-encryption-key-v1"
+    /// 仅用于解密旧 v2 数据，不能作为新数据的密钥。
     private static let appSalt = "PixShell.v2.creds.aes-gcm"
 
     private static var storageURL: URL {
@@ -24,9 +28,7 @@ enum Keychain {
 
     // MARK: - Key material
 
-    /// 派生 256-bit SymmetricKey：固定盐 + 当前用户 + home。
-    /// 换用户/换 home 解不开旧密文（符合「本机用户」边界）；同用户重装 app 可解。
-    private static func symmetricKey() -> SymmetricKey {
+    private static func legacyV2Key() -> SymmetricKey {
         let user = NSUserName()
         let home = NSHomeDirectory()
         let material = "\(appSalt)|\(user)|\(home)"
@@ -34,31 +36,83 @@ enum Keychain {
         return SymmetricKey(data: Data(digest))
     }
 
+    private static func fileKey() -> SymmetricKey? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: keychainAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecSuccess, let data = result as? Data, data.count == 32 {
+            return SymmetricKey(data: data)
+        }
+
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            Log.error("无法生成凭据加密密钥，拒绝写入凭据文件", "keychain")
+            return nil
+        }
+        let data = Data(bytes)
+        let add: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: keychainAccount,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let addStatus = SecItemAdd(add as CFDictionary, nil)
+        if addStatus == errSecSuccess { return SymmetricKey(data: data) }
+        if addStatus == errSecDuplicateItem {
+            var existing: CFTypeRef?
+            if SecItemCopyMatching(query as CFDictionary, &existing) == errSecSuccess,
+               let existingData = existing as? Data, existingData.count == 32 {
+                return SymmetricKey(data: existingData)
+            }
+        }
+        Log.error("无法访问系统凭据密钥，拒绝写入凭据文件", "keychain")
+        return nil
+    }
+
     // MARK: - AES-GCM encode / decode
 
-    private static func encodeV2(_ plain: String) -> String {
-        let key = symmetricKey()
+    private static func encodeV3(_ plain: String) -> String? {
+        guard let key = fileKey() else { return nil }
         let data = Data(plain.utf8)
         do {
             let sealed = try AES.GCM.seal(data, using: key)
             // combined = nonce(12) + ciphertext + tag(16)
             guard let combined = sealed.combined else {
-                return encodeLegacyXOR(plain) // 极端回落，不应触发
+                return nil
             }
-            return v2Prefix + combined.base64EncodedString()
+            return v3Prefix + combined.base64EncodedString()
         } catch {
-            Log.warn("凭据 AES 加密失败，回落 XOR 掩码: \(error.localizedDescription)", "keychain")
-            return encodeLegacyXOR(plain)
+            Log.warn("凭据 AES 加密失败，拒绝写入: \(error.localizedDescription)", "keychain")
+            return nil
         }
     }
 
     private static func decodeAny(_ stored: String) -> String {
+        if stored.hasPrefix(v3Prefix) {
+            let b64 = String(stored.dropFirst(v3Prefix.count))
+            guard let combined = Data(base64Encoded: b64), let key = fileKey() else { return "" }
+            do {
+                let box = try AES.GCM.SealedBox(combined: combined)
+                let plain = try AES.GCM.open(box, using: key)
+                return String(data: plain, encoding: .utf8) ?? ""
+            } catch {
+                Log.warn("凭据 AES 解密失败（将视为无密码）: \(error.localizedDescription)", "keychain")
+                return ""
+            }
+        }
         if stored.hasPrefix(v2Prefix) {
             let b64 = String(stored.dropFirst(v2Prefix.count))
             guard let combined = Data(base64Encoded: b64) else { return "" }
             do {
                 let box = try AES.GCM.SealedBox(combined: combined)
-                let plain = try AES.GCM.open(box, using: symmetricKey())
+                let plain = try AES.GCM.open(box, using: legacyV2Key())
                 return String(data: plain, encoding: .utf8) ?? ""
             } catch {
                 // 可能是用户/home 变了，或文件损坏
@@ -76,16 +130,6 @@ enum Keychain {
         0x50, 0x69, 0x78, 0x53, 0x68, 0x65, 0x6c, 0x6c,
         0x5f, 0x53, 0x65, 0x63, 0x72, 0x65, 0x74
     ]
-
-    private static func encodeLegacyXOR(_ str: String) -> String {
-        let bytes = Array(str.utf8)
-        var xored = [UInt8]()
-        xored.reserveCapacity(bytes.count)
-        for i in 0..<bytes.count {
-            xored.append(bytes[i] ^ legacyKey[i % legacyKey.count])
-        }
-        return Data(xored).base64EncodedString()
-    }
 
     private static func decodeLegacyXOR(_ str: String) -> String {
         guard let data = Data(base64Encoded: str) else { return "" }
@@ -112,26 +156,37 @@ enum Keychain {
         let raw = loadRawMap()
         var plain: [String: String] = [:]
         var needsMigrate = false
+        var migrationIsComplete = true
         for (k, v) in raw {
             let pw = decodeAny(v)
             if !pw.isEmpty {
                 plain[k] = pw
+            } else if !v.isEmpty {
+                migrationIsComplete = false
             }
-            if !v.hasPrefix(v2Prefix) {
+            if !v.hasPrefix(v3Prefix) {
                 needsMigrate = true
             }
         }
-        if needsMigrate, !plain.isEmpty {
-            // 静默升级到 v2，避免旧 XOR 文件长期滞留
+        if needsMigrate, migrationIsComplete, !plain.isEmpty {
+            // 静默升级到 v3，避免可离线推导的旧格式长期滞留。
             saveMap(plain)
         }
         return plain
     }
 
-    private static func saveMap(_ map: [String: String]) {
-        let encMap = map.mapValues { encodeV2($0) }
+    @discardableResult
+    private static func saveMap(_ map: [String: String]) -> Bool {
+        var encMap: [String: String] = [:]
+        for (key, value) in map {
+            guard let encoded = encodeV3(value) else {
+                Log.error("凭据密钥不可用，跳过写盘", "keychain")
+                return false
+            }
+            encMap[key] = encoded
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: encMap, options: [.prettyPrinted]) else {
-            return
+            return false
         }
         let url = storageURL
         do {
@@ -141,8 +196,10 @@ enum Keychain {
                 [.posixPermissions: 0o600],
                 ofItemAtPath: url.path
             )
+            return true
         } catch {
             Log.warn("凭据写盘失败: \(error.localizedDescription)", "keychain")
+            return false
         }
     }
 
@@ -150,16 +207,23 @@ enum Keychain {
 
     private static let lock = NSLock()
 
-    static func setPassword(_ password: String, for id: String, label hostHint: String? = nil) {
+    @discardableResult
+    static func setPassword(_ password: String, for id: String, label hostHint: String? = nil) -> Bool {
         lock.lock(); defer { lock.unlock() }
+        let raw = loadRawMap()
         var map = loadMap()
+        guard map.count == raw.count else {
+            Log.error("凭据文件包含无法解密的条目，拒绝覆盖", "keychain")
+            return false
+        }
         if password.isEmpty {
             map.removeValue(forKey: id)
         } else {
             map[id] = password
         }
-        saveMap(map)
-        _ = hostHint // 保留签名兼容；v2 不再需要 label
+        let saved = saveMap(map)
+        _ = hostHint // 保留签名兼容；v3 不再需要 label
+        return saved
     }
 
     static func password(for id: String) -> String? {
@@ -177,7 +241,12 @@ enum Keychain {
 
     static func delete(_ id: String) {
         lock.lock(); defer { lock.unlock() }
+        let raw = loadRawMap()
         var map = loadMap()
+        guard map.count == raw.count else {
+            Log.error("凭据文件包含无法解密的条目，拒绝覆盖", "keychain")
+            return
+        }
         map.removeValue(forKey: id)
         saveMap(map)
     }

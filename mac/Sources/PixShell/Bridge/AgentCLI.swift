@@ -85,18 +85,23 @@ enum AgentCLI {
         // 避免行首顶格导致 "insufficient indentation" 编译错。
         // 桥不通时自动拉起自己（App 路径在生成时注入，用户挪动 App 后下次启动会重写）。
         // 只有 bundle（.app）路径才有意义：debug 裸二进制注入的是目录，open 会失败，让它走名字兜底。
-        let rawPath = Bundle.main.bundlePath.replacingOccurrences(of: "\\", with: "\\\\")
-        let appPath = rawPath.hasSuffix(".app") ? rawPath : ""
+        let rawPath = Bundle.main.bundlePath
+        let appPath = rawPath.hasSuffix(".app")
+            ? rawPath.replacingOccurrences(of: "'", with: "'\"'\"'")
+            : ""
         let lines = [
             "#!/bin/bash",
             "# PixShell agent CLI —— 由 App 自动生成，勿手改（下次启动会被覆盖）。",
             "# 走本地桥操作**当前已连接**的 SSH 会话；token 从文件读，不出现在命令行/提示词里。",
             "# 桥没在听时会自动后台拉起 App（无头模式，无头调用不需要先手动打开软件）。",
             "set -euo pipefail",
+            "umask 077",
             "PORT=\"\(port)\"",
+            "export PIXSHELL_BRIDGE_PORT=\"$PORT\"",
             "APP_PATH='\(appPath)'",
             "TOKEN_FILE=\"$HOME/Library/Application Support/PixShell/agent_token\"",
             "LOG=\"$HOME/Library/Application Support/PixShell/logs/agent-cli.log\"",
+            "[ ! -e \"$LOG\" ] || chmod 600 \"$LOG\" 2>/dev/null || true",
             "log() { printf '%s [cli] %s\\n' \"$(date '+%Y-%m-%dT%H:%M:%S')\" \"$*\" >>\"$LOG\" 2>/dev/null || true; }",
             "# 日志滚动：超过 2MB 就砍掉前一半，别让它无限长",
             "if [ -f \"$LOG\" ] && [ \"$(wc -c <\"$LOG\" 2>/dev/null || echo 0)\" -gt 2097152 ]; then tail -c 1048576 \"$LOG\" >\"$LOG.tmp\" && mv \"$LOG.tmp\" \"$LOG\"; fi",
@@ -133,8 +138,8 @@ enum AgentCLI {
             "code=$(curl -s -o /dev/null -m 1 -w '%{http_code}' \"http://127.0.0.1:$PORT/v1/health\" 2>/dev/null || true)",
             "if [ \"$code\" = \"000\" ]; then launch_app; wait_bridge 20 || { echo \"PixShell 桥未就绪（已自动拉起，等待超时）\" >&2; log \"等待桥就绪超时\"; exit 1; }; fi",
             "SESSION=\"${PIXSHELL_SESSION:-0}\"",
-            "post() { r=$(curl -sS -m 60 -w '\\n%{http_code}' -X POST -H \"Authorization: Bearer $TOKEN\" -H 'Content-Type: application/json' -d \"$2\" \"$BASE/$1\"); c=${r##*$'\\n'}; b=${r%$'\\n'*}; [ \"$c\" = 200 ] || log \"POST $1 HTTP=$c body=${b:0:200}\"; printf '%s' \"$b\"; }",
-            "get() { r=$(curl -sS -m 60 -w '\\n%{http_code}' -H \"Authorization: Bearer $TOKEN\" \"$BASE/$1\"); c=${r##*$'\\n'}; b=${r%$'\\n'*}; [ \"$c\" = 200 ] || log \"GET $1 HTTP=$c body=${b:0:200}\"; printf '%s' \"$b\"; }",
+            "post() { r=$(curl -sS -m 60 -w '\\n%{http_code}' -X POST -H \"Authorization: Bearer $TOKEN\" -H 'Content-Type: application/json' -d \"$2\" \"$BASE/$1\"); c=${r##*$'\\n'}; b=${r%$'\\n'*}; [ \"$c\" = 200 ] || log \"POST $1 HTTP=$c bytes=${#b}\"; printf '%s' \"$b\"; [ \"$c\" = 200 ]; }",
+            "get() { r=$(curl -sS -m 60 -w '\\n%{http_code}' -H \"Authorization: Bearer $TOKEN\" \"$BASE/$1\"); c=${r##*$'\\n'}; b=${r%$'\\n'*}; [ \"$c\" = 200 ] || log \"GET $1 HTTP=$c bytes=${#b}\"; printf '%s' \"$b\"; [ \"$c\" = 200 ]; }",
             "# 从返回 JSON 里挑第一个存在的字段打印；挑不到就原样打印整个 JSON",
             "field() { python3 -c 'import json,sys; d=json.load(sys.stdin); ks=[k for k in sys.argv[1:] if isinstance(d,dict) and k in d]; v=d[ks[0]] if ks else d; print(v if isinstance(v,str) else json.dumps(v,ensure_ascii=False))' \"$@\"; }",
             "mkjson() { python3 -c 'import json,sys; print(json.dumps({\"session\":int(sys.argv[1]),sys.argv[2]:sys.argv[3]}))' \"$@\"; }",
@@ -171,7 +176,7 @@ enum AgentCLI {
             "  python3 - \"$1\" <<'PY'",
             "import json,urllib.request,sys,os",
             "tok=open(os.path.expanduser('~/Library/Application Support/PixShell/agent_token')).read().strip()",
-            "req=urllib.request.Request('http://127.0.0.1:8766/v1/app/hosts',headers={'Authorization':'Bearer '+tok})",
+            "req=urllib.request.Request('http://127.0.0.1:'+os.environ.get('PIXSHELL_BRIDGE_PORT', '8766')+'/v1/app/hosts',headers={'Authorization':'Bearer '+tok})",
             "d=json.load(urllib.request.urlopen(req,timeout=10))['hosts']",
             "q=sys.argv[1].lower()",
             "hit=[h for h in d if q in (h.get('id') or '').lower() or q in (h.get('name') or '').lower() or q in (h.get('host') or '').lower()]",
@@ -179,7 +184,7 @@ enum AgentCLI {
             "PY",
             "}",
             "cmd=\"${1:-help}\"; shift || true",
-            "log \"调用 cmd=$cmd session=$SESSION args=$*\"",
+            "log \"调用 cmd=$cmd session=$SESSION argc=$#\"",
             "case \"$cmd\" in",
             "  sessions) get sessions ;;",
             "  hosts) get hosts ;;",
@@ -197,16 +202,16 @@ enum AgentCLI {
             "    [ $# -ge 1 ] || { echo '用法: pixshell cd <目录>' >&2; exit 2; }",
             "    tarpath=\"$1\"; case \"$tarpath\" in /*) ;; *) tarpath=\"$(cwd_cur)/$tarpath\" ;; esac",
             "    target=$(python3 -c 'import os,sys;print(os.path.normpath(sys.argv[1]))' \"$tarpath\" 2>/dev/null || echo \"$tarpath\")",
-            "    R=$(post sftp/list \"$(mkjson \"$SESSION\" path \"$target\")\")",
-            "    if echo \"$R\" | grep -q '\"ok\":true'; then cwd_set \"$target\"; echo \"$target\"; else echo \"目录无效：$(echo \"$R\" | field error)\" >&2; fi ;;",
+            "    R=$(post sftp/list \"$(mkjson \"$SESSION\" path \"$target\")\") || { echo \"目录无效：$(echo \"$R\" | field error)\" >&2; exit 1; }",
+            "    if echo \"$R\" | grep -q '\"ok\":true'; then cwd_set \"$target\"; echo \"$target\"; else echo \"目录无效：$(echo \"$R\" | field error)\" >&2; exit 1; fi ;;",
             "  ls) sf_ls \"${1:-}\" ;;",
             "  ssh|connect)",
             "    [ $# -ge 1 ] || { echo '用法: pixshell ssh <主机名|ID> [命令]' >&2; exit 2; }",
             "    HID=$(hostid \"$1\"); [ -n \"$HID\" ] || { echo \"没找到主机：$1（用 pixshell hosts 看列表）\" >&2; exit 2; }; shift",
-            "    R=$(post connect \"$(mkjson 0 hostId \"$HID\")\")",
+            "    R=$(post connect \"$(mkjson 0 hostId \"$HID\")\") || { echo \"连接失败：$(echo \"$R\" | field error)\" >&2; exit 2; }",
             "    echo \"$R\" | grep -q '\"ok\":true' || { echo \"连接失败：$(echo \"$R\" | field error)\" >&2; exit 2; }",
-            "    S=$(echo \"$R\" | field session); [ -n \"$S\" ] && [ \"$S\" != \"0\" ] && SESSION=\"$S\" || :",
-            "    # 已连接（同主机已开会话）时 connect 不建新会话，沿用 SESSION；否则用返回的 session",
+            "    S=$(echo \"$R\" | field session); [ -n \"$S\" ] && SESSION=\"$S\"",
+            "    # 始终采用桥返回的 session；0 也是有效的首个会话序号。",
             "    if [ $# -ge 1 ]; then do_exec \"$*\"; else echo \"已连接：$(echo \"$R\" | field title)（session ${SESSION:-0}）\"; fi ;;",
             "  *)",
             "    echo 'pixshell <子命令>'",

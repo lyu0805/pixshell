@@ -260,37 +260,23 @@ extension AppDelegate {
     /// 明确的认证失败（错密/拒公钥/无更多方法）。
     static func looksLikeAuthFailure(_ error: Error?) -> Bool {
         guard let e = error else { return false }
+        if let oe = e as? OpenSSHExitError {
+            return oe.authRejected
+        }
         let s = "\(e) \(e.localizedDescription)".lowercased()
         for k in [
             "permission denied", "authentication failed", "auth fail",
             "invalid credentials", "access denied", "too many authentication",
             "no more authentication methods", "permission_denied",
-            "unauthorized", "wrong password", "invalid userauth",
-            "userauth", "authentication methods", "not authorized"
+            "wrong password", "invalid userauth", "not authorized"
         ] {
             if s.contains(k) { return true }
-        }
-        if let oe = e as? OpenSSHExitError {
-            let h = (oe.hint + " " + (oe.errorDescription ?? "")).lowercased()
-            // 有明确网络语义 → 不当认证（交给 network）。
-            for k in ["connection refused", "connection reset", "timed out", "timeout",
-                      "could not resolve", "no route", "network is unreachable",
-                      "operation timed out", "connection timed out", "nodename",
-                      "host key verification failed", "host is down", "network is down",
-                      "host unreachable", "broken pipe", "connect failed"] {
-                if h.contains(k) { return false }
-            }
-            for k in ["permission denied", "authentication failed", "auth fail",
-                      "denied", "publickey", "password"] {
-                if h.contains(k) { return true }
-            }
-            // 无 hint 的 exit≠0：偏向认证，保证错密仍能弹重试。
-            return true
         }
         return false
     }
 
-    /// 关闭原因分类：决定是否回落 OpenSSH / 是否删 Keychain / 是否弹密码。
+    /// 关闭原因分类：决定是否回落 OpenSSH / 是否弹密码。
+    /// 任何失败路径都不删除已保存密码；删除只发生在用户删除主机或主动编辑凭据时。
     enum SSHCloseClass { case clean, algorithm, network, auth }
 
     static func classifyClose(_ error: Error?) -> SSHCloseClass {
@@ -298,9 +284,9 @@ extension AppDelegate {
         // 算法/协议协商（含 Dropbear 无 AES-GCM 导致的裸 EOF）必须优先于 auth，
         // 否则会清密码且跳过 OpenSSH 回落。
         if looksLikeAlgorithmMismatch(error) { return .algorithm }
-        // 认证关键字优先于笼统网络，保证错密仍弹重试。
-        if looksLikeAuthFailure(error) { return .auth }
+        // 网络/端口/DNS/超时优先于宽字符串认证判断，避免权限不足等网络错误被误报成密码错误。
         if looksLikeNetworkFailure(error) { return .network }
+        if looksLikeAuthFailure(error) { return .auth }
         // 未知错误且 shell 从未打开：保守当算法协商失败先回落一次系统 ssh
         // （比误清密码更安全；已回落过仍失败时由调用方按 auth 处理）。
         return .algorithm
@@ -873,9 +859,9 @@ extension AppDelegate {
                     return
                 }
                 // 已经回落过仍失败：再按认证/网络细分，避免永远卡在「协议不兼容」。
+                // 注意：认证失败也保留旧密码；新密码只有在用户勾选记住并重新连接时才会覆盖。
                 if Self.looksLikeAuthFailure(error) {
-                    Log.warn("系统 ssh 回落后认证失败 \(sess.host.subtitle): \(error?.localizedDescription ?? "未知")", "ssh")
-                    Keychain.delete(sess.host.id)
+                    Log.warn("系统 ssh 回落后认证失败 \(sess.host.subtitle): \(error?.localizedDescription ?? "未知")（保留已保存密码）", "ssh")
                     t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：认证被拒。\u{1b}[0m\r\n")
                     connectOverlay?.fail("认证失败")
                     if sess.host.keyPath.isEmpty { promptRetryPassword(for: sess.host) }
@@ -930,9 +916,9 @@ extension AppDelegate {
                 connectOverlay?.fail("连接失败\n\(detail)", autoHide: false)
                 statusDetail = "✗ 连接失败：\(detail)"
             case .auth:
-                // 仅认证失败才清 Keychain +（无 keyPath 时）弹密码重试。
-                Log.warn("认证失败 \(sess.host.subtitle)，已清除保存的密码", "session")
-                Keychain.delete(sess.host.id)
+                // 认证失败只提示并（无 keyPath 时）弹密码重试，不删除 Keychain。
+                // 网络/端口/算法协商误判也不得丢失用户已保存密码。
+                Log.warn("认证失败 \(sess.host.subtitle)（保留已保存密码）", "session")
                 t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：认证被拒。\u{1b}[0m\r\n")
                 connectOverlay?.fail("认证失败")
                 let host = sess.host

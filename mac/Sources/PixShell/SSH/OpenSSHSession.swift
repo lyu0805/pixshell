@@ -6,9 +6,20 @@ import Darwin
 public struct OpenSSHExitError: Error, LocalizedError {
     public let code: Int
     public let hint: String
-    public init(code: Int, hint: String = "") {
+    /// 明确看到密码/口令提示后仍未打开 shell，才标记为认证被拒。
+    /// 网络、端口、算法协商、无 hint 的退出都不得默认当成密码错误。
+    public let authRejected: Bool
+    public init(code: Int, hint: String = "", authRejected: Bool? = nil) {
         self.code = code
         self.hint = hint
+        if let authRejected {
+            self.authRejected = authRejected
+        } else {
+            let h = hint.lowercased()
+            self.authRejected = h.contains("permission denied")
+                || h.contains("authentication failed")
+                || h.contains("auth failed")
+        }
     }
     public var errorDescription: String? {
         let base: String
@@ -43,6 +54,10 @@ public final class OpenSSHSession: SSHSession {
 
     public weak var delegate: SSHSessionDelegate?
 
+    /// exec 命令级总超时（秒）。远端命令不退出（tail -f / 挂起 / 网络黑洞）时 terminate 兜底收口，
+    /// 避免 completion 永不回调 → HTTP 永不返回 → 后续工具调用排队超时。
+    static let execTimeout: TimeInterval = 30
+
     private var pid: pid_t = -1
     private var masterFD: Int32 = -1
     private var readSource: DispatchSourceRead?
@@ -66,7 +81,7 @@ public final class OpenSSHSession: SSHSession {
         self.creds = creds
 
         let args = Self.buildArguments(creds, term: term)
-        Log.info("回落到系统 ssh：/usr/bin/ssh \(args.joined(separator: " "))", "ssh")
+        Log.info("回落到系统 ssh：target=\(creds.username)@\(creds.host) argc=\(args.count)", "ssh")
 
         // 必须用 forkpty，不能用 posix_spawn +POSIX_SPAWN_SETSID +dup2(slave)：
         // 后者只是把从端接到了 0/1/2，**并没有把它设成子进程的控制终端**（缺 TIOCSCTTY）。
@@ -392,6 +407,8 @@ public final class OpenSSHSession: SSHSession {
 
     /// 一次性命令（监控采集用）：另起一个非交互 ssh 进程收 stdout。
     /// 走 BatchMode，绝不弹交互提示 —— 后台采集不该阻塞在提问上。
+    /// 含命令级总超时（execTimeout）：远端命令不退出时 terminate 兜底收口，
+    /// 避免 readDataToEndOfFile 无限阻塞 → HTTP 永不返回 → 后续工具调用排队超时（P0 根因）。
     public func exec(_ command: String, completion: @escaping (String) -> Void) {
         guard let c = creds else { DispatchQueue.main.async { completion("") }; return }
         DispatchQueue.global(qos: .utility).async {
@@ -419,22 +436,64 @@ public final class OpenSSHSession: SSHSession {
                 env["SSH_ASKPASS_PROMPT"] = "none"
             }
             p.environment = env
+
+            // 命令级总超时：到期 terminate + 收口。不用 readDataToEndOfFile（会无限阻塞），
+            // 改为 DispatchSource 异步读，超时由 timer 触发。
+            let timeout = Self.execTimeout
+            let outFH = pipe.fileHandleForReading
             var text = ""
+            let bufferLock = NSLock()
+            var didFinish = false
+            // 子进程被 timer 或正常退出后，收集剩余数据并收口（只收一次）。
+            func collectAndFinish() {
+                guard !didFinish else { return }
+                didFinish = true
+                // 读尽剩余数据（进程已退出/被 terminate，读不会无限阻塞）。
+                let rest = outFH.readDataToEndOfFile()
+                if let s = String(data: rest, encoding: .utf8) { bufferLock.lock(); text += s; bufferLock.unlock() }
+                if let s = secretPath { try? FileManager.default.removeItem(atPath: s) }
+                if let s = scriptPath {
+                    let dir = (s as NSString).deletingLastPathComponent
+                    try? FileManager.default.removeItem(atPath: s)
+                    try? FileManager.default.removeItem(atPath: dir)
+                }
+                DispatchQueue.main.async { completion(text) }
+            }
+
             do {
                 try p.run()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                p.waitUntilExit()
-                text = String(data: data, encoding: .utf8) ?? ""
             } catch {
-                text = ""
+                collectAndFinish()
+                return
             }
-            if let s = secretPath { try? FileManager.default.removeItem(atPath: s) }
-            if let s = scriptPath {
-                let dir = (s as NSString).deletingLastPathComponent
-                try? FileManager.default.removeItem(atPath: s)
-                try? FileManager.default.removeItem(atPath: dir)
+            // 异步读 stdout（不阻塞调用线程）。
+            outFH.readabilityHandler = { fh in
+                let d = fh.availableData
+                if !d.isEmpty, let s = String(data: d, encoding: .utf8) {
+                    bufferLock.lock(); text += s; bufferLock.unlock()
+                } else if d.isEmpty {
+                    fh.readabilityHandler = nil
+                    DispatchQueue.global(qos: .utility).async { collectAndFinish() }
+                }
             }
-            DispatchQueue.main.async { completion(text) }
+            // 超时兜底：到期 kill 子进程 → readabilityHandler 收尾 → collectAndFinish。
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) { [weak p] in
+                if p?.isRunning == true {
+                    Log.warn("exec 命令超时（\(Int(timeout))s）被强制终止：\(command.prefix(80))", "ssh")
+                    p?.terminate()
+                    // terminate 发 SIGTERM；个别命令不退，SIGKILL 兜底。
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+                        if let pid = p?.processIdentifier, p?.isRunning == true {
+                            kill(pid, SIGKILL)
+                        }
+                    }
+                }
+            }
+            // 正常退出兜底：进程退出后补一次收口（readabilityHandler 若因无更多数据未触发）。
+            DispatchQueue.global(qos: .utility).async {
+                p.waitUntilExit()
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) { collectAndFinish() }
+            }
         }
     }
 
@@ -456,14 +515,33 @@ public final class OpenSSHSession: SSHSession {
             // 退出码是排查"连不上但没报错"的关键线索：255=ssh 自身失败，1=远端命令失败
             let code = (status & 0x7f) == 0 ? (status >> 8) & 0xff : -(status & 0x7f)
             Log.info("系统 ssh 退出 pid=\(p) code=\(code) opened=\(self?.shellOpenedEmitted ?? false)", "ssh")
+            let hint = self?.recentOutput ?? ""
+            let sawPasswordPrompt = self?.sawAuthPrompt ?? false
+            let lowerHint = hint.lowercased()
+            let explicitAuth = lowerHint.contains("permission denied")
+                || lowerHint.contains("authentication failed")
+                || lowerHint.contains("auth failed")
+            let networkHint = lowerHint.contains("connection refused")
+                || lowerHint.contains("connection reset")
+                || lowerHint.contains("timed out")
+                || lowerHint.contains("timeout")
+                || lowerHint.contains("no route")
+                || lowerHint.contains("could not resolve")
+                || lowerHint.contains("network is unreachable")
+                || lowerHint.contains("host is down")
+                || lowerHint.contains("network is down")
+                || lowerHint.contains("host unreachable")
+                || lowerHint.contains("host key verification failed")
+            // 认证提示出现过但从未打开 shell：优先视为认证拒绝；仍被网络关键词命中时交给上层 network 分类。
+            let authRejected = explicitAuth || (sawPasswordPrompt && !networkHint)
             if code == 0 {
                 self?.finish(nil)
             } else if self?.shellOpenedEmitted == true {
                 // 曾经真的连上过再退：当正常/带码关闭，不再伪装成「认证阶段失败」。
-                self?.finish(OpenSSHExitError(code: Int(code), hint: self?.recentOutput ?? ""))
+                self?.finish(OpenSSHExitError(code: Int(code), hint: hint))
             } else {
                 // 从未确认 shell → 必须带错误，禁止 finish(nil) 让上层以为「干净断开」。
-                self?.finish(OpenSSHExitError(code: Int(code), hint: self?.recentOutput ?? ""))
+                self?.finish(OpenSSHExitError(code: Int(code), hint: hint, authRejected: authRejected))
             }
         }
     }

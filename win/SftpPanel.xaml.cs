@@ -452,6 +452,7 @@ public partial class SftpPanel : UserControl
     {
         var skippedDirs = 0;
         var uploaded = 0;
+        string? uploadError = null;
         await Task.Run(() =>
         {
             foreach (var one in paths)
@@ -466,7 +467,7 @@ public partial class SftpPanel : UserControl
                 {
                     var remote = JoinRemote(_remoteDir, Path.GetFileName(one));
                     using var localFs = File.OpenRead(one);
-                    StatusLabel.Text = $"上传 {Path.GetFileName(one)} …";
+                    Dispatcher.Invoke(() => StatusLabel.Text = $"上传 {Path.GetFileName(one)} …");
                     Log.Info($"直传上传 {one} → {remote}", "sftp");
                     fs.UploadFile(localFs, remote);
                     uploaded++;
@@ -474,11 +475,16 @@ public partial class SftpPanel : UserControl
                 catch (Exception ex)
                 {
                     Log.Error($"上传失败 {one}: {ex.Message}", "sftp");
-                    StatusLabel.Text = "上传失败: " + ex.Message;
+                    uploadError = ex.Message;
                     return;
                 }
             }
         });
+        if (uploadError != null)
+        {
+            StatusLabel.Text = "上传失败: " + uploadError;
+            return;
+        }
         StatusLabel.Text = skippedDirs > 0
             ? $"直传完成（{skippedDirs} 个目录已跳过，请开启「打包传输」）"
             : (uploaded > 0 ? "上传完成" : "无���上传文件");
@@ -493,7 +499,7 @@ public partial class SftpPanel : UserControl
         var remoteArchive = $"/tmp/pixshell_up_{st}.tar.gz";
         StatusLabel.Text = $"本地打包 {paths.Count} 项 …";
         Log.Info("智能打包上传 " + string.Join(", ", paths.Select(Path.GetFileName)), "sftp");
-        var err = await SftpTransfer.PackLocalAsync(localArchive, paths).ConfigureAwait(false);
+        var err = await SftpTransfer.PackLocalAsync(localArchive, paths);
         if (err != null) { Log.Error("本地打包失败: " + err, "sftp"); StatusLabel.Text = "打包失败: " + err; return; }
         try
         {
@@ -620,7 +626,7 @@ public partial class SftpPanel : UserControl
             return;
         }
         _ = ExecRunner($"rm -f {SftpTransfer.Quote(remoteArchive)}");
-        var err = await SftpTransfer.ExtractLocalAsync(localArchive, destDir).ConfigureAwait(false);
+        var err = await SftpTransfer.ExtractLocalAsync(localArchive, destDir);
         if (err != null)
         {
             Log.Error("本地解压失败: " + err, "sftp");

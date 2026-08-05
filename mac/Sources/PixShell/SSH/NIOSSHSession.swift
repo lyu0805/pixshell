@@ -19,6 +19,10 @@ import CryptoKit
 public final class NIOSSHSession: SSHSession {
     public weak var delegate: SSHSessionDelegate?
 
+    /// exec 命令级总超时（秒）。远端命令不退出（tail -f / 挂起 / 网络黑洞）时兜底收口，
+    /// 避免 completion 永不回调 → HTTP 永不返回 → 后续工具调用排队超时。
+    static let execTimeout: TimeInterval = 30
+
     private var group: EventLoopGroup?
     private var tcpChannel: Channel?
     private var childChannel: Channel?
@@ -238,7 +242,8 @@ public final class NIOSSHSession: SSHSession {
 
     public func exec(_ command: String, completion: @escaping (String) -> Void) {
         guard let channel = tcpChannel else { DispatchQueue.main.async { completion("") }; return }
-        let handler = ExecCollectHandler(command: command) { out in
+        // 命令级总超时：远端命令不退出时 30s 兜底收口，避免 HTTP 永挂 → 后续工具调用排队超时。
+        let handler = ExecCollectHandler(command: command, timeout: Self.execTimeout) { out in
             DispatchQueue.main.async { completion(out) }
         }
         let promise = channel.eventLoop.makePromise(of: Channel.self)
@@ -303,6 +308,8 @@ public final class NIOSSHSession: SSHSession {
 enum SSHClientError: Error { case invalidChannelType }
 
 /// 一次性 exec：发 ExecRequest，收集 stdout 直到通道关闭，回调完整输出。
+/// 含命令级总超时：远端命令不退出（tail -f / 挂起 / 网络黑洞）时定时兜底收口，
+/// 否则 completion 永不回调 → HTTP 永不返回 → 下一个工具调用排队超时（P0 根因）。
 final class ExecCollectHandler: ChannelDuplexHandler {
     typealias InboundIn = SSHChannelData
     typealias InboundOut = Never
@@ -310,12 +317,25 @@ final class ExecCollectHandler: ChannelDuplexHandler {
     typealias OutboundOut = SSHChannelData
     private let command: String
     private let onDone: (String) -> Void
+    private let timeout: TimeInterval
     private var buffer = ""
     private var done = false
-    init(command: String, onDone: @escaping (String) -> Void) { self.command = command; self.onDone = onDone }
+    /// 记录是否因超时收口（区别于正常通道关闭），供上层区分。
+    private(set) var timedOut = false
+    /// 保存 context 以便超时主动 close 子通道。
+    private var context: ChannelHandlerContext?
+    init(command: String, timeout: TimeInterval, onDone: @escaping (String) -> Void) {
+        self.command = command; self.timeout = timeout; self.onDone = onDone
+    }
 
     func handlerAdded(context: ChannelHandlerContext) {
+        self.context = context
         context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { _ in }
+        // 命令级总超时：到期强制收口，避免 completion 永不回调。
+        let amount = TimeAmount.seconds(Int64(timeout))
+        context.eventLoop.scheduleTask(in: amount) { [weak self] in
+            self?.finish(timedOut: true)
+        }
     }
     func channelActive(context: ChannelHandlerContext) {
         let req = SSHChannelRequestEvent.ExecRequest(command: command, wantReply: true)
@@ -329,7 +349,18 @@ final class ExecCollectHandler: ChannelDuplexHandler {
     }
     func channelInactive(context: ChannelHandlerContext) { finish() }
     func errorCaught(context: ChannelHandlerContext, error: Error) { finish(); context.close(promise: nil) }
-    private func finish() { if !done { done = true; onDone(buffer) } }
+    private func finish(timedOut: Bool = false) {
+        if !done {
+            done = true
+            self.timedOut = timedOut
+            if timedOut {
+                // 超时收口：主动关掉子通道，避免资源悬挂。
+                self.context?.close(promise: nil)
+                Log.warn("exec 命令超时被强制收口（\(Int(timeout))s）：\(command.prefix(80))", "ssh")
+            }
+            onDone(buffer)
+        }
+    }
 }
 
 /// 认证委托：依次尝试私钥、密码。

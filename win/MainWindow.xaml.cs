@@ -625,8 +625,7 @@ public partial class MainWindow : Window
             // 用户反馈：Win11 目标机默认防火墙拦截 22 入站 → 报"积极拒绝/超时"，
             // 用户误以为是密钥/证书问题。Socket 层失败时给出放行指引。
             var fw = !authFail && IsFirewallLikely(ex);
-            // 仅认证失败才清 DPAPI 密码；断网/超时/算法协商等保留凭据，避免误伤。
-            if (authFail) CredentialStore.Remove(host.Id);
+            // 任何连接失败都保留 DPAPI 密码；认证失败只提示/重试，删除仅由用户删除主机时触发。
             ConnectAnim.Fail(authFail ? "认证失败" : fw ? $"连接失败（疑似防火墙拦截）\n{ex.Message}" : $"连接失败\n{ex.Message}", autoHide: authFail);
             SetStatus((authFail ? "认证失败: " : "连接失败: ") + ex.Message
                 + (fw ? "（若目标是 Windows 主机，可能被防火墙拦截：管理员 PowerShell 执行 New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22）" : ""));
@@ -667,7 +666,7 @@ public partial class MainWindow : Window
         return false;
     }
 
-    /// <summary>区分 SSH 认证失败 vs 网络/超时/其它。只有前者才应清掉已存密码。</summary>
+    /// <summary>区分 SSH 认证失败 vs 网络/超时/其它。只用于提示和重试，不再删除已存密码。</summary>
     private static bool IsAuthFailure(Exception ex)
     {
         for (Exception? e = ex; e != null; e = e.InnerException)
@@ -676,9 +675,6 @@ public partial class MainWindow : Window
             var name = e.GetType().FullName ?? e.GetType().Name;
             if (name.Contains("SshAuthentication", StringComparison.OrdinalIgnoreCase)) return true;
             var msg = e.Message ?? "";
-            if (msg.Contains("Permission denied", StringComparison.OrdinalIgnoreCase)) return true;
-            if (msg.Contains("Authentication failed", StringComparison.OrdinalIgnoreCase)) return true;
-            if (msg.Contains("authentication failed", StringComparison.OrdinalIgnoreCase)) return true;
             if (msg.Contains("认证失败", StringComparison.Ordinal) || msg.Contains("认证被拒", StringComparison.Ordinal)) return true;
         }
         return false;

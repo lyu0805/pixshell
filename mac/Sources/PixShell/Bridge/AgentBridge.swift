@@ -66,14 +66,15 @@ final class AgentBridge {
 
     init(host: BridgeHost? = nil) {
         self.host = host
-        if let envPort = ProcessInfo.processInfo.environment["PIXSHELL_BRIDGE_PORT"],
-           let p = Int(envPort), p > 0, p < 65536 {
-            self.port = p
-        } else {
-            self.port = AgentBridge.defaultPort
-        }
+        self.port = AgentBridge.configuredPort
         self.tokenPath = AgentBridge.computeTokenPath()
         self.token = AgentBridge.ensureToken(at: self.tokenPath)
+    }
+
+    static var configuredPort: Int {
+        guard let raw = ProcessInfo.processInfo.environment["PIXSHELL_BRIDGE_PORT"],
+              let port = Int(raw), port > 0, port < 65536 else { return defaultPort }
+        return port
     }
 
     // MARK: - Token
@@ -459,7 +460,12 @@ private final class BridgeConnection {
             // 不支持 chunked（本地 CLI 客户端从不使用）；直接判非法请求。
             return false
         }
-        contentLength = Int(hdrs["content-length"] ?? "") ?? 0
+        if let rawLength = hdrs["content-length"] {
+            guard let parsedLength = Int(rawLength), parsedLength >= 0 else { return false }
+            contentLength = parsedLength
+        } else {
+            contentLength = 0
+        }
         return true
     }
 

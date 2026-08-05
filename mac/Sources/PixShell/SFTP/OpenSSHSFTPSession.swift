@@ -131,7 +131,7 @@ public final class OpenSSHSFTPSession: SFTPService {
         stderrPipe = herr
         rx = Data()
         nextRequestId = 1
-        Log.info("OpenSSH SFTP 启动 \(target.label) pid=\(p.processIdentifier) args=\(args.joined(separator: " "))", "sftp")
+        Log.info("OpenSSH SFTP 启动 \(target.label) pid=\(p.processIdentifier) argc=\(args.count)", "sftp")
     }
 
     private func handshake() throws {
@@ -675,4 +675,3 @@ private extension Data {
         return a
     }
 }
-

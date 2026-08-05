@@ -20,10 +20,35 @@ struct BackupBundle: Codable {
         return try e.encode(self)
     }
     static func decode(_ data: Data) throws -> BackupBundle {
-        let b = try JSONDecoder().decode(BackupBundle.self, from: data)
+        let object = try JSONSerialization.jsonObject(with: data)
+        let normalized = try normalizeKeys(object)
+        let normalizedData = try JSONSerialization.data(withJSONObject: normalized)
+        let b = try JSONDecoder().decode(BackupBundle.self, from: normalizedData)
         guard b.version == 1 else { throw NSError(domain: "PixShell", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "不支持的备份包版本 \(b.version)"]) }
         return b
+    }
+
+    private static func normalizeKeys(_ value: Any, preserveDictionaryKeys: Bool = false) throws -> Any {
+        if let dictionary = value as? [String: Any] {
+            if preserveDictionaryKeys {
+                return dictionary
+            }
+            var result: [String: Any] = [:]
+            for (key, child) in dictionary {
+                let normalizedKey = key.prefix(1).lowercased() + String(key.dropFirst())
+                guard result[normalizedKey] == nil else {
+                    throw NSError(domain: "PixShell", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "备份包包含重复字段 \(normalizedKey)"])
+                }
+                result[normalizedKey] = try normalizeKeys(child, preserveDictionaryKeys: normalizedKey == "settings")
+            }
+            return result
+        }
+        if let array = value as? [Any] {
+            return try array.map { try normalizeKeys($0) }
+        }
+        return value
     }
 }
 
@@ -48,7 +73,10 @@ enum WebDAVBackup {
         return c
     }
     static func save(_ c: Config) {
-        Keychain.setPassword(c.password, for: "webdav-backup-password")
+        guard Keychain.setPassword(c.password, for: "webdav-backup-password") else {
+            Log.error("WebDAV 凭据保存失败，跳过配置写入", "backup")
+            return
+        }
         var safe = c
         safe.password = ""
         if let d = try? JSONEncoder().encode(safe) { UserDefaults.standard.set(d, forKey: key) }

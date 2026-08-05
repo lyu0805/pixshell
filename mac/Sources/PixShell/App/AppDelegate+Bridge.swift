@@ -37,13 +37,13 @@ extension AppDelegate: BridgeHost {
     /// （无头退出）。最多等 5s，超时也继续启动——AgentBridge 的 retryOnPortBusy
     /// 会继续等端口释放后再 bind，最终一定接管。
     private func waitForHeadlessToYield() {
-        let port = AgentBridge.defaultPort
+        let port = AgentBridge.configuredPort
         // 探测用裸 TCP 建连：/v1/health 在鉴权后面（无 token 返回 401），HTTP GET 判断不了在听。
         guard AgentBridge.isPortOpen(port), let token = AgentBridge.existingToken() else { return }
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/app/shutdown")!)
         req.httpMethod = "POST"
         req.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        _ = URLSession.shared.dataTask(with: req) { _, _, _ in
+        URLSession.shared.dataTask(with: req) { _, _, _ in
             // 发完请求后轮询端口释放（AgentBridge retryOnPortBusy 也兜底等待）
             let deadline = Date().addingTimeInterval(5)
             while Date() < deadline {

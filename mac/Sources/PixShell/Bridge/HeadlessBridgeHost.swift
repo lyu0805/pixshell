@@ -22,7 +22,12 @@ final class HeadlessBridgeHost: BridgeHost {
         /// 交互 shell 的最近输出（exec 是独立通道不进这里；screen 读它）。
         private var output = ""
         private let lock = NSLock()
-        var connected = false
+        private var connectedState = false
+
+        var connected: Bool {
+            get { lock.lock(); defer { lock.unlock() }; return connectedState }
+            set { lock.lock(); defer { lock.unlock() }; connectedState = newValue }
+        }
 
         init(title: String, host: Host, ssh: SSHSession, password: String) {
             self.title = title
@@ -162,8 +167,10 @@ final class HeadlessBridgeHost: BridgeHost {
                     userInfo: [NSLocalizedDescriptionKey: "会话不存在"]))); return
             }
             let s = sessions[session]
+            let proxy = s.host.proxyId.isEmpty ? nil : ProxyStore().find(s.host.proxyId)
             let creds = SSHCredentials(host: s.host.host, port: s.host.port, username: s.host.username,
-                                       password: s.password, keyPath: s.host.keyPath.isEmpty ? nil : s.host.keyPath)
+                                       password: s.password, keyPath: s.host.keyPath.isEmpty ? nil : s.host.keyPath,
+                                       proxy: proxy)
             let svc: SFTPService = s.host.keyPath.isEmpty ? NIOSFTPSession() : OpenSSHSFTPSession()
             svc.connect(creds) { r in
                 switch r {
@@ -257,7 +264,7 @@ extension HeadlessBridgeHost.HeadlessSession: SSHSessionDelegate {
         }
     }
     func sshSession(_ s: SSHSession, didCloseWith error: Error?) {
-        // 不做清理：桥层通过 bridgeSessions 感知；closeAll 统一 close。
+        connected = false
     }
     func sshSessionDidOpenShell(_ s: SSHSession) {
         connected = true
