@@ -25,7 +25,12 @@ public class BackupBundle
     public Dictionary<string, string> Settings { get; set; } = new();
     public List<QuickCommand> QuickCommands { get; set; } = new();
 
-    private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
+    };
 
     public static BackupBundle Make(List<HostEntry> hosts, List<QuickCommand> quick, Dictionary<string, string> settings) => new()
     {
@@ -41,7 +46,7 @@ public class BackupBundle
     /// <summary>解析备份包 JSON；版本不是 1 则抛异常（调用方按"不是备份包"处理并尝试旧的纯数组格式）。</summary>
     public static BackupBundle Decode(string json)
     {
-        var b = JsonSerializer.Deserialize<BackupBundle>(json) ?? throw new Exception("空备份包");
+        var b = JsonSerializer.Deserialize<BackupBundle>(json, JsonOpts) ?? throw new Exception("空备份包");
         if (b.Version != 1) throw new Exception($"不支持的备份包版本 {b.Version}");
         return b;
     }
@@ -53,6 +58,7 @@ public class BackupBundle
 /// </summary>
 public static class WebDavBackup
 {
+    private const string CredentialId = "webdav-backup-password";
     public class Config
     {
         public string Url { get; set; } = "";      // 形如 https://dav.jianguoyun.com/dav/pixshell/backup.json
@@ -67,14 +73,42 @@ public static class WebDavBackup
         try
         {
             if (!File.Exists(FilePath)) return null;
-            return JsonSerializer.Deserialize<Config>(File.ReadAllText(FilePath));
+            var config = JsonSerializer.Deserialize<Config>(File.ReadAllText(FilePath), new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+            });
+            if (config == null) return null;
+            if (!string.IsNullOrEmpty(config.Password))
+            {
+                var legacyPassword = config.Password;
+                CredentialStore.SetPassword(CredentialId, legacyPassword);
+                if (CredentialStore.GetPassword(CredentialId) == legacyPassword)
+                    Save(config);
+                else
+                    return config;
+            }
+            config.Password = CredentialStore.GetPassword(CredentialId) ?? "";
+            return config;
         }
         catch { return null; }
     }
 
     public static void Save(Config c)
     {
-        try { File.WriteAllText(FilePath, JsonSerializer.Serialize(c, new JsonSerializerOptions { WriteIndented = true })); }
+        try
+        {
+            CredentialStore.SetPassword(CredentialId, c.Password);
+            var stored = CredentialStore.GetPassword(CredentialId);
+            if ((!string.IsNullOrEmpty(c.Password) && stored != c.Password)
+                || (string.IsNullOrEmpty(c.Password) && stored != null))
+                throw new InvalidOperationException("WebDAV 凭据写入后校验失败");
+            var safe = new Config { Url = c.Url, Username = c.Username, Password = "" };
+            File.WriteAllText(FilePath, JsonSerializer.Serialize(safe, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            }));
+        }
         catch (Exception ex) { Log.Warn($"WebDAV 配置保存失败: {ex.Message}", "backup"); }
     }
 

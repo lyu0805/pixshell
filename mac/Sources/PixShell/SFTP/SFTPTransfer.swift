@@ -81,9 +81,10 @@ enum SFTPTransfer {
         let p = Process(); p.executableURL = URL(fileURLWithPath: launch); p.arguments = args
         let pipe = Pipe(); p.standardError = pipe; p.standardOutput = pipe
         do { try p.run() } catch { return error.localizedDescription }
+        let output = pipe.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
         if p.terminationStatus == 0 { return nil }
-        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let out = String(data: output, encoding: .utf8) ?? ""
         return out.isEmpty ? "tar 退出码 \(p.terminationStatus)" : out
     }
 

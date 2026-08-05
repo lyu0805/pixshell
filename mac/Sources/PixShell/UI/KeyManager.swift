@@ -77,10 +77,18 @@ final class KeyManager: NSWindowController {
 
         listStack.orientation = .vertical; listStack.alignment = .leading; listStack.spacing = 8
         listStack.translatesAutoresizingMaskIntoConstraints = false
-        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true
+        let scroll = OverlayScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
+        scroll.verticalScroller = InvisibleScroller()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(listStack); scroll.documentView = doc
+        NSLayoutConstraint.activate([
+            listStack.topAnchor.constraint(equalTo: doc.topAnchor), listStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            listStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor), listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            doc.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            doc.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            doc.widthAnchor.constraint(equalTo: scroll.widthAnchor)
+        ])
 
         card.addSubview(head); card.addSubview(countLabel); card.addSubview(scroll)
         NSLayoutConstraint.activate([
@@ -95,8 +103,6 @@ final class KeyManager: NSWindowController {
             scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
             scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220),
-            doc.topAnchor.constraint(equalTo: scroll.topAnchor), doc.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
-            doc.trailingAnchor.constraint(equalTo: scroll.trailingAnchor), doc.widthAnchor.constraint(equalTo: scroll.widthAnchor),
             listStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 4),
             listStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 4),
             listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -4),

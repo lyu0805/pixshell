@@ -105,11 +105,13 @@ public static class SemanticHighlight
     private static readonly Regex RRustTestSum = Re(@"test result:\s+\w+\.");
 
     private static readonly Regex RErrEn = Re(@"\b(?:error|errors|fail(?:ed|ure|ures)?|fatal|critical|exception|denied|refused|panic|traceback|segfault|oom|killed|unable|cannot|can't|not found|no such|permission denied|connection refused|timed?\s*out|timeout|unauthorized|forbidden|invalid|corrupt(?:ed)?|broken|crash(?:ed)?)\b", RegexOptions.IgnoreCase);
-    private static readonly Regex RErrZh = Re(@"(?:错误|失败|异常|崩溃|拒绝|超时|未找到|无权限|权限不足|连接拒绝|致命)");
+    // 中文词：\b 对 CJK 无效，须用 Unicode 属性前后夹紧（只认独立词，防"正常范围/异常子串"误亮）。
+    private static readonly string ZhW = @"\p{IsCJKUnifiedIdeographs}";
+    private static readonly Regex RErrZh = Re($@"(?<!{ZhW})(?:错误|异常|崩溃|拒绝|超时|未找到|无权限|权限不足|连接拒绝|致命)(?!{ZhW})");
     private static readonly Regex RWarnEn = Re(@"\b(?:warn(?:ing|ings)?|deprecated|caution|notice|restart required|system restart required)\b", RegexOptions.IgnoreCase);
-    private static readonly Regex RWarnZh = Re(@"(?:警告|注意|弃用|即将过期)");
+    private static readonly Regex RWarnZh = Re($@"(?<!{ZhW})(?:警告|注意|弃用|即将过期)(?!{ZhW})");
     private static readonly Regex ROkEn = Re(@"\b(?:ok|okay|success(?:ful(?:ly)?)?|done|ready|passed|complete(?:d)?|enabled|active|running|listening|connected|online|healthy|available)\b", RegexOptions.IgnoreCase);
-    private static readonly Regex ROkZh = Re(@"(?:成功|完成|就绪|已连接|正常|在线|健康)");
+    private static readonly Regex ROkZh = Re($@"(?<!{ZhW})(?:完成|就绪|已连接|正常|在线|健康)(?!{ZhW})");
     private static readonly Regex RPct9 = Re(@"\b(9\d(?:\.\d+)?%)");
     private static readonly Regex RPct8 = Re(@"\b(8\d(?:\.\d+)?%)");
     private static readonly Regex RPct17 = Re(@"\b([1-7]?\d(?:\.\d+)?%)");
@@ -225,10 +227,10 @@ public static class SemanticHighlight
         s = ReplaceSafe(s, RKey, K("kw"));
         s = ReplaceSafe(s, RKw, K("kw"));                                     // 22) 运维关键词
         s = ReplaceSafe(s, RQuoted, K("str"));                                // 23) 引号字符串（放最后）
-        s = ReplaceSafe(s, RDelim, K("delim"));                               // 21) 括号
+        s = ReplaceSafe(s, RKw, K("kw"));
+        s = ReplaceSafe(s, RQuoted, K("str"));
+        s = ReplaceSafe(s, RDelim, K("delim"));
 
-        // ── 展开占位符为 truecolor SGR ──
-        // 用户自定义了「高亮文字颜色」→ 整套 token 统一用它（保留下划线/加粗等属性）。
         var color = dark ? HlDark : HlLight;
         var custom = HighlightColors.HighlightHex;
         if (!string.IsNullOrEmpty(custom))
@@ -248,33 +250,84 @@ public static class SemanticHighlight
                 return (color.TryGetValue(item.Kind, out var c) ? c : "\u001b[1;31m") + item.S + reset;
             });
         }
-        return ApplyRegex(s, MarkerRe, _ => "");   // 清理残留占位符
+        return ApplyRegex(s, MarkerRe, _ => "");
     }
 
-    // ── 对外入口 ────────────────────────────────────────────────────────
-    /// <summary>对一段（可能含已有 ANSI 转义的）终端文本注入语义高亮 SGR。
-    /// 已有转义序列原样保留，不重复上色。</summary>
-    public static string Decorate(string chunk, bool dark)
+    public static string Decorate(string chunk, bool dark, ref bool activeColor)
     {
         if (string.IsNullOrEmpty(chunk)) return chunk;
-        // 「普通文字颜色」：给整块先铺一层前景色，高亮 token 之后各自覆盖回自己的颜色。
         var plain = HighlightColors.PlainHex;
-        return string.IsNullOrEmpty(plain) ? DecorateBody(chunk, dark) : Tc(plain!) + DecorateBody(chunk, dark);
+        return string.IsNullOrEmpty(plain) ? DecorateBody(chunk, dark, ref activeColor) : Tc(plain!) + DecorateBody(chunk, dark, ref activeColor);
     }
 
-    private static string DecorateBody(string chunk, bool dark)
+
+    private static string DecorateBody(string chunk, bool dark, ref bool activeColor)
     {
         var ms = AnsiRe.Matches(chunk);
-        if (ms.Count == 0) return DecoratePlainChunk(chunk, dark);
+        if (ms.Count == 0)
+        {
+            if (activeColor) return chunk;
+            return DecoratePlainChunk(chunk, dark);
+        }
         var sb = new StringBuilder(chunk.Length + 64);
         int idx = 0;
         foreach (Match m in ms)
         {
-            if (m.Index > idx) sb.Append(DecoratePlainChunk(chunk.Substring(idx, m.Index - idx), dark));
-            sb.Append(m.Value);   // 转义序列原样保留
+            if (m.Index > idx)
+            {
+                var plain = chunk.Substring(idx, m.Index - idx);
+                if (activeColor)
+                {
+                    sb.Append(plain);
+                }
+                else
+                {
+                    sb.Append(DecoratePlainChunk(plain, dark));
+                }
+            }
+
+            var ansi = m.Value;
+            if (ansi == "\u001b[0m" || ansi == "\u001b[39m" || ansi == "\u001b[49m" || ansi == "\u001b[0;39m")
+            {
+                activeColor = false;
+            }
+            else if (ansi.Contains("m"))
+            {
+                activeColor = true;
+            }
+
+            // 强制将 37m (前景色白) 转换为 TrueColor 的纯白，这样既能保证“红底白字”清晰可见，又不会破坏 47m (背景色白) 对应调色板的浅灰
+            if (ansi == "\u001b[37m")
+            {
+                ansi = "\u001b[38;2;255;255;255m";
+            }
+            else if (ansi == "\u001b[0;37m")
+            {
+                ansi = "\u001b[0m\u001b[38;2;255;255;255m";
+            }
+
+            // 拦截 2K/0K/K (清除行)，必须前置 0m 以避免背景色溢出成“黑条/彩条”
+            if (ansi == "\u001b[2K" || ansi == "\u001b[K" || ansi == "\u001b[0K")
+            {
+                ansi = "\u001b[0m" + ansi;
+                activeColor = false;
+            }
+            sb.Append(ansi);
             idx = m.Index + m.Length;
         }
-        if (idx < chunk.Length) sb.Append(DecoratePlainChunk(chunk.Substring(idx), dark));
+        if (idx < chunk.Length)
+        {
+            var plain = chunk.Substring(idx, chunk.Length - idx);
+            if (activeColor)
+            {
+                sb.Append(plain);
+            }
+            else
+            {
+                sb.Append(DecoratePlainChunk(plain, dark));
+            }
+        }
         return sb.ToString();
     }
+
 }

@@ -5,11 +5,11 @@
              Background="{DynamicResource BrushSide}">
     <!-- 服务器监控仪表盘侧栏（非主机列表）——1:1 对齐 mac UI/MonitorSidebar.swift：
          连接状态/IP+复制/系统信息 按钮 · 实时监控(运行/负载/CPU/内存/交换 药丸条)
-         · 进程 TOP 表 · 网络(iface+火花线) · 延迟/网关 · 磁盘表。 -->
+         · 进程 TOP 表 · 网络(iface+柱状图) · 延迟/网关 · 磁盘表。 -->
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel Margin="0,0,0,12">
 
-            <!-- 连接状态：红绿灯 + 文案 + 断开/连接按钮（这一行是可操作的，不只是个标签） -->
+            <!-- 连接状态 -->
             <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="10,8,10,6">
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -25,7 +25,7 @@
                 </Grid>
             </Border>
 
-            <!-- IP + 复制：单击 IP 文本本身也复制（不只「复制」按钮） -->
+            <!-- IP + 复制 -->
             <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="10,6,10,6">
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -38,97 +38,99 @@
                                Foreground="{DynamicResource BrushText}" VerticalAlignment="Center"
                                TextTrimming="CharacterEllipsis" Cursor="Hand" ToolTip="单击复制 IP"
                                MouseLeftButtonUp="IpValue_Click"/>
-                    <Button Grid.Column="2" Content="复制" Style="{StaticResource PillButton}" Padding="8,2"
+                    <Button x:Name="CopyIpBtn" Grid.Column="2" Content="复制" Style="{StaticResource PillButton}" Padding="8,2"
                             FontSize="11" Click="CopyIp_Click"/>
                 </Grid>
             </Border>
 
-            <!-- 系统信息 -->
+            <!-- 系统信息按钮 -->
             <Border Padding="10,8,10,8">
-                <Button Content="系统信息" HorizontalAlignment="Stretch" Style="{StaticResource PillButton}"
+                <Button Content="系统信息" HorizontalAlignment="Center" MinWidth="120" Style="{StaticResource PillButton}"
                         Foreground="{DynamicResource BrushAccent}" Click="SysInfo_Click"/>
             </Border>
 
-            <!-- 实时监控 -->
+            <!-- 实时监控 — 表格化 -->
             <TextBlock Text="实时监控" FontSize="10" FontWeight="Bold" Margin="10,6,10,2"
                        Foreground="{DynamicResource BrushMuted}"/>
-            <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="10,6,10,8">
+            <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="0,0,0,8">
                 <StackPanel>
-                    <Grid Margin="0,0,0,4">
+                    <!-- 运行/负载：表格行 -->
+                    <Grid Background="{DynamicResource BrushBg2}">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="36"/>
+                            <ColumnDefinition Width="40"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="运行" FontSize="11" Foreground="{DynamicResource BrushMuted}"/>
-                        <TextBlock x:Name="UptimeValue" Grid.Column="1" Text="-" FontSize="11" Foreground="{DynamicResource BrushMuted}"/>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="运行" FontSize="11" Foreground="{DynamicResource BrushMuted}" Padding="10,5,0,5" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="UptimeValue" Grid.Column="1" Text="-" FontSize="11" Foreground="{DynamicResource BrushText}" Padding="4,5,10,5" VerticalAlignment="Center"/>
+                        <Border Grid.Row="1" Grid.ColumnSpan="2" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0.5,0,0"/>
+                        <TextBlock Grid.Row="1" Text="负载" FontSize="11" Foreground="{DynamicResource BrushMuted}" Padding="10,5,0,5" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="LoadValue" Grid.Row="1" Grid.Column="1" Text="-" FontSize="11" Foreground="{DynamicResource BrushText}" Padding="4,5,10,5" VerticalAlignment="Center"/>
                     </Grid>
-                    <Grid Margin="0,0,0,6">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="36"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="负载" FontSize="11" Foreground="{DynamicResource BrushMuted}"/>
-                        <TextBlock x:Name="LoadValue" Grid.Column="1" Text="-" FontSize="11" Foreground="{DynamicResource BrushMuted}"/>
-                    </Grid>
-                    <local:MetricBar x:Name="CpuBar" Margin="0,0,0,5"/>
-                    <local:MetricBar x:Name="MemBar" Margin="0,0,0,5"/>
-                    <local:MetricBar x:Name="SwapBar"/>
+                    <local:MetricBar x:Name="CpuBar" Margin="10,8,10,5"/>
+                    <local:MetricBar x:Name="MemBar" Margin="10,0,10,5"/>
+                    <local:MetricBar x:Name="SwapBar" Margin="10,0,10,0"/>
                 </StackPanel>
             </Border>
 
-            <!-- 进程 TOP -->
+            <!-- 进程 TOP — 表格化 -->
             <TextBlock Text="进程 TOP" FontSize="10" FontWeight="Bold" Margin="10,6,10,2"
                        Foreground="{DynamicResource BrushMuted}"/>
             <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1">
                 <StackPanel>
-                    <Grid Background="{DynamicResource BrushBg2}" Height="20">
+                    <Grid Background="{DynamicResource BrushBg2}" Height="22">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="52"/>
-                            <ColumnDefinition Width="42"/>
+                            <ColumnDefinition Width="65"/>
+                            <ColumnDefinition Width="60"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="内存" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="6,0,0,0" VerticalAlignment="Center"/>
-                        <TextBlock Grid.Column="1" Text="CPU" FontSize="10" Foreground="{DynamicResource BrushMuted}" TextAlignment="Center" VerticalAlignment="Center"/>
+                        <TextBlock Text="内存" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="1" Text="CPU" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="4,0,0,0" VerticalAlignment="Center"/>
                         <TextBlock Grid.Column="2" Text="命令" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="4,0,0,0" VerticalAlignment="Center"/>
                     </Grid>
                     <StackPanel x:Name="ProcBody"/>
                 </StackPanel>
             </Border>
 
-            <!-- 网络 -->
+            <!-- 网络 — 柱状图 -->
             <TextBlock Text="网络" FontSize="10" FontWeight="Bold" Margin="10,6,10,2"
                        Foreground="{DynamicResource BrushMuted}"/>
             <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="8,6,8,6">
                 <StackPanel>
                     <TextBlock x:Name="NetTitle" Text="-" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="0,0,0,2"/>
-                    <local:Sparkline x:Name="NetSpark" Height="44"/>
+                    <local:NetworkChart x:Name="NetChart" Height="50"/>
                 </StackPanel>
             </Border>
 
-            <!-- 延迟 -->
+            <!-- 延迟 — 柱状图 -->
             <TextBlock Text="延迟" FontSize="10" FontWeight="Bold" Margin="10,6,10,2"
                        Foreground="{DynamicResource BrushMuted}"/>
             <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1" Padding="8,6,8,6">
                 <StackPanel>
-                    <TextBlock x:Name="PingTitle" Text="网关" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="0,0,0,2"/>
-                    <local:Sparkline x:Name="PingSpark" Height="32"/>
+                    <TextBlock x:Name="PingTitle" Text="延迟" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="0,0,0,2"/>
+                    <local:LatencyChart x:Name="PingChart" Height="50"/>
                 </StackPanel>
             </Border>
 
-            <!-- 磁盘 -->
+            <!-- 磁盘 — 表格化 -->
             <TextBlock Text="磁盘" FontSize="10" FontWeight="Bold" Margin="10,6,10,2"
                        Foreground="{DynamicResource BrushMuted}"/>
-            <StackPanel>
-                <Grid Background="{DynamicResource BrushBg2}" Height="20">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="82"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="路径" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="8,0,0,0" VerticalAlignment="Center"/>
-                    <TextBlock Grid.Column="1" Text="可用/大小" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="4,0,0,0" VerticalAlignment="Center"/>
-                </Grid>
-                <StackPanel x:Name="DiskBody"/>
-            </StackPanel>
+            <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,0,1">
+                <StackPanel>
+                    <Grid Background="{DynamicResource BrushBg2}" Height="22">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="路径" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="1" Text="可用/大小" FontSize="10" Foreground="{DynamicResource BrushMuted}" Margin="4,0,12,0" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                    </Grid>
+                    <StackPanel x:Name="DiskBody"/>
+                </StackPanel>
+            </Border>
         </StackPanel>
     </ScrollViewer>
 </UserControl>

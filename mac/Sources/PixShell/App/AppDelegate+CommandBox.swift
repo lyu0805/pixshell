@@ -131,8 +131,9 @@ extension AppDelegate: NSTextFieldDelegate {
         if let sp = sftpPanel, !sp.isHidden {
             // 保持坞可见结构，但远端内容已清空（disconnect 已 reload 空表 + "远端未连接"）
         }
-        sysInfo?.isHidden = true
+        sysInfoWindow?.orderOut(nil as Any?)
         stopMonitor()
+        connectOverlay?.hideNow()
     }
 
     // MARK: 历史弹出（命令栏「历史」按钮）
@@ -140,14 +141,14 @@ extension AppDelegate: NSTextFieldDelegate {
         let prefix = cmdPanel?.editor.string ?? ""
         let items = cmdHistory.filter(prefix: prefix, limit: 100)
         guard !items.isEmpty else { setStatus("暂无历史命令"); return }
-        
+
         let vc = CommandHistoryVC()
         vc.items = items
-        
+
         let pop = NSPopover()
         pop.contentViewController = vc
         pop.behavior = .transient
-        
+
         vc.onSelect = { [weak self] cmd in
             self?.cmdPanel?.editor.string = cmd
             if let ed = self?.cmdPanel?.editor {
@@ -180,7 +181,7 @@ extension AppDelegate: NSTextFieldDelegate {
             self?.setStatus("历史记录已清空")
             pop.close()
         }
-        
+
         let targetView = (sender as? NSView)
         if let v = targetView {
             pop.show(relativeTo: v.bounds, of: v, preferredEdge: .maxY)

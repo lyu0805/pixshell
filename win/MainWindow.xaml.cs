@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -36,7 +37,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<HostEntry> _hosts = new();
     private string _htmlPath = "";
     /// <summary>与 csproj / mac CFBundleShortVersionString 对齐的展示与更新比较版本。</summary>
-    private const string AppVersion = "0.1.3";
+    public const string AppVersion = "0.1.7";
 
     private bool _sideCollapsed;
     private double _sidebarWidth = UiStore.Load().SidebarWidth;
@@ -62,6 +63,7 @@ public partial class MainWindow : Window
     private int _cliStatusKey = -1;
     // 切 tab 后 PollMonitor 防抖：避免 SelectionChanged 立刻再 Exec mon 叠 3s tick
     private DateTime _lastPollKick = DateTime.MinValue;
+    private DateTime _lastPingAt = DateTime.MinValue;
     // 公开给 TerminalSession：拖坞期间跳过 pixFit（避免 SizeChanged 风暴）
     internal bool SuppressTerminalFit;
 
@@ -140,6 +142,15 @@ public partial class MainWindow : Window
         ToolsFlyout.OnOpenDownloadDir = () => { try { Process.Start(new ProcessStartInfo(_downloadDir) { UseShellExecute = true }); } catch { } };
         // 工具面板走独立 Owner 窗口（ToolsPanel.Show/EnsureHost），不再藏 WebView2。
         ToolsFlyout.OnClose = () => { /* HideFlyout 已关窗；终端 HWND 从未隐藏 */ };
+
+        ConnectAnim.OnCancel += () =>
+        {
+            if (Sessions.SelectedItem is TabItem item) CloseTab(item);
+        };
+        ConnectAnim.OnRetry += () =>
+        {
+            if (Sessions.SelectedItem is TabItem item) _ = ReconnectInPlaceAsync(item);
+        };
         ToolsFlyout.SetDownloadPath(_downloadDir);
 
         // 侧栏监控仪表盘。
@@ -289,11 +300,61 @@ public partial class MainWindow : Window
     // =====================================================================
     private void StartAgentBridge()
     {
+        // 有头接管：若已有无头在听，先让它退出，等端口释放后再自己 bind。
+        // 探测用裸 TCP 建连：/v1/health 在鉴权后面（无 token 返回 401），HTTP GET 判断不了在听。
+        WaitForHeadlessToYield();
+
         _agentBridge = new Bridge.AgentBridge(this);
+        // 有头 bind 与无头退出是异步竞态：失败先重试等端口释放，而不是直接放弃。
+        _agentBridge.RetryOnPortBusy = true;
         _agentBridge.Start();
         Bridge.AgentCLI.Install(_agentBridge.Port);   // 生成 pixshell.cmd / pixshell.py（CLI + MCP server）
         UpdateCliStatus();
         _bridgeStatusTimer.Start();
+    }
+
+    /// <summary>有头启动前：探测桥端口，若有无头在听 → 发 /v1/app/shutdown → 轮询直到端口释放
+    /// （无头退出）。最多等 5s，超时也继续启动——AgentBridge.RetryOnPortBusy 会继续等端口释放
+    /// 后再 bind，最终一定接管。对齐 mac waitForHeadlessToYield()。</summary>
+    private void WaitForHeadlessToYield()
+    {
+        // 端口解析与 AgentBridge 构造函数一致（PIXSHELL_BRIDGE_PORT env 或默认）。
+        var port = 8766;
+        var envPort = Environment.GetEnvironmentVariable("PIXSHELL_BRIDGE_PORT");
+        if (int.TryParse(envPort, out var p) && p > 0 && p < 65536) port = p;
+        if (!Bridge.AgentBridge.IsPortOpen(port) || !TryReadAgentToken(out var token)) return;
+        try
+        {
+            using var client = new HttpClient();
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/v1/app/shutdown");
+            req.Headers.Add("Authorization", $"Bearer {token}");
+            _ = client.SendAsync(req).ConfigureAwait(false);   // 发完即走，不等待响应
+        }
+        catch { /* 无头可能刚好退出，忽略 */ }
+        // 轮询端口释放（AgentBridge.RetryOnPortBusy 也兜底等待）。
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (!Bridge.AgentBridge.IsPortOpen(port)) return;   // 无头已退出，端口释放
+            Thread.Sleep(250);
+        }
+        Log.Warn("等待无头退出超时，靠 RetryOnPortBusy 继续等", "bridge");
+    }
+
+    /// <summary>读 %APPDATA%\PixShell\agent_token（只读不重建，供有头接管发 shutdown 用）。</summary>
+    private static bool TryReadAgentToken(out string token)
+    {
+        token = "";
+        try
+        {
+            var p = Path.Combine(HostStore.AppDir, "agent_token");
+            if (!File.Exists(p)) return false;
+            var s = File.ReadAllText(p).Trim();
+            if (s.Length < 16) return false;
+            token = s;
+            return true;
+        }
+        catch { return false; }
     }
 
     /// <summary>CLI 状态三态（严格对齐老仓库/mac 口径，别把"桥在监听"写成"已连接/已对接"）：
@@ -387,22 +448,7 @@ public partial class MainWindow : Window
         if (host.IsRdp) { LaunchRdp(host); return; }
         // Web 连接：和 SSH 同一入口，开应用内 Web 终端标签（host_id 自动连）。
         if (host.IsWebSsh) { _ = OpenWebHostSessionAsync(host); return; }
-        var pass = CredentialStore.GetPassword(host.Id);
-        if (pass == null)
-        {
-            if (HasUsablePrivateKey(host))
-            {
-                // 私钥文件在：允许空密码走公钥认证，不再无条件弹框。
-                pass = "";
-            }
-            else
-            {
-                var (entered, remember) = PromptPassword(host);
-                if (entered == null) return;
-                pass = entered;
-                if (remember) CredentialStore.SetPassword(host.Id, pass);
-            }
-        }
+        var pass = CredentialStore.GetPassword(host.Id) ?? "";
         RecentsStore.NoteRecent(host.Id);
         QuickConnectPanel.Reload();
         _ = OpenSessionTab(host, pass);
@@ -576,17 +622,51 @@ public partial class MainWindow : Window
         {
             Log.Error($"会话打开失败 {host.Username}@{host.Host}: {ex.Message}", "session");
             var authFail = IsAuthFailure(ex);
-            // 仅认证失败才清 DPAPI 密码；断网/超时/算法协商等保留凭据，避免误伤。
-            if (authFail) CredentialStore.Remove(host.Id);
-            ConnectAnim.Fail(authFail ? "认证失败" : "连接失败");
-            SetStatus((authFail ? "认证失败: " : "连接失败: ") + ex.Message);
+            // 用户反馈：Win11 目标机默认防火墙拦截 22 入站 → 报"积极拒绝/超时"，
+            // 用户误以为是密钥/证书问题。Socket 层失败时给出放行指引。
+            var fw = !authFail && IsFirewallLikely(ex);
+            // 任何连接失败都保留 DPAPI 密码；认证失败只提示/重试，删除仅由用户删除主机时触发。
+            ConnectAnim.Fail(authFail ? "认证失败" : fw ? $"连接失败（疑似防火墙拦截）\n{ex.Message}" : $"连接失败\n{ex.Message}", autoHide: authFail);
+            SetStatus((authFail ? "认证失败: " : "连接失败: ") + ex.Message
+                + (fw ? "（若目标是 Windows 主机，可能被防火墙拦截：管理员 PowerShell 执行 New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22）" : ""));
+            if (fw)
+                Log.Info($"防火墙提示：{host.Host}:{host.Port} Socket 层失败，若为 Windows 主机请放行 22 端口入站", "session");
             // 认证失败且非私钥路径：当场重弹密码框（对齐 mac promptRetryPassword）。
             // 私钥登录失败不弹密码框——那是 key 的问题。
             if (authFail && string.IsNullOrEmpty(host.KeyPath)) PromptRetryPassword(host, item);
         }
     }
 
-    /// <summary>区分 SSH 认证失败 vs 网络/超时/其它。只有前者才应清掉已存密码。</summary>
+    /// <summary>连接失败疑似防火墙拦截：Socket 层拒绝/超时/不可达（区别于认证失败）。
+    /// 覆盖 SSH.NET 与系统 OpenSSH 两条路径的异常形态。</summary>
+    private static bool IsFirewallLikely(Exception ex)
+    {
+        for (Exception? e = ex; e != null; e = e.InnerException)
+        {
+            if (e is System.Net.Sockets.SocketException se)
+            {
+                var code = se.SocketErrorCode;
+                if (code is System.Net.Sockets.SocketError.ConnectionRefused
+                    or System.Net.Sockets.SocketError.TimedOut
+                    or System.Net.Sockets.SocketError.HostUnreachable
+                    or System.Net.Sockets.SocketError.NetworkUnreachable
+                    or System.Net.Sockets.SocketError.AccessDenied)
+                    return true;
+            }
+            var msg = e.Message ?? "";
+            if (msg.Contains("refused", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("unreachable", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("无法访问", StringComparison.Ordinal)
+                || msg.Contains("超时", StringComparison.Ordinal)
+                || msg.Contains("积极拒绝", StringComparison.Ordinal)
+                || msg.Contains("拒绝连接", StringComparison.Ordinal))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>区分 SSH 认证失败 vs 网络/超时/其它。只用于提示和重试，不再删除已存密码。</summary>
     private static bool IsAuthFailure(Exception ex)
     {
         for (Exception? e = ex; e != null; e = e.InnerException)
@@ -595,9 +675,6 @@ public partial class MainWindow : Window
             var name = e.GetType().FullName ?? e.GetType().Name;
             if (name.Contains("SshAuthentication", StringComparison.OrdinalIgnoreCase)) return true;
             var msg = e.Message ?? "";
-            if (msg.Contains("Permission denied", StringComparison.OrdinalIgnoreCase)) return true;
-            if (msg.Contains("Authentication failed", StringComparison.OrdinalIgnoreCase)) return true;
-            if (msg.Contains("authentication failed", StringComparison.OrdinalIgnoreCase)) return true;
             if (msg.Contains("认证失败", StringComparison.Ordinal) || msg.Contains("认证被拒", StringComparison.Ordinal)) return true;
         }
         return false;
@@ -788,15 +865,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var pass = session.Password ?? CredentialStore.GetPassword(host.Id);
-        // 没有可用密码且没有可用私钥 → 要一次密码（框里带"记住密码"）。
-        if (string.IsNullOrEmpty(pass) && !HasUsablePrivateKey(host))
-        {
-            var (entered, remember) = PromptPassword(host);
-            if (entered == null) return;
-            pass = entered;
-            if (remember) CredentialStore.SetPassword(host.Id, pass);
-        }
+        var pass = session.Password ?? CredentialStore.GetPassword(host.Id) ?? "";
 
         _reconnectInProgress.Add(session);
         try
@@ -1650,6 +1719,7 @@ public partial class MainWindow : Window
         }
         catch { }
         _sysInfoWin = null;
+        try { ConnectAnim.HideNow(); } catch { }
     }
 
     /// <summary>命令栏「历史」按钮：按当前输入过滤历史，弹出选取菜单。</summary>
@@ -1664,39 +1734,39 @@ public partial class MainWindow : Window
             var grid = new Grid();
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            
+
             var tb = new TextBlock { Text = c, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 16, 0) };
             grid.Children.Add(tb);
-            
+
             var sp = new StackPanel { Orientation = Orientation.Horizontal, Visibility = Visibility.Hidden };
             Grid.SetColumn(sp, 1);
-            
+
             var btnRun = new Button { Content = "运行", Style = (Style)FindResource("PillButton"), Margin = new Thickness(4,0,0,0) };
             btnRun.Click += (_, ev) => { ev.Handled = true; menu.IsOpen = false; CmdInput.Text = c; SendCurrentCommand(); };
-            
+
             var btnCopy = new Button { Content = "复制", Style = (Style)FindResource("PillButton"), Margin = new Thickness(4,0,0,0) };
             btnCopy.Click += (_, ev) => { ev.Handled = true; menu.IsOpen = false; Clipboard.SetText(c); };
-            
+
             var btnDel = new Button { Content = "删除", Style = (Style)FindResource("PillButton"), Margin = new Thickness(4,0,0,0) };
             btnDel.Click += (_, ev) => { ev.Handled = true; menu.IsOpen = false; _cmdHistory.Remove(c); };
-            
+
             sp.Children.Add(btnRun);
             sp.Children.Add(btnCopy);
             sp.Children.Add(btnDel);
             grid.Children.Add(sp);
-            
+
             mi.Header = grid;
             mi.MouseEnter += (_, _) => sp.Visibility = Visibility.Visible;
             mi.MouseLeave += (_, _) => sp.Visibility = Visibility.Hidden;
             mi.Click += (_, _) => { CmdInput.Text = c; CmdInput.Focus(); CmdInput.CaretIndex = c.Length; };
             menu.Items.Add(mi);
         }
-        
+
         menu.Items.Add(new Separator());
         var clearMi = new MenuItem { Header = "清空全部历史记录", Foreground = System.Windows.Media.Brushes.Red };
         clearMi.Click += (_, _) => { _cmdHistory.Clear(); menu.IsOpen = false; };
         menu.Items.Add(clearMi);
-        
+
         menu.IsOpen = true;
     }
 
@@ -1761,6 +1831,23 @@ public partial class MainWindow : Window
             var outp = await session.ExecAsync(UI.MonitorSidebar.MonitorCommand);
             if (!IsActiveSession(session)) return; // 轮询期间用户切走了
             if (outp != null && outp.Contains("===mon===")) Monitor.Update(UI.MonitorSidebar.ParseMonitor(outp));
+            // 本地→SSH 延迟：TCP 22 端口测时，3s 节流
+            if ((DateTime.UtcNow - _lastPingAt).TotalSeconds >= 3)
+            {
+                _lastPingAt = DateTime.UtcNow;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
+                        using var tcp = new System.Net.Sockets.TcpClient();
+                        await tcp.ConnectAsync(host, 22).WaitAsync(TimeSpan.FromSeconds(2));
+                        sw.Stop();
+                        Monitor.PushPing(sw.Elapsed.TotalMilliseconds);
+                    }
+                    catch { /* 超时/不通 — 跳过，下次重试 */ }
+                });
+            }
         }
         finally
         {
@@ -1845,8 +1932,8 @@ public partial class MainWindow : Window
         menu.Items.Add(Item("设置…", OpenSettings));
 
         var cloud = new MenuItem { Header = "云端同步" };
-        cloud.Items.Add(Item("上传到 WebDAV", WebdavPush));
-        cloud.Items.Add(Item("从 WebDAV 恢复", WebdavPull));
+        cloud.Items.Add(Item("上传到 WebDAV", async () => { try { await WebdavPush(); } catch (Exception ex) { Log.Error("上传 WebDAV 异常: " + ex.Message, "backup"); } }));
+        cloud.Items.Add(Item("从 WebDAV 恢复", async () => { try { await WebdavPull(); } catch (Exception ex) { Log.Error("恢复 WebDAV 异常: " + ex.Message, "backup"); } }));
         cloud.Items.Add(new Separator());
         cloud.Items.Add(Item("立即导出本地包…", ExportHosts));
         cloud.Items.Add(Item("从本地包导入…", ImportHosts));
@@ -2741,7 +2828,7 @@ public partial class MainWindow : Window
         if (win.ShowDialog() == true) MessageBox.Show(this, "已保存，接下来可用「上传到 WebDAV / 从 WebDAV 恢复」", "PixShell");
     }
 
-    private async void WebdavPush()
+    private async Task WebdavPush()
     {
         var c = Store.WebDavBackup.Load();
         if (c is not { Url.Length: > 0 }) { WebdavConfigure(); return; }
@@ -2750,7 +2837,7 @@ public partial class MainWindow : Window
         else MessageBox.Show(this, "备份已推送到 WebDAV", "上传完成");
     }
 
-    private async void WebdavPull()
+    private async Task WebdavPull()
     {
         var c = Store.WebDavBackup.Load();
         if (c is not { Url.Length: > 0 }) { WebdavConfigure(); return; }
@@ -2770,13 +2857,40 @@ public partial class MainWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        if (_sysInfoWin != null) { try { _sysInfoWin.Close(); } catch { } }
+        if (_connMgrWin != null) { try { _connMgrWin.Close(); } catch { } }
         _monitorTimer.Stop();
         _bridgeStatusTimer.Stop();
         try { _agentBridge?.Stop(); } catch { }
+        // 有头正常退出 → 拉起无头进程接续桥（跟随有头生命周期：有头关了 → 无头继续后台跑）。
+        SpawnHeadlessProcess();
         try { Sftp.Cleanup(); } catch { }
         foreach (var obj in Sessions.Items)
             if (obj is TabItem { Tag: TerminalSession s })
                 try { s.Dispose(); } catch { }
+    }
+
+    /// <summary>有头退出时拉起无头进程接续桥：`PixShell.exe --headless`（不弹窗，后台跑桥）。</summary>
+    private static void SpawnHeadlessProcess()
+    {
+        try
+        {
+            var exe = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "PixShell.exe");
+            if (!File.Exists(exe)) return;
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = exe,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            psi.ArgumentList.Add("--headless");
+            using var p = System.Diagnostics.Process.Start(psi);
+            if (p == null) Log.Warn("拉起无头进程失败：Process.Start 返回 null", "bridge");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"拉起无头进程失败: {ex.Message}", "bridge");
+        }
     }
 
     // ── Windows 窗口控制（右侧 — □ ✕，与 mac 左侧红绿灯相反，注意别照搬 mac 顺序）──

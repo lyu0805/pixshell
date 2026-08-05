@@ -46,7 +46,7 @@ extension AppDelegate {
             root.layerContentsRedrawPolicy = .onSetNeedsDisplay
             root.layer?.drawsAsynchronously = true
         }
-        
+
         // 0. 国画底图层 (仅在水墨主题下可见)
         let bgImgView = NSImageView(frame: rect)
         bgImgView.imageScaling = .scaleProportionallyUpOrDown
@@ -62,14 +62,14 @@ extension AppDelegate {
             bgImgView.isHidden = true
         }
         root.addSubview(bgImgView)
-        
+
         // 1. 沉浸式毛玻璃视效底层 (Ambient Blur)
         let blur = NSVisualEffectView(frame: rect)
         blur.material = .windowBackground
         blur.blendingMode = .behindWindow
         blur.state = .active
         blur.autoresizingMask = [.width, .height]
-        
+
         // 针对水墨主题，降低 blur 的遮挡感以透出山水画
         if TermTheme.schemeId == "ink_wash" {
             blur.blendingMode = .withinWindow
@@ -77,7 +77,7 @@ extension AppDelegate {
             blur.alphaValue = 0.4
         }
         root.addSubview(blur)
-        
+
         // 2. 覆盖一层带透明度的主题底色，确保终端文字对比度
         let tintLayer = CALayer()
         // 水墨主题下降低底色浓度，让底图透出来，呈现宣纸质感
@@ -87,7 +87,7 @@ extension AppDelegate {
         tintLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         blur.wantsLayer = true
         blur.layer?.addSublayer(tintLayer)
-        
+
         root.autoresizingMask = [.width, .height]
 
         let topBar = buildTopBar()
@@ -180,17 +180,10 @@ extension AppDelegate {
             self.quickConnect?.reload()
         }
 
-        // 系统信息页（遮罩覆盖，默认隐藏）
-        sysInfo = SysInfoPanel(frame: .zero); sysInfo.isHidden = true
-        sysInfo.onClose = { [weak self] in self?.sysInfo.isHidden = true }
+        // 系统信息页（独立弹出窗口，不再贴满主窗）
+        sysInfo = SysInfoPanel(frame: .zero)
+        sysInfo.onClose = { [weak self] in self?.sysInfoWindow?.orderOut(nil) }
         sysInfo.onRefresh = { [weak self] in self?.openSysInfo() }
-        root.addSubview(sysInfo)
-        NSLayoutConstraint.activate([
-            sysInfo.topAnchor.constraint(equalTo: topBar.bottomAnchor),
-            sysInfo.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            sysInfo.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            sysInfo.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-        ])
         monitor.onSysInfo = { [weak self] in self?.openSysInfo() }
 
         // 密钥管理（独立弹出窗口，对齐 ConnManager）
@@ -393,24 +386,24 @@ extension AppDelegate {
     func setSidebarCollapsed(_ collapsed: Bool) {
         Log.debug("侧栏折叠=\(collapsed)", "ui")
         sideCollapsed = collapsed
-        
+
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.4
             ctx.allowsImplicitAnimation = true
             // 带有轻微回弹的阻尼曲线 (Spring-like)
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 1.2, 0.3, 1.0)
-            
+
             self.sideWidthC?.animator().constant = collapsed ? Self.sidebarRail : self.sidebarWidth
             // 为了流畅过渡，不要直接隐藏整个 View，而是通过 alpha 值进行物理溶解
             self.sideWrap?.animator().alphaValue = collapsed ? 0.0 : 1.0
             self.sidebarEdge?.animator().alphaValue = collapsed ? 1.0 : 0.0
-            
+
             // 当动画结束时，再将 isHidden 置位以停止响应事件
         } completionHandler: {
             self.sideWrap?.isHidden = collapsed
             self.sidebarEdge?.isHidden = !collapsed
         }
-        
+
         // 提前显示以保证 alpha 动画可见
         if !collapsed {
             self.sideWrap?.isHidden = false
@@ -837,7 +830,7 @@ extension AppDelegate {
         let gh = GitHubMarkButton()
         gh.target = self; gh.action = #selector(menuRepo)
         let brand = NSTextField(labelWithString: "PixShell"); brand.font = Theme.ui(12, .bold); brand.textColor = Theme.text
-        let ver = NSTextField(labelWithString: "v0.1.3"); ver.font = Theme.ui(11); ver.textColor = Theme.muted
+        let ver = NSTextField(labelWithString: "v0.1.7"); ver.font = Theme.ui(11); ver.textColor = Theme.muted
         statusDot = Dot(Theme.warn, size: 8)
         statusLabel = NSTextField(labelWithString: "CLI 未开启"); statusLabel.font = Theme.ui(11); statusLabel.textColor = Theme.muted
         let leftStack = NSStackView(views: [gh, brand, ver, statusDot, statusLabel])
@@ -879,14 +872,39 @@ extension AppDelegate {
         applyThemeKind(Theme.dark ? Theme.lightKind : .dark)
     }
 
-    // 系统信息：exec 采集命令 → 弹窗展示
+    // 系统信息：独立弹出窗口（对齐 ConnManager 模式）
     @objc func openSysInfo() {
         guard sessions.indices.contains(current), let ssh = sessions[current].ssh else {
             Log.warn("系统信息：无活动会话，忽略", "ui"); return
         }
         Log.info("打开系统信息，开始采集", "ui")
+        if sysInfoWindow == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
+                             styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
+                             backing: .buffered, defer: false)
+            w.titlebarAppearsTransparent = true
+            w.titleVisibility = .hidden
+            w.isMovableByWindowBackground = true
+            w.isReleasedWhenClosed = false
+            w.minSize = NSSize(width: 400, height: 320)
+            w.appearance = NSAppearance(named: Theme.dark ? .darkAqua : .aqua)
+            sysInfo.translatesAutoresizingMaskIntoConstraints = false
+            let host = NSView(frame: NSRect(x: 0, y: 0, width: 700, height: 560))
+            host.autoresizingMask = [.width, .height]
+            host.addSubview(sysInfo)
+            NSLayoutConstraint.activate([
+                sysInfo.topAnchor.constraint(equalTo: host.topAnchor),
+                sysInfo.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+                sysInfo.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+                sysInfo.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+            ])
+            w.contentView = host
+            sysInfoWindow = w
+        }
+        sysInfoWindow?.appearance = NSAppearance(named: Theme.dark ? .darkAqua : .aqua)
+        sysInfoWindow?.center()
+        sysInfoWindow?.makeKeyAndOrderFront(nil)
         sysInfo.show("采集中…")
-        sysInfo.superview?.addSubview(sysInfo)   // 置顶于其它弹层之上
         ssh.exec(SysInfoPanel.command) { [weak self] out in
             Log.info("系统信息采集完成（\(out.count) 字节）", "ui")
             self?.sysInfo.show(out)

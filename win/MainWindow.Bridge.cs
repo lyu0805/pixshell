@@ -191,4 +191,11 @@ public partial class MainWindow : IBridgeHost
         result = null!;
         return false;
     }
+
+    /// <summary>有头模式不会真的被 shutdown（无头才需要退出让位）；实现为空。
+    /// 若未来有头需要主动让位（如双实例），再在这里关会话。对齐 mac AppDelegate+Bridge 的无头专用路径。</summary>
+    public void BridgeShutdown()
+    {
+        // 有头是主进程，不因 shutdown 退出；仅兼容接口签名。
+    }
 }

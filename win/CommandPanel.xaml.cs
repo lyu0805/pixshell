@@ -38,6 +38,7 @@ public partial class CommandPanel : UserControl
     private bool _editorCollapsed;
     private string? _pendingTemplate;
     private SendTarget _pendingTarget;
+    private bool _pendingAutoReturn = true;
     private readonly Dictionary<string, ComboBox> _paramInputs = new();
     private readonly Dictionary<string, List<string>> _paramHistory = LoadParamHistory();
     private int _paramHistoryLimit = LoadParamHistoryLimit();
@@ -284,13 +285,15 @@ public partial class CommandPanel : UserControl
             ShowParamPanel(c, tgt, names);
             return;
         }
-        OnSendTo?.Invoke(c.Command + "\r", tgt);
+        var suffix = (c.AutoReturn ?? true) ? "\r" : "";
+        OnSendTo?.Invoke(c.Command + suffix, tgt);
     }
 
     private void ShowParamPanel(QuickCommand command, SendTarget target, IReadOnlyList<string> names)
     {
         _pendingTemplate = command.Command;
         _pendingTarget = target;
+        _pendingAutoReturn = command.AutoReturn ?? true;
         _paramInputs.Clear();
         ParamFields.Children.Clear();
         ParamTitle.Text = $"填写「{command.Name}」参数";
@@ -334,8 +337,9 @@ public partial class CommandPanel : UserControl
         }
         var text = CommandParams.Render(_pendingTemplate, values);
         var target = _pendingTarget;
+        var suffix = _pendingAutoReturn ? "\r" : "";
         HideParamPanel();
-        OnSendTo?.Invoke(text + "\r", target);
+        OnSendTo?.Invoke(text + suffix, target);
     }
 
     private void OnCancelParams(object sender, RoutedEventArgs e) => HideParamPanel();
@@ -343,6 +347,7 @@ public partial class CommandPanel : UserControl
     private void HideParamPanel()
     {
         _pendingTemplate = null;
+        _pendingAutoReturn = true;
         _paramInputs.Clear();
         ParamFields.Children.Clear();
         ParamPanel.Visibility = Visibility.Collapsed;
@@ -517,7 +522,7 @@ public partial class CommandPanel : UserControl
             Background = (Brush)Application.Current.Resources["BrushBg"],
             Foreground = (Brush)Application.Current.Resources["BrushText"],
             Title = existing == null ? "新建快捷命令" : "编辑快捷命令",
-            Width = 380, SizeToContent = SizeToContent.Height,
+            Width = 480, SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = Window.GetWindow(this),
             ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false,
@@ -530,8 +535,18 @@ public partial class CommandPanel : UserControl
         var groupBox = new TextBox { Text = existing?.Group ?? (_selectedGroup ?? "默认"), Margin = new Thickness(0, 2, 0, 8) };
         sp.Children.Add(groupBox);
         sp.Children.Add(new TextBlock { Text = "命令" });
-        var cmdBox = new TextBox { Text = existing?.Command ?? "", Margin = new Thickness(0, 2, 0, 4) };
+        var cmdBox = new TextBox {
+            Text = existing?.Command ?? "",
+            Margin = new Thickness(0, 2, 0, 4),
+            AcceptsReturn = true,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            TextWrapping = TextWrapping.Wrap,
+            Height = 120,
+            FontFamily = new FontFamily("Consolas")
+        };
         sp.Children.Add(cmdBox);
+        var autoReturnBox = new CheckBox { Content = "末尾添加回车符CR", IsChecked = existing?.AutoReturn ?? true, Margin = new Thickness(0, 4, 0, 8) };
+        sp.Children.Add(autoReturnBox);
         sp.Children.Add(new TextBlock
         {
             Text = "支持 ${参数}，发送时会提示填写", FontSize = 11,
@@ -555,6 +570,7 @@ public partial class CommandPanel : UserControl
         item.Name = nm;
         item.Command = cm;
         item.Group = string.IsNullOrWhiteSpace(groupBox.Text) ? "默认" : groupBox.Text.Trim();
+        item.AutoReturn = autoReturnBox.IsChecked;
         CommandStore.Upsert(item);
         ReloadGroups();
         ReloadChips();

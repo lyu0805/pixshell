@@ -40,6 +40,7 @@ const term = new Terminal({
   cursorStyle: 'block',
   fontSize: 14,
   fontFamily: 'Consolas, "Courier New", monospace',
+  unicodeVersion: '11',   // CJK 全角按双宽对齐，避免 cat 中文长行逐字错位
   scrollback: 5000,
   theme: { background: '#002945', foreground: '#ffffff' }
 });

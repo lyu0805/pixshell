@@ -64,8 +64,8 @@ public partial class MonitorSidebar : UserControl
         CpuBar.Kind = MetricBar.BarKind.Cpu; CpuBar.SetLabel("CPU");
         MemBar.Kind = MetricBar.BarKind.Mem; MemBar.SetLabel("内存");
         SwapBar.Kind = MetricBar.BarKind.Swap; SwapBar.SetLabel("交换");
-        NetSpark.SetColor(Color.FromRgb(0x30, 0xD1, 0x58));
-        PingSpark.SetColor(Color.FromRgb(0x0A, 0x84, 0xFF));
+        NetChart.Clear();
+        PingChart.Clear();
     }
 
     private void CopyIp_Click(object sender, RoutedEventArgs e) => OnCopyIp?.Invoke();
@@ -107,8 +107,8 @@ public partial class MonitorSidebar : UserControl
             _lastUptime = _lastLoad = "\0";
             _lastNetTitle = _lastPingTitle = "\0";
             _cpuIdlePrev = _cpuTotalPrev = -1;
-            NetSpark.Clear();
-            PingSpark.Clear();
+            NetChart.Clear();
+            PingChart.Clear();
         }
     }
 
@@ -189,13 +189,14 @@ public partial class MonitorSidebar : UserControl
         if (!hasRx || !hasTx)
         {
             // 兼容旧脚本只吐 netval（累计和）的情况：无法拆上下行，只推火花线。
-            if (iface != _lastNetTitle) { NetTitle.Text = iface; _lastNetTitle = iface; }
-            if (double.TryParse(m.GetValueOrDefault("netval"), out var nvLegacy)) NetSpark.Push(nvLegacy);
+            if (iface != _lastNetTitle)            NetTitle.Text = $"{iface}  ↑ 0 B/s  ↓ 0 B/s";
+            if (double.TryParse(m.GetValueOrDefault("netval"), out var nvLegacy)) NetChart.Push(nvLegacy, 0);
         }
         else
         {
             var now = DateTime.UtcNow;
             double rxRate = 0, txRate = 0;
+            bool hasRate = false;
             if (_netInited)
             {
                 var dt = (now - _lastNetAt).TotalSeconds;
@@ -203,32 +204,34 @@ public partial class MonitorSidebar : UserControl
                 {
                     rxRate = Math.Max(0, rx - _lastRx) / dt;
                     txRate = Math.Max(0, tx - _lastTx) / dt;
+                    hasRate = true;
                 }
             }
             _lastRx = rx; _lastTx = tx; _lastNetAt = now; _netInited = true;
-            var nt = $"{iface}  ↑ {FormatRate(txRate)}  ↓ {FormatRate(rxRate)}";
-            if (nt != _lastNetTitle) { NetTitle.Text = nt; _lastNetTitle = nt; }
-            NetSpark.Push(rxRate + txRate);
+            if (hasRate)
+            {
+                NetTitle.Text = $"{iface}  ↑ {FormatRate(txRate)}  ↓ {FormatRate(rxRate)}";
+                NetChart.Push(rxRate, txRate);
+            }
+            else
+            {
+                NetTitle.Text = $"{iface}  ↑ 0 B/s  ↓ 0 B/s";
+                NetChart.Push(0, 0);
+            }
         }
 
-        // 延迟：网关 ping
-        var gw = m.GetValueOrDefault("pinghost", "");
-        string pt;
-        if (double.TryParse(m.GetValueOrDefault("pingms"), out var ms))
-        {
-            pt = string.IsNullOrEmpty(gw) ? $"网关 {ms:F1} ms" : $"网关 {gw} · {ms:F1} ms";
-            if (pt != _lastPingTitle) { PingTitle.Text = pt; _lastPingTitle = pt; }
-            PingSpark.Push(ms);
-        }
-        else
-        {
-            pt = string.IsNullOrEmpty(gw) ? "网关 -" : $"网关 {gw} · 超时";
-            if (pt != _lastPingTitle) { PingTitle.Text = pt; _lastPingTitle = pt; }
-        }
+        // 延：由 MainWindow 本地 TCP 测时推送，这里设默认值
+        if (_lastPingTitle != "延迟 -") { PingTitle.Text = "延迟 -"; _lastPingTitle = "延迟 -"; }
     }
 
-    /// <summary>网关延迟(ms)推送：给外部（如 MainWindow 自己测 TCP 时延）额外喂点用。</summary>
-    public void PushPing(double ms) => PingSpark.Push(ms);
+    public void PushPing(double ms)
+    {
+        Dispatcher.InvokeAsync(() =>
+        {
+            PingChart.Push(ms);
+            PingTitle.Text = $"延迟 {ms:F1} ms";
+        });
+    }
 
     /// <summary>字节/秒 → 人类可读速率（B/s · KB/s · MB/s · GB/s）。</summary>
     private static string FormatRate(double bytesPerSec)
@@ -252,14 +255,14 @@ public partial class MonitorSidebar : UserControl
     private static UIElement ProcRow(string mem, string cpu, string cmd, bool even)
     {
         var row = new Grid { Height = 17, Background = even ? EvenRowBg : OddRowBg };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(52) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(42) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(65) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(60) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var mono = (FontFamily)Application.Current.Resources["FontMono"];
-        var memT = new TextBlock { Text = mem, FontSize = 10, FontFamily = mono, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Foreground = MemFg };
+        var memT = new TextBlock { Text = mem, FontSize = 10, FontFamily = mono, Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Foreground = MemFg };
         var cpuT = new TextBlock { Text = cpu, FontSize = 10, FontFamily = mono, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Foreground = CpuFg };
         Grid.SetColumn(cpuT, 1);
-        var cmdT = new TextBlock { Text = cmd, FontSize = 10, FontFamily = mono, Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = (Brush)Application.Current.Resources["BrushText"] };
+        var cmdT = new TextBlock { Text = cmd, FontSize = 10, FontFamily = mono, Margin = new Thickness(4, 0, 14, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = (Brush)Application.Current.Resources["BrushText"] };
         Grid.SetColumn(cmdT, 2);
         row.Children.Add(memT); row.Children.Add(cpuT); row.Children.Add(cmdT);
         return row;
@@ -268,12 +271,12 @@ public partial class MonitorSidebar : UserControl
     private static UIElement DiskRow(string path, string sizeInfo, bool even)
     {
         var row = new Grid { Height = 17, Background = even ? EvenRowBg : OddRowBg };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(82) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0, GridUnitType.Auto) });
         var mono = (FontFamily)Application.Current.Resources["FontMono"];
         var text = (Brush)Application.Current.Resources["BrushText"];
-        var pT = new TextBlock { Text = path, FontSize = 10, FontFamily = mono, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = text };
-        var sT = new TextBlock { Text = sizeInfo, FontSize = 10, FontFamily = mono, Margin = new Thickness(4, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center, Foreground = text };
+        var pT = new TextBlock { Text = path, FontSize = 10, FontFamily = mono, Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = text };
+        var sT = new TextBlock { Text = sizeInfo, FontSize = 10, FontFamily = mono, Margin = new Thickness(4, 0, 14, 0), VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right, Foreground = text };
         Grid.SetColumn(sT, 1);
         row.Children.Add(pT); row.Children.Add(sT);
         return row;
@@ -291,8 +294,6 @@ free -m 2>/dev/null | awk '/^Swap:/{if($2>0)printf ""swap=%.0f|%.1fG/%.1fG\n"",$
 printf ""disks=""; df -h 2>/dev/null | awk '$1 ~ /^\/dev/{printf ""%s|%s|%s;"",$6,$4,$2}'; echo
 printf ""procs=""; ps aux 2>/dev/null | sed 1d | sort -rk4 | awk 'NR<=5{c=$11; sub(/.*\//,"""",c); printf ""%dM|%s|%s;"",$6/1024,$3,c}'; echo
 cat /proc/net/dev 2>/dev/null | tr ':' ' ' | awk 'NR>2 && $1!=""lo"" && $1 !~ /^(docker|veth|br-)/{print ""netif=""$1; print ""netrx=""$2; print ""nettx=""$10; print ""netval=""$2+$10; exit}'
-gw=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}'); [ -n ""$gw"" ] || gw=$(netstat -rn 2>/dev/null | awk '/^0.0.0.0|^default/{print $2; exit}')
-if [ -n ""$gw"" ]; then echo ""pinghost=$gw""; ping -c 1 -W 1 ""$gw"" 2>/dev/null | awk -F'time=' '/time=/{split($2,a,"" "");printf ""pingms=%s\n"",a[1];exit}'; fi
 ";
 
     /// <summary>解析 ===mon=== 之后的 KEY=value 输出行（对齐 mac parseMonitor）。</summary>

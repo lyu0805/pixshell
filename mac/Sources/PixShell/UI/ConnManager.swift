@@ -9,6 +9,7 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
     private let countLabel = NSTextField(labelWithString: "")
     private let searchField = NSTextField()
     private var collapsed = Set<String>()
+    private var firstLoad = true
 
     var hostsProvider: (() -> [Host])?
     var onConnect: ((Host) -> Void)?
@@ -51,10 +52,10 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
 
     private func build() {
         guard let w = window else { return }
-        
+
         card.rounded(Theme.radiusLg, bg: Theme.bg, border: Theme.borderStrong)
         card.translatesAutoresizingMaskIntoConstraints = false
-        
+
         let root = EscapableView()
         root.onEscape = { [weak self] in self?.hide() }
         root.addSubview(card)
@@ -101,12 +102,18 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
         // 列表：高度跟窗口走（可缩放），不再钉死 440
         listStack.orientation = .vertical; listStack.alignment = .leading; listStack.spacing = 8
         listStack.translatesAutoresizingMaskIntoConstraints = false
-        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = false
-        scroll.scrollerStyle = .legacy
+        let scroll = OverlayScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
+        scroll.verticalScroller = InvisibleScroller()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(listStack); scroll.documentView = doc
+        NSLayoutConstraint.activate([
+            listStack.topAnchor.constraint(equalTo: doc.topAnchor), listStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            listStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor), listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            doc.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            doc.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            doc.widthAnchor.constraint(equalTo: scroll.widthAnchor)
+        ])
 
         card.addSubview(head); card.addSubview(searchRow); card.addSubview(scroll)
         NSLayoutConstraint.activate([
@@ -121,7 +128,6 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
             scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
             scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
-            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
             listStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 4),
             listStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 4),
             listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -4),
@@ -184,6 +190,11 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
         let names = groups.keys.sorted { $0 == "默认" ? false : ($1 == "默认" ? true : $0 < $1) }
         countLabel.stringValue = query.isEmpty ? "\(allHosts.count) 台 · \(names.count) 组" : "\(hosts.count)/\(allHosts.count) 台 · \(names.count) 组"
         listStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        // 首次打开：所有分组默认收起（对齐 Win ConnectionManagerWindow）
+        if firstLoad {
+            firstLoad = false
+            for n in names { collapsed.insert(n) }
+        }
         if hosts.isEmpty, !query.isEmpty {
             let empty = NSTextField(labelWithString: "没有匹配的主机")
             empty.font = Theme.ui(12); empty.textColor = Theme.muted
@@ -219,23 +230,25 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
                 hostsStack.alignment = .leading; hostsStack.spacing = 4
                 hostsStack.translatesAutoresizingMaskIntoConstraints = false
                 for h in hosts { hostsStack.addArrangedSubview(hostRow(h)) }
-                let hostScroll = NSScrollView()
+                let hostScroll = OverlayScrollView()
                 hostScroll.drawsBackground = false
                 hostScroll.hasVerticalScroller = true
-                hostScroll.autohidesScrollers = false
-                hostScroll.scrollerStyle = .legacy
+                hostScroll.scrollerStyle = .overlay
+                hostScroll.verticalScroller = InvisibleScroller()
                 hostScroll.translatesAutoresizingMaskIntoConstraints = false
                 let hostDoc = FlippedView(); hostDoc.translatesAutoresizingMaskIntoConstraints = false
                 hostDoc.addSubview(hostsStack)
                 hostScroll.documentView = hostDoc
                 NSLayoutConstraint.activate([
                     hostScroll.heightAnchor.constraint(equalToConstant: 140),
-                    hostDoc.widthAnchor.constraint(equalTo: hostScroll.contentView.widthAnchor),
+                    hostDoc.topAnchor.constraint(equalTo: hostScroll.contentView.topAnchor),
+                    hostDoc.leadingAnchor.constraint(equalTo: hostScroll.contentView.leadingAnchor),
+                    hostDoc.widthAnchor.constraint(equalTo: hostScroll.widthAnchor),
                     hostsStack.topAnchor.constraint(equalTo: hostDoc.topAnchor),
                     hostsStack.leadingAnchor.constraint(equalTo: hostDoc.leadingAnchor),
                     hostsStack.trailingAnchor.constraint(equalTo: hostDoc.trailingAnchor),
                     hostsStack.bottomAnchor.constraint(equalTo: hostDoc.bottomAnchor),
-                    hostsStack.widthAnchor.constraint(equalTo: hostDoc.widthAnchor),
+                    hostsStack.widthAnchor.constraint(equalTo: hostDoc.widthAnchor)
                 ])
                 inner.addArrangedSubview(hostScroll)
                 hostScroll.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true

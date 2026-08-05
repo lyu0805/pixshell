@@ -25,6 +25,15 @@ final class AgentBridge {
 
     weak var host: BridgeHost?
 
+    /// 监听失败（端口被占等）时回调。无头模式（--headless）用它来"端口被有头占 → 自己退出让位"；
+    /// 有头保持原有"只记日志不退出"的容错行为。
+    var onPortBusy: (() -> Void)?
+
+    /// 端口被占用时的行为：有头 = 重试等无头让位（先发 /v1/app/shutdown 让它退）；无头 = 立即退出让位。
+    /// 默认 false（无头行为）。
+    var retryOnPortBusy = false
+    private var failedRetryCount = 0
+
     private(set) var isRunning = false
     private(set) var port: Int
     let tokenPath: String
@@ -57,14 +66,15 @@ final class AgentBridge {
 
     init(host: BridgeHost? = nil) {
         self.host = host
-        if let envPort = ProcessInfo.processInfo.environment["PIXSHELL_BRIDGE_PORT"],
-           let p = Int(envPort), p > 0, p < 65536 {
-            self.port = p
-        } else {
-            self.port = AgentBridge.defaultPort
-        }
+        self.port = AgentBridge.configuredPort
         self.tokenPath = AgentBridge.computeTokenPath()
         self.token = AgentBridge.ensureToken(at: self.tokenPath)
+    }
+
+    static var configuredPort: Int {
+        guard let raw = ProcessInfo.processInfo.environment["PIXSHELL_BRIDGE_PORT"],
+              let port = Int(raw), port > 0, port < 65536 else { return defaultPort }
+        return port
     }
 
     // MARK: - Token
@@ -76,6 +86,62 @@ final class AgentBridge {
 
     private static func computeTokenPath() -> String {
         tokenDir().appendingPathComponent("agent_token").path
+    }
+
+    /// 读取已有 token（不存在/太短返回 nil）。供有头接管读无头已写的 token（只读，不重建）。
+    static func existingToken() -> String? {
+        guard let data = FileManager.default.contents(atPath: computeTokenPath()) else { return nil }
+        let s = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (s?.count ?? 0) >= 16 ? s : nil
+    }
+
+    /// 探测 127.0.0.1:port 是否被监听：TCP 建连成功即认为在听。
+    /// 不依赖 token：/v1/health 在鉴权后面（无 token 返回 401），用裸 TCP 探测比 HTTP GET 可靠。
+    /// 供有头接管判断「无头是否还占着端口」。
+    static func isPortOpen(_ port: Int) -> Bool {
+        guard let nwPort = NWEndpoint.Port(rawValue: UInt16(clamping: max(0, port))) else { return false }
+        let sem = DispatchSemaphore(value: 0)
+        var result = false
+        var done = false
+        let conn = NWConnection(host: "127.0.0.1", port: nwPort, using: .tcp)
+        conn.stateUpdateHandler = { state in
+            guard !done else { return }
+            switch state {
+            case .ready: result = true; done = true; sem.signal()
+            case .failed, .cancelled: result = false; done = true; sem.signal()
+            default: break
+            }
+        }
+        conn.start(queue: DispatchQueue.global())
+        _ = sem.wait(timeout: .now() + 1.5)
+        conn.cancel()
+        return result
+    }
+
+    /// 无头收到 reopen 后拉起有头进程（不带 --headless）。无头已 terminate，
+    /// 此时 open 会真正启动新有头实例，不再复用无头。参数是 `[appPath]` 或 `["-a","PixShell"]`。
+    static func spawnOpenApp(_ args: [String]) {
+        openProcess(open: "/usr/bin/open", args: args)
+    }
+
+    /// 有头退出时拉起无头进程接续桥：`open <App>.app --args --headless`。
+    /// 只有 bundle（.app）才有意义；debug 裸二进制（path 是目录）用名字兜底。
+    static func spawnHeadlessProcess() {
+        let rawPath = Bundle.main.bundlePath
+        let appPath = rawPath.hasSuffix(".app") ? rawPath : ""
+        if !appPath.isEmpty {
+            openProcess(open: "/usr/bin/open", args: [appPath, "--args", "--headless"])
+            return
+        }
+        openProcess(open: "/usr/bin/open", args: ["-a", "PixShell", "--args", "--headless"])
+    }
+
+    /// 异步 `open`（不阻塞主线程、无窗口）。
+    private static func openProcess(open: String, args: [String]) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: open)
+        p.arguments = args
+        try? p.run()
     }
 
     /// 读取已有 token；不存在/太短则用 `SecRandomCopyBytes` 生成 32 字节并写盘（权限 0600）。
@@ -167,6 +233,24 @@ final class AgentBridge {
                     Log.warn("本地桥监听失败，端口可能被占用，保持关闭不影响主程序: \(err)", "bridge")
                     self.listener?.cancel()
                     self.listener = nil
+                    // 有头模式：短暂重试，等无头收到 shutdown 退出、端口释放后再 bind。
+                    // 无头模式不重试：走 onPortBusy 立即退出让位。
+                    if self.retryOnPortBusy, self.failedRetryCount < 10 {
+                        self.failedRetryCount += 1
+                        let delay = 0.3 * Double(self.failedRetryCount)
+                        self.queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            guard let self, self.retryOnPortBusy else { return }
+                            if AgentBridge.isPortOpen(self.port) { return }   // 还没释放，继续等
+                            self.startLocked()
+                        }
+                    } else {
+                        // 重试耗尽（有头 10 次 ~1.8s 仍被占）：有头默认无 onPortBusy handler，这里
+                        // 必须打日志，否则桥静默失败、CLI 调用全部连不上却毫无痕迹。
+                        if self.retryOnPortBusy {
+                            Log.warn("端口 \(self.port) 重试 10 次仍被占用，本地桥放弃启动", "bridge")
+                        }
+                        self.onPortBusy?()
+                    }
                 case .cancelled:
                     self.isRunning = false
                 default:
@@ -376,7 +460,12 @@ private final class BridgeConnection {
             // 不支持 chunked（本地 CLI 客户端从不使用）；直接判非法请求。
             return false
         }
-        contentLength = Int(hdrs["content-length"] ?? "") ?? 0
+        if let rawLength = hdrs["content-length"] {
+            guard let parsedLength = Int(rawLength), parsedLength >= 0 else { return false }
+            contentLength = parsedLength
+        } else {
+            contentLength = 0
+        }
         return true
     }
 

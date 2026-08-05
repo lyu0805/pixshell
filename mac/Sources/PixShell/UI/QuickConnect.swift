@@ -83,7 +83,8 @@ final class QuickConnect: NSView {
         rule.layer?.backgroundColor = Theme.border.cgColor
         rule.translatesAutoresizingMaskIntoConstraints = false
 
-        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true
+        let scroll = OverlayScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
+        scroll.verticalScroller = InvisibleScroller()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(grid); grid.translatesAutoresizingMaskIntoConstraints = false
@@ -146,11 +147,11 @@ final class QuickConnect: NSView {
         let tint = osTint(h.osId)
         let iconBox = NSView(); iconBox.rounded(Theme.radiusSm, bg: tint.withAlphaComponent(0.12))
         iconBox.translatesAutoresizingMaskIntoConstraints = false
-        
+
         // 优先使用 Assets.xcassets 里的真实矢量 OS Logo
         let iconName = osImageName(h.osId)
         var iconImg: NSImage? = nil
-        
+
         // 1. Xcode 编译态: 从 Assets.car 加载
         if let img = Bundle.module.image(forResource: NSImage.Name(iconName)) {
             iconImg = img
@@ -161,7 +162,7 @@ final class QuickConnect: NSView {
             iconImg = NSImage(contentsOf: url)
             iconImg?.isTemplate = true
         }
-        
+
         let finalImg = iconImg ?? NSImage(systemSymbolName: osSymbol(h.osId), accessibilityDescription: nil) ?? NSImage()
         let icon = NSImageView(image: finalImg)
         icon.contentTintColor = tint; icon.translatesAutoresizingMaskIntoConstraints = false
@@ -203,7 +204,7 @@ final class QuickConnect: NSView {
             pillRow.widthAnchor.constraint(equalTo: v.widthAnchor),
             btnRow.widthAnchor.constraint(equalTo: v.widthAnchor),
         ])
-        
+
         // 给卡片加一点环境光阴影增加层级感
         let shadow = NSShadow()
         shadow.shadowColor = NSColor.black.withAlphaComponent(0.2)

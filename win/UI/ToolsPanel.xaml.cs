@@ -239,18 +239,20 @@ public partial class ToolsPanel : UserControl
     private void PickDir_Click(object sender, RoutedEventArgs e) => OnPickDownloadDir?.Invoke();
     private void OpenDir_Click(object sender, RoutedEventArgs e) => OnOpenDownloadDir?.Invoke();
 
-    private void Process_Click(object sender, RoutedEventArgs e) => Run("进程管理", CmdProcess);
-    private void Network_Click(object sender, RoutedEventArgs e) => Run("网络监控", CmdNetwork);
-    private void Speed_Click(object sender, RoutedEventArgs e) => Run("速度测试", CmdSpeed);
+    private async void Process_Click(object sender, RoutedEventArgs e) { try { await RunAsync("进程管理", CmdProcess); } catch { } }
+    private async void Network_Click(object sender, RoutedEventArgs e) { try { await RunAsync("网络监控", CmdNetwork); } catch { } }
+    private async void Speed_Click(object sender, RoutedEventArgs e) { try { await RunAsync("速度测试", CmdSpeed); } catch { } }
 
-    private void Route_Click(object sender, RoutedEventArgs e)
+    private async void Route_Click(object sender, RoutedEventArgs e)
     {
-        var host = PromptText("路由追踪", "输入目标主机 / IP", "1.1.1.1");
-        if (string.IsNullOrWhiteSpace(host)) return;
-        Run($"路由追踪 {host}", CmdRoute(host));
+        try
+        {
+            var host = PromptText("路由追踪", "输入目标主机 / IP", "1.1.1.1");
+            if (string.IsNullOrWhiteSpace(host)) return;
+            await RunAsync($"路由追踪 {host}", CmdRoute(host));
+        }
+        catch { }
     }
-
-    private async void Run(string label, string cmd) => await RunAsync(label, cmd);
 
     public async Task RunAsync(string label, string cmd)
     {

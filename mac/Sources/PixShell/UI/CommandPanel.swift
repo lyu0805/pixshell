@@ -38,6 +38,7 @@ final class CommandPanel: NSView {
     private var paramInputs: [String: NSComboBox] = [:]
     private var pendingTemplate: String?
     private var pendingTarget: SendTarget = .current
+    private var pendingAutoReturn = true
     private static let paramHistoryKey = "pixshell.quickCommand.paramHistory"
     private static let paramHistoryLimitKey = "pixshell.quickCommand.paramHistoryLimit"
     var parameterHistoryLimit: Int {
@@ -70,7 +71,7 @@ final class CommandPanel: NSView {
 
         // ── 左栏：命令列表（带边框盒子 + 换行 + 可滚动）──
         let listBox = CardView(radius: Theme.radiusSm, bg: Theme.bg2, border: Theme.border)
-        let listScroll = NSScrollView()
+        let listScroll = OverlayScrollView()
         listScroll.drawsBackground = false
         listScroll.hasVerticalScroller = true
         listScroll.hasHorizontalScroller = false
@@ -395,12 +396,14 @@ final class CommandPanel: NSView {
             showParameterForm(for: c, target: tgt, names: names)
             return
         }
-        onSendTo?(c.command + "\r", tgt)
+        let suffix = (c.autoReturn ?? true) ? "\r" : ""
+        onSendTo?(c.command + suffix, tgt)
     }
 
     private func showParameterForm(for command: QuickCommand, target: SendTarget, names: [String]) {
         pendingTemplate = command.command
         pendingTarget = target
+        pendingAutoReturn = command.autoReturn ?? true
         paramInputs.removeAll()
         paramFields.arrangedSubviews.forEach { paramFields.removeArrangedSubview($0); $0.removeFromSuperview() }
         let history = UserDefaults.standard.dictionary(forKey: Self.paramHistoryKey) as? [String: [String]] ?? [:]
@@ -435,14 +438,16 @@ final class CommandPanel: NSView {
         }
         let text = CommandParams.render(template, values: values)
         let target = pendingTarget
+        let suffix = pendingAutoReturn ? "\r" : ""
         hideParameterForm()
-        onSendTo?(text + "\r", target)
+        onSendTo?(text + suffix, target)
     }
 
     @objc private func cancelParamsAction() { hideParameterForm() }
 
     private func hideParameterForm() {
         pendingTemplate = nil
+        pendingAutoReturn = true
         paramInputs.removeAll()
         paramFields.arrangedSubviews.forEach { paramFields.removeArrangedSubview($0); $0.removeFromSuperview() }
         paramBox.isHidden = true
@@ -581,23 +586,55 @@ final class CommandPanel: NSView {
         a.addButton(withTitle: "保存"); a.addButton(withTitle: "取消")
         let name = NSTextField(string: existing?.name ?? "")
         let group = NSTextField(string: existing?.group ?? "默认")
-        let cmd = NSTextField(string: existing?.command ?? "")
-        for f in [name, group, cmd] { f.translatesAutoresizingMaskIntoConstraints = false
-            f.widthAnchor.constraint(equalToConstant: 300).isActive = true }
+
+        let cmdScroll = NSScrollView()
+        cmdScroll.borderType = .bezelBorder
+        cmdScroll.hasVerticalScroller = true
+        cmdScroll.autohidesScrollers = true
+        let cmdView = NSTextView()
+        cmdView.isRichText = false
+        cmdView.font = NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        cmdView.string = existing?.command ?? ""
+        cmdView.autoresizingMask = [.width]
+        cmdScroll.documentView = cmdView
+
+        let autoReturn = NSButton(checkboxWithTitle: "末尾添加回车符CR", target: nil, action: nil)
+        autoReturn.state = (existing?.autoReturn ?? true) ? .on : .off
+
+        for f in [name, group] {
+            f.translatesAutoresizingMaskIntoConstraints = false
+            f.widthAnchor.constraint(equalToConstant: 420).isActive = true
+        }
+        cmdScroll.translatesAutoresizingMaskIntoConstraints = false
+        cmdScroll.widthAnchor.constraint(equalToConstant: 420).isActive = true
+        cmdScroll.heightAnchor.constraint(equalToConstant: 120).isActive = true
+
         let grid = NSGridView(numberOfColumns: 2, rows: 0); grid.rowSpacing = 8; grid.columnSpacing = 10
         grid.addRow(with: [NSTextField(labelWithString: "名称"), name])
         grid.addRow(with: [NSTextField(labelWithString: "分组"), group])
-        grid.addRow(with: [NSTextField(labelWithString: "命令"), cmd])
-        grid.addRow(with: [NSTextField(labelWithString: ""), NSTextField(labelWithString: "支持 ${参数}，发送时会提示填写")])
-        grid.frame = NSRect(x: 0, y: 0, width: 400, height: 120)
+
+        let cmdLabel = NSTextField(labelWithString: "命令")
+        grid.addRow(with: [cmdLabel, cmdScroll])
+        grid.cell(for: cmdLabel)?.yPlacement = .top
+
+        grid.addRow(with: [NSTextField(labelWithString: ""), autoReturn])
+
+        let hint = NSTextField(labelWithString: "支持 ${参数}，发送时会提示填写")
+        hint.textColor = .secondaryLabelColor
+        hint.font = .systemFont(ofSize: 11)
+        grid.addRow(with: [NSTextField(labelWithString: ""), hint])
+
+        grid.frame = NSRect(x: 0, y: 0, width: 480, height: 230)
         a.accessoryView = grid
+
         guard a.runModal() == .alertFirstButtonReturn else { return }
         let n = name.stringValue.trimmingCharacters(in: .whitespaces)
-        let c = cmd.stringValue.trimmingCharacters(in: .whitespaces)
+        let c = cmdView.string.trimmingCharacters(in: .whitespaces)
         guard !n.isEmpty, !c.isEmpty else { return }
         var item = existing ?? QuickCommand(name: n, command: c)
         item.name = n; item.command = c
         item.group = group.stringValue.trimmingCharacters(in: .whitespaces).isEmpty ? "默认" : group.stringValue
+        item.autoReturn = autoReturn.state == .on
         store.upsert(item)
         reloadGroups(); reloadChips()
     }

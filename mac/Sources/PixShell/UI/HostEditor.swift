@@ -32,11 +32,13 @@ final class HostFormView: NSView {
     private var proxyIds: [String] = [""]
     private var hostLabel: NSTextField?
     private var webUrlLabel: NSTextField?
-    private var webUrlRow: NSGridCell?
+    private var webUrlRow: NSGridRow?
+    /// 首次布局后锁定的 accessory 高度（NSAlert 高度变化布局有 bug，见 applyTypeUI）
+    private var fixedHeight: CGFloat = 0
     private var grid: NSGridView!
 
     init(host: Host?, password: String?) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 400, height: 390))
+        super.init(frame: NSRect(x: 0, y: 0, width: 400, height: 330))
         // 连接类型：SSH / RDP / Web。
         // Web = 应用内 WKWebView：可填外部 https（noVNC/面板），或留空 URL 走本地桥 WebSSH。
         typePopup.addItems(withTitles: ["SSH", "RDP（远程桌面）", "Web（应用内页面/终端）"])
@@ -116,19 +118,39 @@ final class HostFormView: NSView {
             }
             grid.addRow(with: [lab, view])
         }
-        // URL 行索引 3（类型0 名称1 主机2 URL3）
-        webUrlRow = grid.cell(atColumnIndex: 1, rowIndex: 3)
+        // URL 行索引 3（类型0 名称1 主机2 URL3）。持整行以便折叠（NSGridRow.isHidden
+        // 会释放行空间；只藏 view 行仍占位 → 手动压窗口高度时行被压缩 → 控件重叠）
+        webUrlRow = grid.row(at: 3)
         addSubview(grid)
         NSLayoutConstraint.activate([
-            grid.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            grid.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            grid.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            grid.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+            grid.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            grid.centerXAnchor.constraint(equalTo: centerXAnchor),
+            self.widthAnchor.constraint(equalToConstant: 420)
         ])
         applyTypeUI(animated: false)
     }
 
     required init?(coder: NSCoder) { fatalError("no coder") }
+
+    /// NSAlert 模态会话中主菜单被禁用 → ⌘V/⌘X/⌘Z 等编辑快捷键失去 key equivalent
+    /// （⌘C 实测可用，一并覆盖更稳）。在表单层拦截转发给 field editor。
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
+           let editor = window?.firstResponder as? NSTextView,
+           let chars = event.charactersIgnoringModifiers?.lowercased() {
+            switch chars {
+            case "v": editor.paste(nil)
+            case "x": editor.cut(nil)
+            case "a": editor.selectAll(nil)
+            case "z":
+                if event.modifierFlags.contains(.shift) { editor.undoManager?.redo() }
+                else { editor.undoManager?.undo() }
+            default: return super.performKeyEquivalent(with: event)
+            }
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 
     var password: String { passField.stringValue }
 
@@ -145,7 +167,9 @@ final class HostFormView: NSView {
 
     private func applyTypeUI(animated: Bool) {
         let isWeb = typePopup.indexOfSelectedItem == 2
-        // URL 行：Web 显示，其它隐藏（row 仍占位用 isHidden）
+        // URL 行：Web 显示，其它隐藏。折叠整行（不占位），避免
+        // 窗口高度收缩时剩余行被 NSGrid 压缩导致控件重叠。
+        webUrlRow?.isHidden = !isWeb
         webUrlField.isHidden = !isWeb
         webUrlLabel?.isHidden = !isWeb
         if isWeb {
@@ -157,13 +181,21 @@ final class HostFormView: NSView {
         } else {
             hostField.placeholderString = ""
         }
-        // 缩表单高度：Web 多一行
-        // 代理选择必须始终可见；旧高度会在部分系统字号/缩放下裁掉表单末行。
-        let h: CGFloat = isWeb ? 390 : 350
+        // 高度锁定策略：NSAlert 对 accessory 高度变化布局有 bug（从底部锚定，
+        // 高度变大后 accessory 顶部上移 → 类型行与 message 标题重叠）。因此
+        // accessory 高度恒定为最大形态。现在包含代理选择共 10 行，因此比
+        // 上游原来的 268pt 更高；切换类型只折叠/展开 URL 行，窗口不跳动。
+        if fixedHeight <= 0 {
+            fixedHeight = 330
+        }
+        let h = fixedHeight
         if abs(frame.height - h) > 1 {
+            if let win = enclosingAlert()?.window {
+                let delta = h - frame.height
+                win.setContentSize(NSSize(width: win.frame.width, height: win.frame.height + delta))
+            }
             setFrameSize(NSSize(width: frame.width, height: h))
             if animated, let alert = enclosingAlert() {
-                // NSAlert accessory 变高时尽量刷新
                 needsLayout = true
                 alert.window.layoutIfNeeded()
             }

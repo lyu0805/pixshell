@@ -497,7 +497,8 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
         onInsertToCommand?(paths.isEmpty ? remotePath : paths.joined(separator: " "))
     }
     private func scroll(_ doc: NSView) -> NSScrollView {
-        let s = NSScrollView(); s.documentView = doc; s.hasVerticalScroller = true
+        let s = NSScrollView(); s.documentView = doc; s.hasVerticalScroller = true; s.scrollerStyle = .overlay
+        s.verticalScroller = InvisibleScroller()
         s.drawsBackground = true; s.backgroundColor = Theme.bg2
         s.rounded(Theme.radiusSm, border: Theme.border)
         s.translatesAutoresizingMaskIntoConstraints = false
@@ -880,11 +881,27 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
         }
     }
     @objc func del() {
-        let row = remoteTable.selectedRow
-        guard row >= 0, row < remoteEntries.count, let sftp = sftp else { return }
-        let e = remoteEntries[row]
-        sftp.remove(join(remotePath, e.name)) { [weak self] r in
-            if case .failure(let er) = r { self?.statusLabel.stringValue = "删除失败: \(self?.msg(er) ?? "")" } else { self?.reloadRemote() }
+        let rows = remoteTable.selectedRowIndexes
+        guard !rows.isEmpty, let sftp = sftp else { return }
+
+        let group = DispatchGroup()
+        var lastError: Error?
+
+        for row in rows.reversed() {
+            guard row >= 0, row < remoteEntries.count else { continue }
+            let e = remoteEntries[row]
+            group.enter()
+            sftp.remove(join(remotePath, e.name)) { r in
+                if case .failure(let er) = r { lastError = er }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) { [weak self] in
+            if let er = lastError {
+                self?.statusLabel.stringValue = "删除失败: \(self?.msg(er) ?? "")"
+            }
+            self?.reloadRemote()
         }
     }
 

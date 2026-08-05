@@ -152,6 +152,13 @@ public sealed class AgentBridge
     // Lifecycle
     // =====================================================================
 
+    /// <summary>端口被占用（=有头/无头已在听）时触发。无头模式：收到即退出让位；
+    /// 有头模式：配合 retryOnPortBusy 先等端口释放再重试 bind。</summary>
+    public event Action? OnPortBusy;
+
+    /// <summary>有头模式：bind 失败先重试等无头让位（先发 /v1/app/shutdown 让它退），默认 false（无头行为：立即退出让位）。</summary>
+    public bool RetryOnPortBusy;
+
     public void Start()
     {
         if (_listener != null) return;
@@ -172,7 +179,52 @@ public sealed class AgentBridge
             IsRunning = false;
             _listener = null;
             Log.Warn($"本地桥启动异常，端口可能被占用，保持关闭不影响主程序: {ex.Message}", "bridge");
+            if (RetryOnPortBusy)
+            {
+                _ = RetryBindAsync(ex);
+            }
+            else
+            {
+                OnPortBusy?.Invoke();
+            }
         }
+    }
+
+    private async Task RetryBindAsync(Exception firstError)
+    {
+        // 有头 bind 与无头退出是异步竞态：重试等端口释放后再 bind，最多 ~10 次。
+        for (var i = 1; i <= 10; i++)
+        {
+            await Task.Delay(300 * i).ConfigureAwait(false);
+            if (IsPortOpen(Port)) continue;   // 还没释放，继续等
+            try
+            {
+                var listener = new HttpListener();
+                listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
+                listener.Start();
+                _listener = listener;
+                _cts = new CancellationTokenSource();
+                IsRunning = true;
+                Log.Info($"本地桥已启动（重试） http://127.0.0.1:{Port}（token 长度 {_token.Length}）", "bridge");
+                _ = AcceptLoopAsync(listener, _cts.Token);
+                return;
+            }
+            catch { /* 端口仍被占，下一轮再试 */ }
+        }
+        OnPortBusy?.Invoke();
+        Log.Warn($"等待端口释放超时: {firstError.Message}", "bridge");
+    }
+
+    /// <summary>裸 TCP 建连探测 127.0.0.1:port 是否在听（/v1/health 在鉴权后，无 token 返回 401，用 TCP 判断可靠）。</summary>
+    public static bool IsPortOpen(int port)
+    {
+        try
+        {
+            using var client = new System.Net.Sockets.TcpClient();
+            var task = client.ConnectAsync("127.0.0.1", port);
+            return task.Wait(1500) && client.Connected;
+        }
+        catch { return false; }
     }
 
     public void Stop()

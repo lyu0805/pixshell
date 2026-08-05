@@ -35,6 +35,8 @@ public interface IBridgeHost
     Task<string?> BridgeSftpDownloadAsync(int session, string remote, string local);
     /// <summary>SFTP 上传；返回远端路径，失败抛异常。</summary>
     Task<string?> BridgeSftpUploadAsync(int session, string local, string remote);
+    /// <summary>关闭全部会话并释放桥（有头接管时让无头退出用）。</summary>
+    void BridgeShutdown();
 }
 
 /// <summary>一次已解析的 HTTP 请求：AgentBridge 完成分帧、鉴权、Origin 校验之后，把纯业务部分交给
@@ -132,6 +134,12 @@ public static class BridgeRouter
                 case "/v1/app/sftp/upload":
                     if (method != "POST") return BridgeResponse.Fail(405, "use POST");
                     return await RouteSftpUpload(req, host).ConfigureAwait(false);
+
+                // 有头接管：无头进程收到后关闭全部会话并退出让位（对齐 mac BridgeRoutes.swift）。
+                case "/v1/app/shutdown":
+                    if (method != "POST") return BridgeResponse.Fail(405, "use POST");
+                    host.BridgeShutdown();
+                    return BridgeResponse.Ok(new { ok = true });
 
                 // Web SSH 页由 AgentBridge 直接处理，不走路由层。
 
@@ -258,9 +266,10 @@ public static class BridgeRouter
         var remote = StringField(req.Body, "remote", "remotePath", "path");
         if (string.IsNullOrEmpty(remote)) return BridgeResponse.Fail(400, "缺少 remote");
         var local = StringField(req.Body, "local", "localPath") ?? DefaultDownloadLocal(remote);
+        if (!IsSafeLocalPath(local, out var safeLocal)) return BridgeResponse.Fail(403, "不允许访问此本地路径");
         try
         {
-            var result = await host.BridgeSftpDownloadAsync(sid, remote, local).ConfigureAwait(false);
+            var result = await host.BridgeSftpDownloadAsync(sid, remote, safeLocal).ConfigureAwait(false);
             return result != null ? BridgeResponse.Ok(new { ok = true, localPath = result }) : BridgeResponse.Fail(400, "download failed");
         }
         catch (Exception ex)
@@ -275,9 +284,10 @@ public static class BridgeRouter
         var local = StringField(req.Body, "local", "localPath");
         var remote = StringField(req.Body, "remote", "remotePath");
         if (string.IsNullOrEmpty(local) || string.IsNullOrEmpty(remote)) return BridgeResponse.Fail(400, "需要 local 与 remote");
+        if (!IsSafeLocalPath(local, out var safeLocal)) return BridgeResponse.Fail(403, "不允许访问此本地路径");
         try
         {
-            var result = await host.BridgeSftpUploadAsync(sid, local, remote).ConfigureAwait(false);
+            var result = await host.BridgeSftpUploadAsync(sid, safeLocal, remote).ConfigureAwait(false);
             return result != null ? BridgeResponse.Ok(new { ok = true, remotePath = result }) : BridgeResponse.Fail(400, "upload failed");
         }
         catch (Exception ex)
@@ -375,5 +385,31 @@ public static class BridgeRouter
         if (string.IsNullOrEmpty(name)) name = "file";
         var safe = name.Replace("/", "_").Replace("\\", "_");
         return Path.Combine(Path.GetTempPath(), "pixshell-dl-" + safe);
+    }
+
+    private static bool IsSafeLocalPath(string path, out string normalized)
+    {
+        normalized = string.Empty;
+        if (string.IsNullOrEmpty(path) || path.Contains("..")) return false;
+        try
+        {
+            normalized = Path.GetFullPath(path);
+            var local = normalized;
+            var downloads = Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"));
+            var temp = Path.GetFullPath(Path.GetTempPath());
+
+            bool IsUnder(string root) =>
+                local.StartsWith(root, StringComparison.OrdinalIgnoreCase) &&
+                (local.Length == root.Length ||
+                 local[root.Length] == Path.DirectorySeparatorChar ||
+                 local[root.Length] == Path.AltDirectorySeparatorChar ||
+                 root.EndsWith(Path.DirectorySeparatorChar.ToString()));
+
+            return IsUnder(downloads) || IsUnder(temp);
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

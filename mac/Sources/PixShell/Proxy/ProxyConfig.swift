@@ -39,6 +39,19 @@ public struct ProxyConfig: Codable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey { case id, name, type, host, port, username, password }
 
+    static func credentialKey(_ id: String) -> String { "proxy-password-\(id)" }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(type, forKey: .type)
+        try c.encode(host, forKey: .host)
+        try c.encode(port, forKey: .port)
+        try c.encode(username, forKey: .username)
+        // password lives in the credential store and never enters proxies.json.
+    }
+
     // 自定义解码：容错优先——任何字段缺失/类型对不上都不应让整条代理记录解析失败(顶多退化成默认值)。
     // 尤其是 `type`：老配置里可能是字符串("socks5"/"http"/"ssh-jump")，也可能是历史数字码(100/200)。
     public init(from decoder: Decoder) throws {
@@ -86,9 +99,16 @@ public struct ProxyConfig: Codable, Identifiable, Equatable, Sendable {
         }
     }
 
+    private static var idCounter: Int = 0
+    private static let idLock = NSLock()
+
     /// 对齐 JS `'px_' + Date.now().toString(36)`。公开：作为 public init 的默认参数值必须可见。
     public static func newId() -> String {
-        "px_" + String(Int(Date().timeIntervalSince1970 * 1000), radix: 36)
+        idLock.lock()
+        idCounter += 1
+        let count = idCounter
+        idLock.unlock()
+        return "px_" + String(Int(Date().timeIntervalSince1970 * 1000), radix: 36) + "-\(count)"
     }
 }
 
@@ -114,12 +134,31 @@ final class ProxyStore {
             proxies = []
             return
         }
-        proxies = a
+        var migrationFailed = false
+        var hasLegacyPassword = false
+        proxies = a.map { proxy in
+            var copy = proxy
+            if !proxy.password.isEmpty {
+                hasLegacyPassword = true
+                let key = ProxyConfig.credentialKey(proxy.id)
+                if !Keychain.setPassword(proxy.password, for: key)
+                    || Keychain.password(for: key) != proxy.password {
+                    migrationFailed = true
+                    return copy
+                }
+            }
+            copy.password = Keychain.password(for: ProxyConfig.credentialKey(proxy.id)) ?? ""
+            return copy
+        }
+        if hasLegacyPassword, !migrationFailed { saveConfig() }
     }
 
-    func save() {
+    private func saveConfig() {
         let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let d = try? e.encode(proxies) { try? d.write(to: url, options: .atomic) }
+        if let d = try? e.encode(proxies) {
+            try? d.write(to: url, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
     }
 
     func list() -> [ProxyConfig] { proxies }
@@ -131,9 +170,29 @@ final class ProxyStore {
     }
 
     func upsert(_ p: ProxyConfig) {
-        if let i = proxies.firstIndex(where: { $0.id == p.id }) { proxies[i] = p } else { proxies.append(p) }
-        save()
+        let key = ProxyConfig.credentialKey(p.id)
+        guard Keychain.setPassword(p.password, for: key),
+              (p.password.isEmpty ? Keychain.password(for: key) == nil : Keychain.password(for: key) == p.password) else {
+            Log.error("代理凭据保存失败，跳过代理配置写盘", "proxy")
+            return
+        }
+        var updated = proxies
+        if let i = updated.firstIndex(where: { $0.id == p.id }) { updated[i] = p } else { updated.append(p) }
+        for proxy in updated where !proxy.password.isEmpty {
+            let proxyKey = ProxyConfig.credentialKey(proxy.id)
+            guard Keychain.setPassword(proxy.password, for: proxyKey),
+                  Keychain.password(for: proxyKey) == proxy.password else {
+                Log.error("代理凭据迁移未完成，保留原代理配置", "proxy")
+                return
+            }
+        }
+        proxies = updated
+        saveConfig()
     }
 
-    func delete(_ id: String) { proxies.removeAll { $0.id == id }; save() }
+    func delete(_ id: String) {
+        proxies.removeAll { $0.id == id }
+        Keychain.delete(ProxyConfig.credentialKey(id))
+        saveConfig()
+    }
 }

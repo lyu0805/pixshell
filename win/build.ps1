@@ -147,10 +147,10 @@ try {
     Write-Host '[WARN] Could not stop an existing PixShell process; continuing.' -ForegroundColor Yellow
 }
 
-Invoke-Dotnet @('restore', $project, '-r', $Runtime)
+Invoke-Dotnet restore $project -r $Runtime
 
 if ($Action -eq 'build' -or $Action -eq 'run') {
-    Invoke-Dotnet @('build', $project, '-c', $Configuration, '-r', $Runtime, '--self-contained', $selfContainedValue, '-v', 'minimal', '-nologo', '--no-restore')
+    Invoke-Dotnet build $project -c $Configuration -r $Runtime --self-contained $selfContainedValue --verbosity minimal -nologo --no-restore
     $exe = Join-Path $scriptDir (Join-Path 'bin' (Join-Path $Configuration (Join-Path $framework (Join-Path $Runtime 'PixShell.exe'))))
     if (-not (Test-Path -LiteralPath $exe)) {
         Fail "Build succeeded but executable was not found: $exe"
@@ -177,6 +177,6 @@ if (Test-Path -LiteralPath $OutputDir) {
 }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
-Invoke-Dotnet @('publish', $project, '-c', $Configuration, '-r', $Runtime, '--self-contained', $selfContainedValue, '-o', $OutputDir, '-v', 'minimal', '-nologo', '--no-restore')
+Invoke-Dotnet publish $project -c $Configuration -r $Runtime --self-contained $selfContainedValue -o $OutputDir --verbosity minimal -nologo --no-restore
 Test-PublishOutput $OutputDir
 Write-Host "[OK] Publish output: $OutputDir" -ForegroundColor Green

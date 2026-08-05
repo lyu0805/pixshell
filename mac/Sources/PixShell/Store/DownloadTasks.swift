@@ -27,20 +27,33 @@ final class DownloadTasks {
     @discardableResult
     func start(name: String, dest: String) -> UUID {
         let t = Task(id: UUID(), name: name, dest: dest, state: .running, detail: "", started: Date())
-        tasks.insert(t, at: 0)
-        if tasks.count > maxKeep { tasks.removeLast(tasks.count - maxKeep) }
-        notify()
-        return t.id
+        let id = t.id
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.tasks.insert(t, at: 0)
+            if self.tasks.count > self.maxKeep { self.tasks.removeLast(self.tasks.count - self.maxKeep) }
+            self.notify()
+        }
+        return id
     }
 
     func finish(_ id: UUID, ok: Bool, detail: String = "") {
-        guard let i = tasks.firstIndex(where: { $0.id == id }) else { return }
-        tasks[i].state = ok ? .done : .failed
-        tasks[i].detail = detail
-        notify()
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard let i = self.tasks.firstIndex(where: { $0.id == id }) else { return }
+            self.tasks[i].state = ok ? .done : .failed
+            self.tasks[i].detail = detail
+            self.notify()
+        }
     }
 
-    func clear() { tasks.removeAll(); notify() }
+    func clear() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.tasks.removeAll()
+            self.notify()
+        }
+    }
 
     private func notify() {
         if Thread.isMainThread { onChange?() }

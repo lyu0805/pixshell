@@ -238,7 +238,7 @@
                         </Viewbox>
                     </Button>
                     <TextBlock Text="PixShell" FontWeight="Bold" Foreground="{DynamicResource BrushText}" VerticalAlignment="Center"/>
-                    <TextBlock Text="v0.1.2" Margin="6,0,0,0" Opacity="0.85" VerticalAlignment="Center"/>
+                    <TextBlock Text="{x:Static local:MainWindow.AppVersion}" Margin="6,0,0,0" Opacity="0.85" VerticalAlignment="Center"/>
                 </StackPanel>
             </StatusBarItem>
             <!-- 本地 CLI/Agent 桥三态：未开启(红)/已开启(黄)/已对接(绿)，对齐 mac updateCliStatus。 -->

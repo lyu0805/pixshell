@@ -15,6 +15,11 @@ final class ConnectOverlay: NSView {
     private var stepTimer: Timer?
     private var stepIndex = 0
 
+    private let cancelBtn = NSButton(title: "取消", target: nil, action: nil)
+    private let retryBtn = NSButton(title: "重试", target: nil, action: nil)
+    var onCancel: (() -> Void)?
+    var onRetry: (() -> Void)?
+
     /// 分步文案（对齐真实 SSH 流程的观感；不是真进度，只表达"在动"）
     private static let steps = ["正在建立 TCP 连接…", "SSH 握手…", "身份认证…", "打开会话…"]
 
@@ -33,8 +38,25 @@ final class ConnectOverlay: NSView {
         titleLabel.alignment = .center
         stepLabel.font = Theme.ui(12); stepLabel.textColor = Theme.muted
         stepLabel.alignment = .center
+        stepLabel.lineBreakMode = .byWordWrapping
+        stepLabel.maximumNumberOfLines = 0
 
-        let stack = NSStackView(views: [pulse, titleLabel, stepLabel, bar])
+        cancelBtn.target = self
+        cancelBtn.action = #selector(cancelClicked)
+        cancelBtn.bezelStyle = .rounded
+        cancelBtn.controlSize = .small
+
+        retryBtn.target = self
+        retryBtn.action = #selector(retryClicked)
+        retryBtn.bezelStyle = .rounded
+        retryBtn.controlSize = .small
+        retryBtn.isHidden = true // 只在失败驻留时显示
+
+        let btnStack = NSStackView(views: [retryBtn, cancelBtn])
+        btnStack.orientation = .horizontal
+        btnStack.spacing = 8
+
+        let stack = NSStackView(views: [pulse, titleLabel, stepLabel, bar, btnStack])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 12
@@ -49,7 +71,21 @@ final class ConnectOverlay: NSView {
             stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
             bar.widthAnchor.constraint(equalToConstant: 220),
+            stepLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 400),
         ])
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .arrow)
+    }
+
+    @objc private func cancelClicked() {
+        onCancel?()
+    }
+
+    @objc private func retryClicked() {
+        onRetry?()
     }
 
     /// 开始：贴满 host 视图并播放动画。
@@ -59,6 +95,7 @@ final class ConnectOverlay: NSView {
         titleLabel.stringValue = title
         stepLabel.stringValue = Self.steps[0]
         stepLabel.textColor = Theme.muted
+        retryBtn.isHidden = true
         alphaValue = 1
         isHidden = false
 
@@ -94,13 +131,17 @@ final class ConnectOverlay: NSView {
     }
 
     /// 失败：红字提示后淡出（密码重试框由调用方弹）。
-    func fail(_ reason: String) {
+    func fail(_ reason: String, autoHide: Bool = true) {
         guard !isHidden else { return }
         stepTimer?.invalidate(); stepTimer = nil
         stepLabel.stringValue = reason
         stepLabel.textColor = Theme.err
         pulse.stop(ok: false); bar.stop()
-        fadeOut(after: 0.9)
+        if autoHide {
+            fadeOut(after: 0.9)
+        } else {
+            retryBtn.isHidden = false
+        }
     }
 
     func hideNow() {

@@ -233,7 +233,7 @@ public partial class SftpPanel : UserControl
     // =====================================================================
     // 远端明细列表 — 统一用 IRemoteFs
     // =====================================================================
-    private async void LoadRemoteDetail(string dir)
+    private async Task LoadRemoteDetail(string dir)
     {
         var fs = _remoteFs;
         if (fs is not { Connected: true }) return;
@@ -259,7 +259,7 @@ public partial class SftpPanel : UserControl
     // =====================================================================
     // 内置编辑器：双击文件 / 右键"打开" → 下载到临时文件 → 交给 EditorWindow
     // =====================================================================
-    private async void OpenRemoteFileForEdit(FsRow r)
+    private async Task OpenRemoteFileForEdit(FsRow r)
     {
         var fs = _remoteFs;
         if (fs is not { Connected: true }) return;
@@ -291,7 +291,7 @@ public partial class SftpPanel : UserControl
         }
     }
 
-    public async void SaveRemoteFile(string remotePath, string text, Action<string?> done)
+    public async Task SaveRemoteFile(string remotePath, string text, Action<string?> done)
     {
         var fs = _remoteFs;
         if (fs is not { Connected: true }) { done("远端未连接"); return; }
@@ -329,7 +329,7 @@ public partial class SftpPanel : UserControl
         LoadRemoteDetail(_remoteDir);
     }
 
-    public async void Mkdir()
+    public async Task Mkdir()
     {
         var fs = _remoteFs;
         if (fs is not { Connected: true }) return;
@@ -346,7 +346,7 @@ public partial class SftpPanel : UserControl
     /// <summary>右键/键盘 Delete 目标条目：优先当前多选（⌘/Shift 多选，对齐 mac 版 §5）。</summary>
     private List<FsRow> TargetRemoteRows() => RemoteList.SelectedItems.Cast<FsRow>().ToList();
 
-    public async void Delete()
+    public async Task Delete()
     {
         var fs = _remoteFs;
         if (fs is not { Connected: true }) return;
@@ -365,7 +365,7 @@ public partial class SftpPanel : UserControl
         LoadRemoteDetail(_remoteDir);
     }
 
-    public async void Rename()
+    public async Task Rename()
     {
         var fs = _remoteFs;
         if (fs is not { Connected: true }) return;
@@ -448,10 +448,11 @@ public partial class SftpPanel : UserControl
     }
 
     /// <summary>关闭打包时：逐项直传上传（目录跳过并提示）。</summary>
-    private async void UploadDirect(List<string> paths, IRemoteFs fs)
+    private async Task UploadDirect(List<string> paths, IRemoteFs fs)
     {
         var skippedDirs = 0;
         var uploaded = 0;
+        string? uploadError = null;
         await Task.Run(() =>
         {
             foreach (var one in paths)
@@ -466,7 +467,7 @@ public partial class SftpPanel : UserControl
                 {
                     var remote = JoinRemote(_remoteDir, Path.GetFileName(one));
                     using var localFs = File.OpenRead(one);
-                    StatusLabel.Text = $"上传 {Path.GetFileName(one)} …";
+                    Dispatcher.Invoke(() => StatusLabel.Text = $"上传 {Path.GetFileName(one)} …");
                     Log.Info($"直传上传 {one} → {remote}", "sftp");
                     fs.UploadFile(localFs, remote);
                     uploaded++;
@@ -474,11 +475,16 @@ public partial class SftpPanel : UserControl
                 catch (Exception ex)
                 {
                     Log.Error($"上传失败 {one}: {ex.Message}", "sftp");
-                    StatusLabel.Text = "上传失败: " + ex.Message;
+                    uploadError = ex.Message;
                     return;
                 }
             }
         });
+        if (uploadError != null)
+        {
+            StatusLabel.Text = "上传失败: " + uploadError;
+            return;
+        }
         StatusLabel.Text = skippedDirs > 0
             ? $"直传完成（{skippedDirs} 个目录已跳过，请开启「打包传输」）"
             : (uploaded > 0 ? "上传完成" : "无���上传文件");
@@ -493,7 +499,7 @@ public partial class SftpPanel : UserControl
         var remoteArchive = $"/tmp/pixshell_up_{st}.tar.gz";
         StatusLabel.Text = $"本地打包 {paths.Count} 项 …";
         Log.Info("智能打包上传 " + string.Join(", ", paths.Select(Path.GetFileName)), "sftp");
-        var err = await SftpTransfer.PackLocalAsync(localArchive, paths).ConfigureAwait(false);
+        var err = await SftpTransfer.PackLocalAsync(localArchive, paths);
         if (err != null) { Log.Error("本地打包失败: " + err, "sftp"); StatusLabel.Text = "打包失败: " + err; return; }
         try
         {
@@ -544,7 +550,7 @@ public partial class SftpPanel : UserControl
     }
 
     /// <summary>关闭打包时：逐项直传下载（目录跳过并提示）。</summary>
-    private async void DownloadDirect(List<FsRow> rows, string destDir, IRemoteFs fs)
+    private async Task DownloadDirect(List<FsRow> rows, string destDir, IRemoteFs fs)
     {
         var skippedDirs = 0;
         var downloaded = 0;
@@ -620,7 +626,7 @@ public partial class SftpPanel : UserControl
             return;
         }
         _ = ExecRunner($"rm -f {SftpTransfer.Quote(remoteArchive)}");
-        var err = await SftpTransfer.ExtractLocalAsync(localArchive, destDir).ConfigureAwait(false);
+        var err = await SftpTransfer.ExtractLocalAsync(localArchive, destDir);
         if (err != null)
         {
             Log.Error("本地解压失败: " + err, "sftp");
@@ -677,7 +683,7 @@ public partial class SftpPanel : UserControl
     // =====================================================================
     // 本地（默认隐藏）
     // =====================================================================
-    private async void LoadLocal(string dir)
+    private async Task LoadLocal(string dir)
     {
         try
         {

@@ -13,10 +13,11 @@ struct QuickCommand: Codable, Equatable, Identifiable {
     var group: String
     var command: String
     var params: [QuickParam]?
+    var autoReturn: Bool?
 
     init(id: String = UUID().uuidString, name: String, group: String = "默认",
-         command: String, params: [QuickParam]? = nil) {
-        self.id = id; self.name = name; self.group = group; self.command = command; self.params = params
+         command: String, params: [QuickParam]? = nil, autoReturn: Bool? = true) {
+        self.id = id; self.name = name; self.group = group; self.command = command; self.params = params; self.autoReturn = autoReturn
     }
 }
 
@@ -39,8 +40,10 @@ final class QuickCommandStore {
     }
 
     private func load() {
-        if let d = try? Data(contentsOf: url), let a = try? JSONDecoder().decode([QuickCommand].self, from: d), !a.isEmpty {
-            commands = a
+        if FileManager.default.fileExists(atPath: url.path) {
+            if let d = try? Data(contentsOf: url), let a = try? JSONDecoder().decode([QuickCommand].self, from: d) {
+                commands = a
+            }
         } else {
             commands = Self.defaults
             save()

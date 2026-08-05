@@ -29,12 +29,8 @@ extension AppDelegate {
         if !host.keyPath.isEmpty {
             beginSession(to: host, password: ""); return
         }
-        // 密码认证路径：无 key、无已存密码 → 必须向用户要密码；空串直接 return（与 key auth 区分）。
-        promptPassword(for: host, prefill: "") { [weak self] pw, remember in
-            guard let self = self, let pw = pw, !pw.isEmpty else { return }
-            if remember { Keychain.setPassword(pw, for: host.id, label: host.host.isEmpty ? host.name : host.host) }
-            self.beginSession(to: host, password: pw)
-        }
+        // 密码认证路径：无 key、无已存密码 → 留空直接连。若连通但认证失败，由 didCloseWith 触发 promptRetryPassword。
+        beginSession(to: host, password: "")
     }
 
     /// Web 主机：开应用内 WKWebView 标签。
@@ -264,36 +260,23 @@ extension AppDelegate {
     /// 明确的认证失败（错密/拒公钥/无更多方法）。
     static func looksLikeAuthFailure(_ error: Error?) -> Bool {
         guard let e = error else { return false }
+        if let oe = e as? OpenSSHExitError {
+            return oe.authRejected
+        }
         let s = "\(e) \(e.localizedDescription)".lowercased()
         for k in [
             "permission denied", "authentication failed", "auth fail",
             "invalid credentials", "access denied", "too many authentication",
             "no more authentication methods", "permission_denied",
-            "unauthorized", "wrong password", "invalid userauth",
-            "userauth", "authentication methods", "not authorized"
+            "wrong password", "invalid userauth", "not authorized"
         ] {
             if s.contains(k) { return true }
-        }
-        if let oe = e as? OpenSSHExitError {
-            let h = (oe.hint + " " + (oe.errorDescription ?? "")).lowercased()
-            // 有明确网络语义 → 不当认证（交给 network）。
-            for k in ["connection refused", "connection reset", "timed out", "timeout",
-                      "could not resolve", "no route", "network is unreachable",
-                      "operation timed out", "connection timed out", "nodename",
-                      "host key verification failed"] {
-                if h.contains(k) { return false }
-            }
-            for k in ["permission denied", "authentication failed", "auth fail",
-                      "denied", "publickey", "password"] {
-                if h.contains(k) { return true }
-            }
-            // 无 hint 的 exit≠0：偏向认证，保证错密仍能弹重试。
-            return true
         }
         return false
     }
 
-    /// 关闭原因分类：决定是否回落 OpenSSH / 是否删 Keychain / 是否弹密码。
+    /// 关闭原因分类：决定是否回落 OpenSSH / 是否弹密码。
+    /// 任何失败路径都不删除已保存密码；删除只发生在用户删除主机或主动编辑凭据时。
     enum SSHCloseClass { case clean, algorithm, network, auth }
 
     static func classifyClose(_ error: Error?) -> SSHCloseClass {
@@ -301,9 +284,9 @@ extension AppDelegate {
         // 算法/协议协商（含 Dropbear 无 AES-GCM 导致的裸 EOF）必须优先于 auth，
         // 否则会清密码且跳过 OpenSSH 回落。
         if looksLikeAlgorithmMismatch(error) { return .algorithm }
-        // 认证关键字优先于笼统网络，保证错密仍弹重试。
-        if looksLikeAuthFailure(error) { return .auth }
+        // 网络/端口/DNS/超时优先于宽字符串认证判断，避免权限不足等网络错误被误报成密码错误。
         if looksLikeNetworkFailure(error) { return .network }
+        if looksLikeAuthFailure(error) { return .auth }
         // 未知错误且 shell 从未打开：保守当算法协商失败先回落一次系统 ssh
         // （比误清密码更安全；已回落过仍失败时由调用方按 auth 处理）。
         return .algorithm
@@ -341,7 +324,7 @@ extension AppDelegate {
         // 约两分钟后才回落。Ed25519/ECDSA 等 NIO 支持的私钥仍保留原快速路径。
         let keyRequiresOpenSSH = !host.keyPath.isEmpty
             && SSHPrivateKeyLoader.load(path: host.keyPath) == nil
-        // forceOpenSSH / 已回落标记时也直接 OpenSSH，避免二次 NIO 空转。
+        // forceOpenSSH / 已回落标记 / 私钥不兼容时直接 OpenSSH，避免 NIO 空转。
         let useOpenSSH = forceOpenSSH || sess.triedOpenSSHFallback || keyRequiresOpenSSH
         let s: SSHSession = useOpenSSH ? OpenSSHSession() : NIOSSHSession()
         Log.info("SSH 引擎=\(useOpenSSH ? "OpenSSH" : "NIO") \(host.subtitle)", "ssh")
@@ -383,15 +366,6 @@ extension AppDelegate {
         }
 
         let pass = sess.password ?? Keychain.password(for: sess.host.id) ?? ""
-        if pass.isEmpty, sess.host.keyPath.isEmpty {
-            promptPassword(for: sess.host, prefill: "") { [weak self, weak sess] pw, remember in
-                guard let self = self, let sess = sess, let pw = pw, !pw.isEmpty else { return }
-                if remember { Keychain.setPassword(pw, for: sess.host.id, label: sess.host.host.isEmpty ? sess.host.name : sess.host.host) }
-                self.startSSH(for: sess, password: pw)
-                self.rebuildTabs()
-            }
-            return
-        }
         startSSH(for: sess, password: pass)
         rebuildTabs()
     }
@@ -447,6 +421,14 @@ extension AppDelegate {
     func showConnectOverlay(for host: Host) {
         let ov = connectOverlay ?? ConnectOverlay(frame: .zero)
         connectOverlay = ov
+        ov.onCancel = { [weak self] in
+            guard let self = self, self.sessions.indices.contains(self.current) else { return }
+            self.closeSession(self.current)
+        }
+        ov.onRetry = { [weak self] in
+            guard let self = self else { return }
+            self.reconnectCurrent()
+        }
         ov.show(in: termContainer, title: host.subtitle)
     }
 
@@ -707,12 +689,38 @@ extension AppDelegate {
             ssh.exec(Self.monitorCommand) { [weak self] out in
                 guard let self = self, self.sessions.indices.contains(self.current), self.sessions[self.current] === sess else { return }
                 if out.contains("===mon===") { self.monitor?.update(self.parseMonitor(out)) }
+                // 本地 ping SSH 主机（本机→服务器延迟）
+                self.pingHost(sess.host.host)
             }
         }
         poll()
         monTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in poll() }
     }
     func stopMonitor() { monTimer?.invalidate(); monTimer = nil; monitor?.setConnected(false, ip: "") }
+    func pingHost(_ host: String) {
+        let now = Date()
+        if now.timeIntervalSince(lastPingAt) < 3 { return }
+        lastPingAt = now
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let task = Process()
+            task.launchPath = "/sbin/ping"
+            task.arguments = ["-c", "1", "-t", "1", host]
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            task.standardError = FileHandle.nullDevice
+            task.launch()
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let out = String(data: data, encoding: .utf8),
+               let range = out.range(of: "time=") {
+                let rest = out[range.upperBound...]
+                let msStr = rest.prefix { $0.isNumber || $0 == "." }
+                if let ms = Double(msStr) {
+                    DispatchQueue.main.async { self?.monitor?.pushPingMs(ms) }
+                }
+            }
+        }
+    }
 
     func parseMonitor(_ out: String) -> [String: String] {
         var m: [String: String] = [:]
@@ -737,25 +745,58 @@ extension AppDelegate {
     printf "disks="; df -h 2>/dev/null | awk '$1 ~ /^\\/dev/{printf "%s|%s|%s;",$6,$4,$2}'; echo
     printf "procs="; ps aux 2>/dev/null | sed 1d | sort -rk4 | awk 'NR<=5{c=$11; sub(/.*\\//,"",c); printf "%dM|%s|%s;",$6/1024,$3,c}'; echo
     cat /proc/net/dev 2>/dev/null | tr ':' ' ' | awk 'NR>2 && $1!="lo" && $1 !~ /^(docker|veth|br-)/{print "netif="$1; print "netval="$2+$10; print "netrx="$2; print "nettx="$10; exit}'
-    gw=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}'); [ -n "$gw" ] || gw=$(netstat -rn 2>/dev/null | awk '/^0.0.0.0|^default/{print $2; exit}')
-    if [ -n "$gw" ]; then echo "pinghost=$gw"; ping -c 1 -W 1 "$gw" 2>/dev/null | awk -F'time=' '/time=/{split($2,a," ");printf "pingms=%s\\n",a[1];exit}'; fi
     """
 
     // MARK: - SSHSessionDelegate（主线程）
+    private func extractIncompleteANSI(from bytes: [UInt8]) -> (complete: [UInt8], incomplete: [UInt8]) {
+        let maxLookback = min(bytes.count, 2048)
+        for i in stride(from: bytes.count - 1, through: bytes.count - maxLookback, by: -1) {
+            if bytes[i] == 0x1B {
+                if i + 1 >= bytes.count { return (Array(bytes[0..<i]), Array(bytes[i...])) }
+                let next = bytes[i+1]
+                if next == 0x5B { // '['
+                    var complete = false
+                    for j in (i+2)..<bytes.count {
+                        if bytes[j] >= 0x40 && bytes[j] <= 0x7E { complete = true; break }
+                    }
+                    if !complete { return (Array(bytes[0..<i]), Array(bytes[i...])) }
+                } else if next == 0x5D { // ']'
+                    var complete = false
+                    for j in (i+2)..<bytes.count {
+                        if bytes[j] == 0x07 { complete = true; break }
+                        if bytes[j] == 0x1B && j+1 < bytes.count && bytes[j+1] == 0x5C { complete = true; break }
+                    }
+                    if !complete { return (Array(bytes[0..<i]), Array(bytes[i...])) }
+                } else if next == 0x28 || next == 0x29 { // '(' or ')'
+                    if i + 2 >= bytes.count { return (Array(bytes[0..<i]), Array(bytes[i...])) }
+                }
+                break // Found the last ESC and it was complete
+            }
+        }
+        return (bytes, [])
+    }
+
     func sshSession(_ s: SSHSession, didReceive data: [UInt8]) {
         guard let sess = session(forSSH: s) else { return }
+
+        // 修复：缓冲跨网络包的残缺 ANSI 序列，防止被 SemanticHighlight 破坏
+        let fullData = sess.ansiBuffer + data
+        let (completeBytes, incompleteBytes) = extractIncompleteANSI(from: fullData)
+        sess.ansiBuffer = incompleteBytes
+        if completeBytes.isEmpty { return }
+
         // 语义高亮：仅对能完整 UTF-8 解码的块染色（保留已有转义），否则回退原始字节。
         // 关键：染色后仍走 termView.feed(byteArray:)（会触发视图重绘）——不要用
         // getTerminal().feed(text:)，那只更新终端模型、不刷新 NSView，导致画面空白。
-        if highlightEnabled, let str = String(bytes: data, encoding: .utf8) {
+        if highlightEnabled, let str = String(bytes: completeBytes, encoding: .utf8) {
             sess.appendOutput(str)          // 会话输出缓冲（上限 500KB，保留尾部）
             let __t0 = CFAbsoluteTimeGetCurrent()
-            let decorated = SemanticHighlight.decorate(str, dark: darkTheme)
-            AppDelegate.perfNote(kind: "decorate", ms: (CFAbsoluteTimeGetCurrent() - __t0) * 1000, bytes: data.count)
+            let decorated = SemanticHighlight.decorate(str, dark: darkTheme, activeColor: &sess.semanticActiveColor)
+            AppDelegate.perfNote(kind: "decorate", ms: (CFAbsoluteTimeGetCurrent() - __t0) * 1000, bytes: completeBytes.count)
             sess.termView.feed(byteArray: ArraySlice(Array(decorated.utf8)))
         } else {
-            if let str = String(bytes: data, encoding: .utf8) { sess.appendOutput(str) }
-            sess.termView.feed(byteArray: ArraySlice(data))
+            if let str = String(bytes: completeBytes, encoding: .utf8) { sess.appendOutput(str) }
+            sess.termView.feed(byteArray: ArraySlice(completeBytes))
         }
     }
     func sshSessionDidOpenShell(_ s: SSHSession) {
@@ -809,6 +850,7 @@ extension AppDelegate {
         let wasUp = sess.shellOpened
         sess.connected = false
         let t = sess.termView.getTerminal()
+        if !wasUp { t.feed(text: "\u{1b}[2J\u{1b}[3J\u{1b}[H") }
         // 认证前网络失败会写具体文案；末尾不要用笼统「连接失败」盖掉。
         var statusDetail: String? = nil
         if !wasUp {
@@ -828,9 +870,9 @@ extension AppDelegate {
                     return
                 }
                 // 已经回落过仍失败：再按认证/网络细分，避免永远卡在「协议不兼容」。
+                // 注意：认证失败也保留旧密码；新密码只有在用户勾选记住并重新连接时才会覆盖。
                 if Self.looksLikeAuthFailure(error) {
-                    Log.warn("系统 ssh 回落后认证失败 \(sess.host.subtitle): \(error?.localizedDescription ?? "未知")", "ssh")
-                    Keychain.delete(sess.host.id)
+                    Log.warn("系统 ssh 回落后认证失败 \(sess.host.subtitle): \(error?.localizedDescription ?? "未知")（保留已保存密码）", "ssh")
                     t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：认证被拒。\u{1b}[0m\r\n")
                     connectOverlay?.fail("认证失败")
                     if sess.host.keyPath.isEmpty { promptRetryPassword(for: sess.host) }
@@ -847,13 +889,11 @@ extension AppDelegate {
                         detail = error?.localizedDescription ?? "网络不可达 (\(endpoint))"
                     }
                     Log.warn("系统 ssh 回落后网络失败 \(sess.host.subtitle): \(detail)（保留钥匙串）", "session")
-                    t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：\(detail)\u{1b}[0m\r\n")
-                    connectOverlay?.fail("网络失败")
+                    connectOverlay?.fail("连接失败\n\(detail)", autoHide: false)
                     statusDetail = "✗ 连接失败：\(detail)"
                 } else {
                     Log.warn("系统 ssh 回落后仍失败 \(sess.host.subtitle): \(error?.localizedDescription ?? "未知")", "ssh")
-                    t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：算法/协议不兼容（系统 ssh 亦失败）。\u{1b}[0m\r\n")
-                    connectOverlay?.fail("协议不兼容")
+                    connectOverlay?.fail("连接失败\n算法/协议不兼容", autoHide: false)
                 }
             case .network:
                 // P0：网络/超时/DNS/代理失败 —— 保留 Keychain，禁止当认证失败清密码。
@@ -884,13 +924,12 @@ extension AppDelegate {
                     detail = error?.localizedDescription ?? "网络不可达 (\(endpoint))"
                 }
                 Log.warn("网络/连接失败 \(sess.host.subtitle): \(detail)（保留钥匙串）", "session")
-                t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：\(detail)\u{1b}[0m\r\n")
-                connectOverlay?.fail("网络失败")
+                connectOverlay?.fail("连接失败\n\(detail)", autoHide: false)
                 statusDetail = "✗ 连接失败：\(detail)"
             case .auth:
-                // 仅认证失败才清 Keychain +（无 keyPath 时）弹密码重试。
-                Log.warn("认证失败 \(sess.host.subtitle)，已清除保存的密码", "session")
-                Keychain.delete(sess.host.id)
+                // 认证失败只提示并（无 keyPath 时）弹密码重试，不删除 Keychain。
+                // 网络/端口/算法协商误判也不得丢失用户已保存密码。
+                Log.warn("认证失败 \(sess.host.subtitle)（保留已保存密码）", "session")
                 t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：认证被拒。\u{1b}[0m\r\n")
                 connectOverlay?.fail("认证失败")
                 let host = sess.host

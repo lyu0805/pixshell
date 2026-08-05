@@ -26,6 +26,7 @@ public partial class ConnectionManagerWindow : Window
 
     /// <summary>已折叠的分组名（对齐 mac ConnManager.collapsed）。</summary>
     private readonly HashSet<string> _collapsed = new(StringComparer.Ordinal);
+    private bool _firstLoad = true;
 
     public ConnectionManagerWindow()
     {
@@ -47,6 +48,13 @@ public partial class ConnectionManagerWindow : Window
                 Foreground = (Brush)Application.Current.Resources["BrushMuted"], Margin = new Thickness(4, 12, 0, 0)
             });
             return;
+        }
+        // 首次打开：所有分组默认收起（对齐 mac ConnManager）
+        if (_firstLoad)
+        {
+            _firstLoad = false;
+            var names = hosts.Select(h => string.IsNullOrWhiteSpace(h.Group) ? "默认" : h.Group).Distinct();
+            foreach (var n in names) _collapsed.Add(n);
         }
         foreach (var group in hosts.GroupBy(h => string.IsNullOrWhiteSpace(h.Group) ? "默认" : h.Group)
                                    .OrderBy(g => g.Key == "默认" ? 1 : 0)
@@ -77,7 +85,17 @@ public partial class ConnectionManagerWindow : Window
                 var hostsPanel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 6, 0, 0) };
                 foreach (var h in list)
                     hostsPanel.Children.Add(BuildRow(h));
-                groupStack.Children.Add(hostsPanel);
+
+                var sv = new ScrollViewer
+                {
+                    Content = hostsPanel,
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                    HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                    MaxHeight = 250,
+                    Margin = new Thickness(0, 0, -6, 0),
+                    Padding = new Thickness(0, 0, 6, 0)
+                };
+                groupStack.Children.Add(sv);
             }
             groupBorder.Child = groupStack;
             ListPanel.Children.Add(groupBorder);
@@ -255,13 +273,13 @@ public partial class ConnectionManagerWindow : Window
 
     private void New_Click(object sender, RoutedEventArgs e) => OnNew?.Invoke();
     private void Close_Click(object sender, RoutedEventArgs e) { OnClose?.Invoke(); Close(); }
-    
+
     private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton == MouseButton.Left && e.ButtonState == MouseButtonState.Pressed)
             DragMove();
     }
-    
+
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Escape) { OnClose?.Invoke(); Close(); }

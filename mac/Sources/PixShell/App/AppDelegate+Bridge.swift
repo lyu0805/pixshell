@@ -4,9 +4,19 @@ import AppKit
 // 桥只监听 127.0.0.1 且强制 token 鉴权；这里只负责把请求映射到会话/主机操作。
 extension AppDelegate: BridgeHost {
 
-    /// 启动本地桥（失败不影响 App）
+    /// 启动本地桥（失败不影响 App）。无头模式（--headless）用自建会话的 HeadlessBridgeHost；
+    /// 有头用 AppDelegate 自己（复用已打开 Tab 的会话）。
     func startAgentBridge() {
+        if isHeadless {
+            startHeadlessBridge()
+            return
+        }
+        // 有头接管：若已有无头在听 8766，先让它退出，等端口释放后再自己 bind。
+        // 轮询最多 5s（无头退出是秒级），超时也不阻塞启动——AgentBridge 本身有"端口被占只记日志"兜底。
+        waitForHeadlessToYield()
         let b = AgentBridge(host: self)
+        // 有头 bind 与无头退出是异步竞态：失败先重试等端口释放，而不是直接放弃。
+        b.retryOnPortBusy = true
         agentBridge = b
         b.start()
         AgentCLI.install(port: b.port)   // 写出 pixshell 命令，供本机 agent 直接操作本 App
@@ -21,6 +31,51 @@ extension AppDelegate: BridgeHost {
             self.updateCliStatus()
         }
         bridgeTimer?.fire()
+    }
+
+    /// 有头启动前：探测 8766，若有无头在听 → 发 /v1/app/shutdown → 轮询直到端口释放
+    /// （无头退出）。最多等 5s，超时也继续启动——AgentBridge 的 retryOnPortBusy
+    /// 会继续等端口释放后再 bind，最终一定接管。
+    private func waitForHeadlessToYield() {
+        let port = AgentBridge.configuredPort
+        // 探测用裸 TCP 建连：/v1/health 在鉴权后面（无 token 返回 401），HTTP GET 判断不了在听。
+        guard AgentBridge.isPortOpen(port), let token = AgentBridge.existingToken() else { return }
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/app/shutdown")!)
+        req.httpMethod = "POST"
+        req.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        URLSession.shared.dataTask(with: req) { _, _, _ in
+            // 发完请求后轮询端口释放（AgentBridge retryOnPortBusy 也兜底等待）
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline {
+                if !AgentBridge.isPortOpen(port) { return }   // 无头已退出，端口释放
+                usleep(250_000)
+            }
+            Log.warn("等待无头退出超时，靠 retryOnPortBusy 继续等", "bridge")
+        }.resume()
+    }
+
+    /// 无头模式启动桥：自建 HeadlessBridgeHost；端口被占（=有头已在）→ 立即退出让位。
+    /// 注意：这里强捕获 self（不用 [weak self]）——无头进程是短命"让位即退出"的，不存在引用循环，
+    /// 而且 ifAppDelegate 意外释放会让 onShutdown 里的 NSApp.terminate 不触发、进程挂起等死。
+    private func startHeadlessBridge() {
+        let host = HeadlessBridgeHost()
+        headlessHost = host
+        host.onShutdown = {
+            self.agentBridge?.stop()
+            NSApp.terminate(nil)
+        }
+        let b = AgentBridge(host: host)
+        // 端口已被有头占用 → 退出（有头接管了桥，无头让位；CLI 会再用到有头）。
+        // onPortBusy 在 bridge 内部队列回调，切主线程再触发关闭+退出。
+        b.onPortBusy = {
+            DispatchQueue.main.async {
+                Log.info("本地桥端口被占用（有头已在），无头进程退出让位", "bridge")
+                self.headlessHost?.closeAll()
+            }
+        }
+        agentBridge = b
+        b.start()
+        AgentCLI.install(port: b.port)
     }
 
     /// 桥收到一次鉴权通过的外部请求 → 状态栏转「已对接」

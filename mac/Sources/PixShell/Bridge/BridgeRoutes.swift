@@ -28,6 +28,12 @@ protocol BridgeHost: AnyObject {
     func bridgeSFTPDownload(session: Int, remote: String, local: String, completion: @escaping (Result<String, Error>) -> Void)
     /// SFTP 上传；成功回远端路径，失败回具体错误。
     func bridgeSFTPUpload(session: Int, local: String, remote: String, completion: @escaping (Result<String, Error>) -> Void)
+    /// 收到 `POST /v1/app/shutdown` 时调用（有头接管无头 / 让无头退出）。有头忽略（默认空实现）。
+    func bridgeShutdown()
+}
+
+extension BridgeHost {
+    func bridgeShutdown() {}
 }
 
 /// 一次已解析的 HTTP 请求：AgentBridge 完成分帧、鉴权、Origin 校验之后，把纯业务部分
@@ -88,6 +94,15 @@ enum BridgeRouter {
 
         guard let host = host else {
             completion(.fail(500, "bridge host not attached"))
+            return
+        }
+
+        // 有头接管无头 / 显式关闭：无头收到后关会话、停桥、退出；有头默认忽略。
+        // 与 /v1/health 一样放鉴权之后、switch 之前：它不该落到任何 host 业务逻辑。
+        if p == "/v1/app/shutdown" {
+            guard method == "POST" else { completion(.fail(405, "use POST")); return }
+            completion(.ok(["ok": true]))
+            host.bridgeShutdown()
             return
         }
 

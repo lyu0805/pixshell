@@ -11,6 +11,7 @@ final class TermSession {
     var webSSHView: WebSSHView?
     var ssh: SSHSession?
     var title: String
+    var semanticActiveColor: Bool = false
 
     /// 工作区应显示的内容：Web SSH 用 WKWebView，其它用 SwiftTerm。
     var contentView: NSView { webSSHView ?? termView }
@@ -60,6 +61,9 @@ final class TermSession {
     /// 将来「重置终端后回放」的能力，不影响实时渲染。
     private(set) var outputBuffer = ""
     static let maxBufferChars = 500_000
+
+    /// 用于跨块缓冲不完整的 ANSI 转义序列，防止被 SemanticHighlight 破坏
+    var ansiBuffer: [UInt8] = []
 
     func appendOutput(_ s: String) {
         outputBuffer += s

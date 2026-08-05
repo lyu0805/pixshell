@@ -66,6 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     var monitor: MonitorSidebar!
     var connMgr: ConnManager!
     var sysInfo: SysInfoPanel!
+    var sysInfoWindow: NSWindow?      // 系统信息独立弹窗（可拖动/缩放）
+    var lastPingAt: Date = .distantPast
     var toolsPanel: ToolsPanel!        // 顶栏宫格 → 工具面板
     var backupPanel: BackupPanel!      // 备份选项独立弹窗（对齐 ConnManager）
     var editorPanel: EditorPanel!
@@ -85,6 +87,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     var retryPrompting = false            // 认证失败重弹密码框的去重标记
 
     var agentBridge: AgentBridge?      // 本地 CLI/AI-Agent 桥（127.0.0.1 + token）
+    /// 无头模式：CLI 自动拉起 / 有头关闭后兜底。只跑本地桥，不建窗、无 Dock 图标；
+    /// 有头打开接管时（收到 /v1/app/shutdown）退出让位。
+    var isHeadless = false
+    /// 无头模式下自建会话的桥宿主（有头时 AppDelegate 自己实现 BridgeHost）。
+    var headlessHost: HeadlessBridgeHost?
     var bridgeTimer: Timer?            // 周期对齐桥状态 → 状态栏三态
     /// CLI 桥状态（与桥实现解耦：桥启动/收到鉴权请求时回填，状态栏据此显示三态）
     var bridgeStatus: (running: Bool, port: Int, clientIdle: TimeInterval?) = (false, 0, nil)
@@ -100,13 +107,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
 
     // MARK: - 生命周期
     func applicationDidFinishLaunching(_ note: Notification) {
+        if isHeadless {
+            // 无头模式：不建 UI，仅启动本地桥。GPU/主题/窗口/菜单全部跳过。
+            Log.banner("0.1.7 [headless]")
+            // 无头也刷新 AI SSH 桥接注册：保证 `ssh` 包装脚本内容是最新的（随 CLI 一起变）。
+            // 有头时在设置页手动注册/取消；无头静默幂等刷新，已注册过就重写 wrapper 不弹窗。
+            AiSshBridge.register(bridgePort: nil)
+            startAgentBridge()
+            return
+        }
         // GPU 加速：**优先 layer-backed，失败可回落**。
         // 硬开且无兜底会在弱 GPU 场景花屏/黑屏。策略：
         // 1) 环境变量 PIXSHELL_RENDER=sw|hw 可覆盖
         // 2) 上次崩溃标记 → 本轮关掉默认 Core Animation
         // 3) 正常路径 register NSViewDefaultUsesCoreAnimation=true（可被 1/2 覆盖）
         configureGpuAcceleration()
-        Log.banner("0.1.3")
+        Log.banner("0.1.7")
         Log.info("主题=\(Theme.dark ? "深色" : "浅色")（来源：env/持久化/默认）", "ui")
         NSApp.appearance = NSAppearance(named: darkTheme ? .darkAqua : .aqua)
         AppIcon.install()    // 没有 .app bundle 就没有图标资源，所有系统弹窗会退化成"蓝色文件夹"占位图
@@ -174,6 +190,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    /// 无头进程收到 reopen（用户 Finder 双击 / `open -a`）：说明想打开界面。
+    /// 无头是 .accessory 不建窗，`open -a` 又只激活已运行实例（不会新启有头），
+    /// 所以这里必须自己退出并重新拉起**有头**，否则用户双击看起来"没反应"。
+    /// 注意：`open -a` 在无头还活着时只会发 reopen 死循环，必须先 terminate 等退出再 open。
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard isHeadless else { return true }
+        // 无头进程收到 reopen（用户 Finder 双击 / `open -a`）：说明想打开界面。
+        // 无头是 .accessory 不建窗，`open -a` 只激活已运行实例不会新启有头，双击会"没反应"。
+        // 解决：用 `open -n` 强制**新实例**启动有头（绕过 LaunchServices 实例复用，不依赖 terminate 时序）。
+        // 新有头启动后走 waitForHeadlessToYield → 让本无头退出（onPortBusy 让位）→ 接管 8766。
+        Log.info("无头收到 reopen（用户想开界面）→ open -n 拉起新有头实例", "ui")
+        let appPath = Bundle.main.bundlePath.hasSuffix(".app") ? Bundle.main.bundlePath : ""
+        let args: [String] = appPath.isEmpty ? ["-n", "-a", "PixShell"] : ["-n", appPath]
+        AgentBridge.spawnOpenApp(args)
+        return false
+    }
+
+    /// 有头正常退出时拉起无头进程接续桥（跟随有头生命周期：有头关了 → 无头继续后台跑）。
+    func applicationWillTerminate(_ notification: Notification) {
+        guard !isHeadless else { return }
+        AgentBridge.spawnHeadlessProcess()
+    }
+
     // MARK: - 通用小工具（供各扩展复用）
     func setStatus(_ s: String) { statusRight?.stringValue = s }
 }
@@ -183,5 +222,8 @@ setbuf(stdout, nil)   // 关掉 stdout 缓冲，便于观察 print（自测/调�
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.regular)
+// 无头模式（--headless，CLI 自动拉起/有头关闭后兜底）：不注册 Dock/菜单栏图标、不建窗，
+// 仅跑本地桥供 MCP/CLI 后台调用；有头打开时接管并让它退出。默认有头。
+delegate.isHeadless = CommandLine.arguments.contains("--headless")
+app.setActivationPolicy(delegate.isHeadless ? .accessory : .regular)
 app.run()
