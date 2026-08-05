@@ -50,8 +50,13 @@ enum ProxyStdioBridge {
                 throw ProxyDialError.unsupportedProxyType("ssh-jump")
             }
 
-            let leftover = try channel.pipeline.addHandler(handler).flatMap { promise.futureResult }.wait()
-            try channel.pipeline.addHandler(ProxyStdoutHandler()).wait()
+            // 输出桥必须和握手 handler 一次性装进 pipeline。此前先等待握手完成、再安装
+            // ProxyStdoutHandler，会留下一个很短但致命的空窗：代理 CONNECT 返回后目标 SSH
+            // 通常立即发送 banner，而此时 pipeline 没有转发 handler，banner 会被丢弃，最终
+            // OpenSSH 报 “Connection timed out during banner exchange”。
+            let stdoutHandler = ProxyStdoutHandler()
+            let leftover = try channel.pipeline.addHandlers([handler, stdoutHandler])
+                .flatMap { promise.futureResult }.wait()
             if leftover.readableBytes > 0 {
                 channel.pipeline.fireChannelRead(leftover)
                 channel.pipeline.fireChannelReadComplete()

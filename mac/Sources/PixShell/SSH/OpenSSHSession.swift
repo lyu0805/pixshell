@@ -177,6 +177,10 @@ public final class OpenSSHSession: SSHSession {
         var a: [String] = []
         a += ["-p", String(c.port)]
         a += ["-o", "StrictHostKeyChecking=accept-new"]
+        // 首次连接时 accept-new 会正常保存指纹，但 OpenSSH 默认把
+        // “Permanently added … to known hosts” 写进交互终端。PixShell 自己管理连接状态，
+        // 这里只隐藏普通 warning；指纹变化、认证失败等 ERROR 仍会显示并参与错误分类。
+        a += ["-o", "LogLevel=ERROR"]
         a += ["-o", "NumberOfPasswordPrompts=1"]
         // 限制 DNS / 代理 CONNECT / SSH 握手的初始等待时间，避免代理不可用时
         // “打开会话…”覆盖层永久停留。ProxyStdioBridge 自身也有独立握手超时。

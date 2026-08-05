@@ -322,7 +322,10 @@ public final class OpenSSHSFTPSession: SFTPService {
     }
 
     public func close() {
-        queue.sync { teardownLocked() }
+        // UI 切换主机、取消连接或关闭标签时会从主线程调用 close。连接中的握手最长可能
+        // 尝试多个后端；queue.sync 会让整个 App 等待这些尝试结束，表现为彩球/无响应。
+        // 清理由本会话自己的串行队列异步完成即可，后续任务仍保持严格顺序。
+        queue.async { [self] in teardownLocked() }
     }
 
     // MARK: - 低层 SFTP 操作

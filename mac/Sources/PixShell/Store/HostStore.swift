@@ -67,4 +67,40 @@ final class HostStore {
         recents.removeAll { $0 == id }; saveRecents()
         save()
     }
+
+    /// 分组顺序由 hosts.json 中该组首次出现的位置决定。
+    func moveGroup(_ source: String, before target: String) {
+        guard source != target else { return }
+        let groupName: (Host) -> String = { $0.group.isEmpty ? "默认" : $0.group }
+        var names: [String] = []
+        for h in hosts where !names.contains(groupName(h)) { names.append(groupName(h)) }
+        guard let from = names.firstIndex(of: source), let targetIndex = names.firstIndex(of: target) else { return }
+        names.remove(at: from)
+        // 拖到目标行：向上放到目标前，向下放到目标后。
+        // 旧实现向下拖到相邻行时会插回原位，看起来像拖动完全无效。
+        names.insert(source, at: from < targetIndex ? targetIndex : targetIndex)
+        let rank = Dictionary(uniqueKeysWithValues: names.enumerated().map { ($0.element, $0.offset) })
+        hosts = hosts.enumerated().sorted {
+            let left = rank[groupName($0.element)] ?? Int.max
+            let right = rank[groupName($1.element)] ?? Int.max
+            return left == right ? $0.offset < $1.offset : left < right
+        }.map(\.element)
+        save()
+    }
+
+    /// 仅允许在同一分组内拖动主机，手动顺序直接持久化。
+    func moveHost(_ source: String, before target: String) {
+        guard source != target,
+              let from = hosts.firstIndex(where: { $0.id == source }),
+              let to = hosts.firstIndex(where: { $0.id == target }) else { return }
+        let sourceGroup = hosts[from].group.isEmpty ? "默认" : hosts[from].group
+        let targetGroup = hosts[to].group.isEmpty ? "默认" : hosts[to].group
+        guard sourceGroup == targetGroup else { return }
+        let movingDown = from < to
+        let item = hosts.remove(at: from)
+        let targetAfterRemoval = hosts.firstIndex(where: { $0.id == target }) ?? hosts.endIndex
+        let insertion = movingDown ? min(targetAfterRemoval + 1, hosts.endIndex) : targetAfterRemoval
+        hosts.insert(item, at: insertion)
+        save()
+    }
 }

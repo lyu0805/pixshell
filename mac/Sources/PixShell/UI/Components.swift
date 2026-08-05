@@ -69,15 +69,22 @@ final class PillButton: NSButton {
     required init?(coder: NSCoder) { fatalError() }
 
     var style: Style { get { _style } set { _style = newValue; restyle() } }
+    override var isEnabled: Bool { didSet { restyle() } }
 
     private func restyle() {
         layer?.cornerRadius = Theme.radiusSm
         let bgc: NSColor, fgc: NSColor
-        switch _style {
-        case .primary:   bgc = hovering ? Theme.accentHover : Theme.accent; fgc = .white
-        case .secondary: bgc = hovering ? Theme.controlHover : Theme.control; fgc = Theme.text
-        case .danger:    bgc = NSColor(srgbRed: 1, green: 0.27, blue: 0.23, alpha: hovering ? 0.26 : 0.16); fgc = Theme.err
-        case .ghost:     bgc = hovering ? Theme.control : .clear; fgc = Theme.muted
+        if !isEnabled {
+            // 禁用按钮使用中性背景，不保留 primary 的深色/蓝色实心背景。
+            bgc = Theme.control
+            fgc = Theme.muted.withAlphaComponent(0.55)
+        } else {
+            switch _style {
+            case .primary:   bgc = hovering ? Theme.accentHover : Theme.accent; fgc = .white
+            case .secondary: bgc = hovering ? Theme.controlHover : Theme.control; fgc = Theme.text
+            case .danger:    bgc = NSColor(srgbRed: 1, green: 0.27, blue: 0.23, alpha: hovering ? 0.26 : 0.16); fgc = Theme.err
+            case .ghost:     bgc = hovering ? Theme.control : .clear; fgc = Theme.muted
+            }
         }
         layer?.backgroundColor = bgc.cgColor
         attributedTitle = NSAttributedString(string: title, attributes: [
@@ -94,7 +101,7 @@ final class PillButton: NSButton {
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self))
     }
-    override func mouseEntered(with event: NSEvent) { hovering = true; restyle() }
+    override func mouseEntered(with event: NSEvent) { hovering = isEnabled; restyle() }
     override func mouseExited(with event: NSEvent) { hovering = false; restyle() }
 }
 

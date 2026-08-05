@@ -179,6 +179,14 @@ extension AppDelegate {
             }
             self.quickConnect?.reload()
         }
+        connMgr.onMoveGroupBefore = { [weak self] source, target in
+            self?.store.moveGroup(source, before: target)
+            self?.quickConnect?.reload()
+        }
+        connMgr.onMoveHostBefore = { [weak self] source, target in
+            self?.store.moveHost(source, before: target)
+            self?.quickConnect?.reload()
+        }
 
         // 系统信息页（独立弹出窗口，不再贴满主窗）
         sysInfo = SysInfoPanel(frame: .zero)
@@ -830,7 +838,7 @@ extension AppDelegate {
         let gh = GitHubMarkButton()
         gh.target = self; gh.action = #selector(menuRepo)
         let brand = NSTextField(labelWithString: "PixShell"); brand.font = Theme.ui(12, .bold); brand.textColor = Theme.text
-        let ver = NSTextField(labelWithString: "v0.1.7"); ver.font = Theme.ui(11); ver.textColor = Theme.muted
+        let ver = NSTextField(labelWithString: "v1.7.5"); ver.font = Theme.ui(11); ver.textColor = Theme.muted
         statusDot = Dot(Theme.warn, size: 8)
         statusLabel = NSTextField(labelWithString: "CLI 未开启"); statusLabel.font = Theme.ui(11); statusLabel.textColor = Theme.muted
         let leftStack = NSStackView(views: [gh, brand, ver, statusDot, statusLabel])

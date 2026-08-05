@@ -8,8 +8,16 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
     private let listStack = NSStackView()
     private let countLabel = NSTextField(labelWithString: "")
     private let searchField = NSTextField()
+    private let sortPicker = NSPopUpButton()
+    private lazy var batchConnectButton = PillButton("连接所选", style: .primary, hPad: 10, target: self, action: #selector(connectSelected))
     private var collapsed = Set<String>()
+    private var selectedHostIDs = Set<String>()
     private var firstLoad = true
+    private enum HostSortMode: String { case manual, name, ip }
+    private var sortMode: HostSortMode {
+        get { HostSortMode(rawValue: UserDefaults.standard.string(forKey: "pixshell.connManager.hostSort") ?? "manual") ?? .manual }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "pixshell.connManager.hostSort") }
+    }
 
     var hostsProvider: (() -> [Host])?
     var onConnect: ((Host) -> Void)?
@@ -20,6 +28,8 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
     var onRenameGroup: ((String, String) -> Void)?      // 旧名 → 新名
     var onDeleteGroup: ((String) -> Void)?              // 组内主机移回「默认」
     var onDuplicate: ((Host) -> Void)?                 // 右键「复制主机」
+    var onMoveGroupBefore: ((String, String) -> Void)?
+    var onMoveHostBefore: ((String, String) -> Void)?
 
     init() {
         // 原 560×580 缩约 1/3 → 380×400；允许用户拖角缩放
@@ -28,15 +38,22 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
                          backing: .buffered, defer: false)
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
-        w.isMovableByWindowBackground = true // 允许点卡片空白处拖动
+        // 不能启用整窗背景拖动：它会抢走分组/主机“≡”排序手柄的鼠标拖动事件。
+        // 窗口移动只由头部空白区处理，避免抢走排序手柄的鼠标事件。
+        w.isMovableByWindowBackground = false
         w.backgroundColor = .clear           // 背景透明，露出我们画的圆角卡片
         w.isOpaque = false
         w.hasShadow = true
         w.isReleasedWhenClosed = false
-        w.minSize = NSSize(width: 300, height: 260)
+        w.minSize = NSSize(width: 430, height: 260)
         w.standardWindowButton(.closeButton)?.isHidden = true
         w.standardWindowButton(.miniaturizeButton)?.isHidden = true
         w.standardWindowButton(.zoomButton)?.isHidden = true
+
+        // 保存并恢复用户调整后的连接管理器位置和尺寸。
+        let frameName = "PixShell-ConnManager-v1"
+        if !w.setFrameUsingName(frameName) { w.center() }
+        w.setFrameAutosaveName(frameName)
 
         super.init(window: w)
         build()
@@ -44,7 +61,6 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     func show() {
-        window?.center()
         window?.makeKeyAndOrderFront(nil)
         reload()
     }
@@ -75,8 +91,9 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
         let grpBtn = PillButton("＋分组", style: .secondary, hPad: 10, target: self, action: #selector(newGroup))
         let refBtn = PillButton("刷新", style: .secondary, hPad: 10, target: self, action: #selector(reloadAction))
         let closeBtn = IconButton(symbol: "xmark", tooltip: "关闭", size: NSSize(width: 24, height: 24), target: self, action: #selector(hideAction))
-        let rightBtns = NSStackView(views: [addBtn, grpBtn, refBtn, closeBtn]); rightBtns.spacing = 6
-        let head = NSStackView(views: [title, NSView(), rightBtns]); head.spacing = 12; head.alignment = .centerY
+        batchConnectButton.isEnabled = false
+        let rightBtns = NSStackView(views: [batchConnectButton, addBtn, grpBtn, refBtn, closeBtn]); rightBtns.spacing = 6
+        let head = NSStackView(views: [title, WindowDragView(), rightBtns]); head.spacing = 12; head.alignment = .centerY
         head.translatesAutoresizingMaskIntoConstraints = false
 
         // 搜索
@@ -94,7 +111,11 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
             search.centerYAnchor.constraint(equalTo: searchWrap.centerYAnchor),
             searchWrap.heightAnchor.constraint(equalToConstant: 30),
         ])
-        let searchRow = NSStackView(views: [countLabel, searchWrap]); searchRow.spacing = 10
+        sortPicker.addItems(withTitles: ["手动排序", "按名称", "按 IP"])
+        sortPicker.font = Theme.ui(11); sortPicker.target = self; sortPicker.action = #selector(changeSort(_:))
+        let modes: [HostSortMode] = [.manual, .name, .ip]
+        sortPicker.selectItem(at: modes.firstIndex(of: sortMode) ?? 0)
+        let searchRow = NSStackView(views: [countLabel, searchWrap, sortPicker]); searchRow.spacing = 10
         searchRow.translatesAutoresizingMaskIntoConstraints = false
         searchWrap.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
         searchWrap.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -139,6 +160,31 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
     @objc private func reloadAction() { reload() }
     func controlTextDidChange(_ obj: Notification) { reload() }
     @objc private func newHost() { onNew?() }
+    @objc private func connectSelected() {
+        let selected = (hostsProvider?() ?? []).filter { selectedHostIDs.contains($0.id) }
+        guard !selected.isEmpty else { return }
+        selectedHostIDs.removeAll()
+        hide()
+        for host in selected { onConnect?(host) }
+    }
+
+    @objc private func toggleHostSelection(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue else { return }
+        if sender.state == .on { selectedHostIDs.insert(id) } else { selectedHostIDs.remove(id) }
+        updateBatchButton()
+    }
+
+    private func updateBatchButton() {
+        let count = selectedHostIDs.count
+        batchConnectButton.title = count == 0 ? "连接所选" : "连接所选（\(count)）"
+        batchConnectButton.style = .primary
+        batchConnectButton.isEnabled = count > 0
+    }
+    @objc private func changeSort(_ sender: NSPopUpButton) {
+        let modes: [HostSortMode] = [.manual, .name, .ip]
+        sortMode = modes[max(0, min(sender.indexOfSelectedItem, modes.count - 1))]
+        reload()
+    }
 
     /// ＋分组：把当前选中/首台主机移入新分组（分组是主机上的字段，没有主机的空分组无意义）
     @objc private func newGroup() {
@@ -174,6 +220,8 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
 
     func reload() {
         let allHosts = hostsProvider?() ?? []
+        selectedHostIDs.formIntersection(allHosts.map(\.id))
+        updateBatchButton()
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let hosts: [Host]
         if query.isEmpty {
@@ -187,7 +235,23 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
 
         var groups: [String: [Host]] = [:]
         for h in hosts { groups[h.group.isEmpty ? "默认" : h.group, default: []].append(h) }
-        let names = groups.keys.sorted { $0 == "默认" ? false : ($1 == "默认" ? true : $0 < $1) }
+        if sortMode == .name {
+            for key in groups.keys { groups[key]?.sort { $0.display.localizedStandardCompare($1.display) == .orderedAscending } }
+        } else if sortMode == .ip {
+            for key in groups.keys {
+                groups[key]?.sort {
+                    let result = $0.host.compare($1.host, options: [.numeric, .caseInsensitive])
+                    return result == .orderedSame
+                        ? $0.display.localizedStandardCompare($1.display) == .orderedAscending
+                        : result == .orderedAscending
+                }
+            }
+        }
+        var names: [String] = []
+        for h in hosts {
+            let name = h.group.isEmpty ? "默认" : h.group
+            if !names.contains(name) { names.append(name) }
+        }
         countLabel.stringValue = query.isEmpty ? "\(allHosts.count) 台 · \(names.count) 组" : "\(hosts.count)/\(allHosts.count) 台 · \(names.count) 组"
         listStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         // 首次打开：所有分组默认收起（对齐 Win ConnectionManagerWindow）
@@ -207,54 +271,34 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
 
     private func groupRow(_ name: String, _ hosts: [Host]) -> NSView {
         let box = NSView(); box.rounded(Theme.radius, bg: Theme.bg2, border: Theme.border)
+        box.identifier = .init("group|\(name)")
         box.translatesAutoresizingMaskIntoConstraints = false
         let arrow = NSTextField(labelWithString: collapsed.contains(name) ? "▶" : "▼"); arrow.font = Theme.ui(10); arrow.textColor = Theme.muted
         let folder = NSTextField(labelWithString: "📁"); folder.font = Theme.ui(13)
         let title = NSTextField(labelWithString: name); title.font = Theme.ui(13, .semibold); title.textColor = Theme.text
         let count = Badge("\(hosts.count)", kind: .gray)
+        let drag = dragHandle("拖动分组") { [weak self] event in
+            guard let self = self else { return }
+            let point = self.listStack.convert(event.locationInWindow, from: nil)
+            guard let target = self.listStack.arrangedSubviews.first(where: { $0.frame.contains(point) }),
+                  let raw = target.identifier?.rawValue, raw.hasPrefix("group|") else { return }
+            self.onMoveGroupBefore?(name, String(raw.dropFirst(6))); self.reload()
+        }
         // 分组重命名 / 删除（删除=把该组主机移回「默认」，不删主机）
         let renameBtn = PillButton("重命名", style: .ghost, hPad: 8, height: 20, target: self, action: #selector(renameGroup(_:)))
         renameBtn.identifier = .init(name)
         let delBtn = PillButton("删除", style: .ghost, hPad: 8, height: 20, target: self, action: #selector(deleteGroup(_:)))
         delBtn.identifier = .init(name)
-        let head = NSStackView(views: [arrow, folder, title, NSView(), count, renameBtn, delBtn]); head.spacing = 8; head.alignment = .centerY
+        let head = NSStackView(views: [drag, arrow, folder, title, NSView(), count, renameBtn, delBtn]); head.spacing = 7; head.alignment = .centerY
         head.setCustomSpacing(4, after: arrow)
         head.setCustomSpacing(2, after: folder)
         head.translatesAutoresizingMaskIntoConstraints = false
         let inner = NSStackView(views: [head]); inner.orientation = .vertical; inner.alignment = .leading; inner.spacing = 6
         inner.translatesAutoresizingMaskIntoConstraints = false
         if !collapsed.contains(name) {
-            if hosts.count > 3 {
-                // ≥4 台就出分组内滚动条（常显 legacy），外层列表仍可滚
-                let hostsStack = NSStackView(); hostsStack.orientation = .vertical
-                hostsStack.alignment = .leading; hostsStack.spacing = 4
-                hostsStack.translatesAutoresizingMaskIntoConstraints = false
-                for h in hosts { hostsStack.addArrangedSubview(hostRow(h)) }
-                let hostScroll = OverlayScrollView()
-                hostScroll.drawsBackground = false
-                hostScroll.hasVerticalScroller = true
-                hostScroll.scrollerStyle = .overlay
-                hostScroll.verticalScroller = InvisibleScroller()
-                hostScroll.translatesAutoresizingMaskIntoConstraints = false
-                let hostDoc = FlippedView(); hostDoc.translatesAutoresizingMaskIntoConstraints = false
-                hostDoc.addSubview(hostsStack)
-                hostScroll.documentView = hostDoc
-                NSLayoutConstraint.activate([
-                    hostScroll.heightAnchor.constraint(equalToConstant: 140),
-                    hostDoc.topAnchor.constraint(equalTo: hostScroll.contentView.topAnchor),
-                    hostDoc.leadingAnchor.constraint(equalTo: hostScroll.contentView.leadingAnchor),
-                    hostDoc.widthAnchor.constraint(equalTo: hostScroll.widthAnchor),
-                    hostsStack.topAnchor.constraint(equalTo: hostDoc.topAnchor),
-                    hostsStack.leadingAnchor.constraint(equalTo: hostDoc.leadingAnchor),
-                    hostsStack.trailingAnchor.constraint(equalTo: hostDoc.trailingAnchor),
-                    hostsStack.bottomAnchor.constraint(equalTo: hostDoc.bottomAnchor),
-                    hostsStack.widthAnchor.constraint(equalTo: hostDoc.widthAnchor)
-                ])
-                inner.addArrangedSubview(hostScroll)
-                hostScroll.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
-            } else {
-                for h in hosts { inner.addArrangedSubview(hostRow(h)) }
-            }
+            // 分组按实际主机数量自然展开，不再用固定 140pt 的组内滚动区。
+            // 主机较多时由连接管理器已有的外层滚动视图统一滚动。
+            addHostRows(hosts, to: inner)
         }
         box.addSubview(inner)
         NSLayoutConstraint.activate([
@@ -264,9 +308,34 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
             inner.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -8),
             head.widthAnchor.constraint(equalTo: inner.widthAnchor),
         ])
+        // 点击标题区域展开/收起；不再把点击手势挂到整个 head，避免拦截左侧排序手柄。
         let click = NSClickGestureRecognizer(target: self, action: #selector(toggleGroup(_:)))
-        head.addGestureRecognizer(click); head.identifier = .init(name)
+        title.addGestureRecognizer(click); title.identifier = .init(name)
         return box
+    }
+
+    private func addHostRows(_ hosts: [Host], to stack: NSStackView) {
+        for h in hosts {
+            let row = hostRow(h)
+            row.identifier = .init("host|\(h.id)")
+            let drag = dragHandle("拖动主机") { [weak self, weak stack] event in
+                guard let self = self, let stack = stack,
+                      self.sortMode == .manual else { return }
+                let point = stack.convert(event.locationInWindow, from: nil)
+                guard let target = stack.arrangedSubviews.first(where: { $0.frame.contains(point) }),
+                      let raw = target.identifier?.rawValue, raw.hasPrefix("host|") else { return }
+                self.onMoveHostBefore?(h.id, String(raw.dropFirst(5))); self.reload()
+            }
+            if let content = row.subviews.first as? NSStackView { content.insertArrangedSubview(drag, at: 0) }
+            stack.addArrangedSubview(row)
+        }
+    }
+
+    private func dragHandle(_ tooltip: String, onDrop: @escaping (NSEvent) -> Void) -> NSView {
+        let handle = DragHandleButton(onDrop: onDrop)
+        handle.toolTip = tooltip
+        handle.setContentHuggingPriority(.required, for: .horizontal)
+        return handle
     }
     @objc private func toggleGroup(_ g: NSClickGestureRecognizer) {
         guard let name = g.view?.identifier?.rawValue else { return }
@@ -280,6 +349,10 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
         let name = NSTextField(labelWithString: h.display); name.font = Theme.ui(12, .medium); name.textColor = Theme.text
         let sub = NSTextField(labelWithString: h.subtitle); sub.font = Theme.mono(10); sub.textColor = Theme.muted
         let info = NSStackView(views: [name, sub]); info.orientation = .vertical; info.alignment = .leading; info.spacing = 1
+        let select = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleHostSelection(_:)))
+        select.identifier = .init(h.id)
+        select.state = selectedHostIDs.contains(h.id) ? .on : .off
+        select.toolTip = "选择后可一次连接多台主机"
         let conn = PillButton("连接", style: .primary, hPad: 12, height: 24)
         conn.target = self; conn.action = #selector(connectRow(_:)); conn.identifier = .init(h.id)
         let edit = PillButton("编辑", style: .secondary, hPad: 10, height: 24)
@@ -287,7 +360,7 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
         let del = PillButton("删除", style: .danger, hPad: 10, height: 24)
         del.target = self; del.action = #selector(deleteRow(_:)); del.identifier = .init(h.id)
         let btns = NSStackView(views: [conn, edit, del]); btns.spacing = 6
-        let s = NSStackView(views: [info, NSView(), btns]); s.spacing = 10; s.alignment = .centerY
+        let s = NSStackView(views: [select, info, NSView(), btns]); s.spacing = 10; s.alignment = .centerY
         s.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(s)
         NSLayoutConstraint.activate([
@@ -346,6 +419,47 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
     @objc private func connectRow(_ b: NSButton) { if let h = host(b.identifier?.rawValue ?? "") { hide(); onConnect?(h) } }
     @objc private func editRow(_ b: NSButton) { if let h = host(b.identifier?.rawValue ?? "") { onEdit?(h) } }
     @objc private func deleteRow(_ b: NSButton) { if let h = host(b.identifier?.rawValue ?? "") { onDelete?(h); reload() } }
+}
+
+/// 只占用标题中间的空白区域，并交给 AppKit 完成无抖动的原生窗口拖动。
+private final class WindowDragView: NSView {
+    override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
+}
+
+/// 使用真正的按钮作为排序手柄，确保 AppKit 会把按下、拖动和松开事件交给它。
+private final class DragHandleButton: NSButton {
+    private let onDrop: (NSEvent) -> Void
+
+    init(onDrop: @escaping (NSEvent) -> Void) {
+        self.onDrop = onDrop
+        super.init(frame: .zero)
+        title = "≡"
+        isBordered = false
+        bezelStyle = .inline
+        font = Theme.ui(14, .medium)
+        contentTintColor = Theme.muted
+        focusRingType = .none
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: 18).isActive = true
+        heightAnchor.constraint(equalToConstant: 24).isActive = true
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override var intrinsicContentSize: NSSize { NSSize(width: 18, height: 24) }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        var dragged = false
+        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if next.type == .leftMouseDragged {
+                dragged = true
+                NSCursor.closedHand.set()
+            } else {
+                NSCursor.arrow.set()
+                if dragged { onDrop(next) }
+                return
+            }
+        }
+    }
 }
 
 final class EscapableView: NSView {
