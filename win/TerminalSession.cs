@@ -710,7 +710,7 @@ public sealed class TerminalSession : IDisposable
                         if (n <= 0) break;
                         int c = decoder.GetChars(buf, 0, n, chars, 0, flush: false);
                         var text = c > 0 ? new string(chars, 0, c) : "";
-
+                        
                         string b64;
                         if (HighlightEnabled)
                         {
@@ -719,7 +719,7 @@ public sealed class TerminalSession : IDisposable
                             ExtractIncompleteANSI(fullText, out var complete, out incompleteAnsi);
                             if (complete.Length > 0) AppendOutputBuffer(complete);
                             if (complete.Length == 0) continue;
-
+                            
                             b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
                                 Highlight.SemanticHighlight.Decorate(complete, ThemeManager.IsDark, ref activeColor)));
                         }
@@ -806,7 +806,7 @@ public sealed class TerminalSession : IDisposable
                 if (n <= 0) break;
                 int c = decoder.GetChars(buf, 0, n, chars, 0, flush: false);
                 var text = c > 0 ? new string(chars, 0, c) : "";
-
+                
                 string b64;
                 if (HighlightEnabled)
                 {
@@ -815,7 +815,7 @@ public sealed class TerminalSession : IDisposable
                     ExtractIncompleteANSI(fullText, out var complete, out incompleteAnsi);
                     if (complete.Length > 0) AppendOutputBuffer(complete);
                     if (complete.Length == 0) continue;
-
+                    
                     b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
                         Highlight.SemanticHighlight.Decorate(complete, ThemeManager.IsDark, ref activeColor)));
                 }
@@ -1348,7 +1348,7 @@ public sealed class TerminalSession : IDisposable
                     hadOutput = true;
                     int c = decoder.GetChars(buf, 0, n, chars, 0, flush: false);
                     var text = c > 0 ? new string(chars, 0, c) : "";
-
+                    
                     string b64;
                     if (HighlightEnabled)
                     {
@@ -1357,7 +1357,7 @@ public sealed class TerminalSession : IDisposable
                         ExtractIncompleteANSI(fullText, out var complete, out incompleteAnsi);
                         if (complete.Length > 0) AppendOutputBuffer(complete);
                         if (complete.Length == 0) continue;
-
+                        
                         b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
                             Highlight.SemanticHighlight.Decorate(complete, ThemeManager.IsDark, ref activeColor)));
                     }

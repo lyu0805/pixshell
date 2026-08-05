@@ -477,14 +477,14 @@ final class NetworkChart: NSView {
     private var rxValues: [Double] = []
     private var txValues: [Double] = []
     private let maxCount = 60
-
+    
     init() {
         super.init(frame: .zero)
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
     }
     required init?(coder: NSCoder) { fatalError() }
-
+    
     func push(rx: Double, tx: Double) {
         rxValues.append(rx)
         txValues.append(tx)
@@ -494,25 +494,25 @@ final class NetworkChart: NSView {
         }
         needsDisplay = true
     }
-
+    
     private func formatLabel(_ v: Double) -> String {
         if v < 1000 { return "\(Int(v))" }
         if v < 1000_000 { return String(format: "%.1fK", v / 1000).replacingOccurrences(of: ".0K", with: "K") }
         if v < 1000_000_000 { return String(format: "%.1fM", v / 1000_000).replacingOccurrences(of: ".0M", with: "M") }
         return String(format: "%.1fG", v / 1000_000_000).replacingOccurrences(of: ".0G", with: "G")
     }
-
+    
     override func draw(_ dirty: NSRect) {
         guard !rxValues.isEmpty else { return }
         let w = bounds.width
         let h = bounds.height
-
+        
         var mx: Double = 1
         for i in 0..<rxValues.count {
             mx = max(mx, rxValues[i], txValues[i])
         }
         mx = mx * 1.1 // Add a little headroom
-
+        
         let steps = 3
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.alignment = .right
@@ -521,15 +521,15 @@ final class NetworkChart: NSView {
             .foregroundColor: Theme.muted,
             .paragraphStyle: paragraphStyle
         ]
-
+        
         let labelWidth: CGFloat = 28
         let chartX = labelWidth + 4
         let chartW = w - chartX
-
+        
         for i in 1...steps {
             let val = mx * Double(i) / Double(steps)
             let y = h * CGFloat(i) / CGFloat(steps)
-
+            
             let path = NSBezierPath()
             path.move(to: NSPoint(x: chartX, y: y))
             path.line(to: NSPoint(x: w, y: y))
@@ -537,27 +537,27 @@ final class NetworkChart: NSView {
             path.setLineDash(dashes, count: 2, phase: 0)
             Theme.border.setStroke()
             path.stroke()
-
+            
             let text = formatLabel(val)
             let str = NSAttributedString(string: text, attributes: attrs)
             let strSize = str.size()
             str.draw(in: NSRect(x: 0, y: y - strSize.height/2, width: labelWidth, height: strSize.height))
         }
-
+        
         let unit = chartW / CGFloat(maxCount)
         let barW = max(unit * 0.85, 1)
         let gap = unit * 0.15
         let maxH = h * 0.95
-
+        
         let rxColor = Theme.c("#30d158").withAlphaComponent(0.6)
         let txColor = Theme.c("#ff9f0a").withAlphaComponent(0.6)
-
+        
         for i in 0..<rxValues.count {
             let x = chartX + CGFloat(i) * (barW + gap)
-
+            
             let rxH = maxH * CGFloat(rxValues[i] / mx)
             let txH = maxH * CGFloat(txValues[i] / mx)
-
+            
             if txH > 0 {
                 txColor.setFill()
                 NSBezierPath(rect: NSRect(x: x, y: 0, width: barW, height: max(1, txH))).fill()
@@ -574,33 +574,33 @@ final class NetworkChart: NSView {
 final class LatencyChart: NSView {
     private var values: [Double] = []
     private let maxCount = 60
-
+    
     init() {
         super.init(frame: .zero)
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
     }
     required init?(coder: NSCoder) { fatalError() }
-
+    
     func push(val: Double) {
         values.append(val)
         if values.count > maxCount { values.removeFirst() }
         needsDisplay = true
     }
-
+    
     private func formatLabel(_ v: Double) -> String {
         return String(format: "%.0f", v)
     }
-
+    
     override func draw(_ dirty: NSRect) {
         guard !values.isEmpty else { return }
         let w = bounds.width
         let h = bounds.height
-
+        
         var mx: Double = 10 // min 10ms
         for v in values { mx = max(mx, v) }
-        mx = mx * 1.1
-
+        mx = mx * 1.1 
+        
         let steps = 3
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.alignment = .right
@@ -609,15 +609,15 @@ final class LatencyChart: NSView {
             .foregroundColor: Theme.muted,
             .paragraphStyle: paragraphStyle
         ]
-
+        
         let labelWidth: CGFloat = 20
         let chartX = labelWidth + 4
         let chartW = w - chartX
-
+        
         for i in 1...steps {
             let val = mx * Double(i) / Double(steps)
             let y = h * CGFloat(i) / CGFloat(steps)
-
+            
             let path = NSBezierPath()
             path.move(to: NSPoint(x: chartX, y: y))
             path.line(to: NSPoint(x: w, y: y))
@@ -625,22 +625,22 @@ final class LatencyChart: NSView {
             path.setLineDash(dashes, count: 2, phase: 0)
             Theme.border.setStroke()
             path.stroke()
-
+            
             let text = formatLabel(val)
             let str = NSAttributedString(string: text, attributes: attrs)
             let strSize = str.size()
             str.draw(in: NSRect(x: 0, y: y - strSize.height/2, width: labelWidth, height: strSize.height))
         }
-
+        
         let unit = chartW / CGFloat(maxCount)
         let barW = max(unit * 0.85, 1)
         let gap = unit * 0.15
         let maxH = h * 0.95
-
+        
         let cGreen = Theme.c("#30d158").withAlphaComponent(0.8)
         let cYellow = Theme.c("#ff9f0a").withAlphaComponent(0.8)
         let cRed = Theme.c("#ff453a").withAlphaComponent(0.8)
-
+        
         for i in 0..<values.count {
             let x = chartX + CGFloat(i) * (barW + gap)
             let val = values[i]

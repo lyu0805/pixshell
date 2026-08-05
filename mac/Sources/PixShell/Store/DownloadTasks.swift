@@ -47,7 +47,7 @@ final class DownloadTasks {
         }
     }
 
-    func clear() {
+    func clear() { 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.tasks.removeAll()

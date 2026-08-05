@@ -14,7 +14,7 @@ final class ConnectOverlay: NSView {
     private let bar = IndeterminateBar()
     private var stepTimer: Timer?
     private var stepIndex = 0
-
+    
     private let cancelBtn = NSButton(title: "取消", target: nil, action: nil)
     private let retryBtn = NSButton(title: "重试", target: nil, action: nil)
     var onCancel: (() -> Void)?
@@ -137,8 +137,8 @@ final class ConnectOverlay: NSView {
         stepLabel.stringValue = reason
         stepLabel.textColor = Theme.err
         pulse.stop(ok: false); bar.stop()
-        if autoHide {
-            fadeOut(after: 0.9)
+        if autoHide { 
+            fadeOut(after: 0.9) 
         } else {
             retryBtn.isHidden = false
         }

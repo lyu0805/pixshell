@@ -883,10 +883,10 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
     @objc func del() {
         let rows = remoteTable.selectedRowIndexes
         guard !rows.isEmpty, let sftp = sftp else { return }
-
+        
         let group = DispatchGroup()
         var lastError: Error?
-
+        
         for row in rows.reversed() {
             guard row >= 0, row < remoteEntries.count else { continue }
             let e = remoteEntries[row]
@@ -896,7 +896,7 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
                 group.leave()
             }
         }
-
+        
         group.notify(queue: .main) { [weak self] in
             if let er = lastError {
                 self?.statusLabel.stringValue = "删除失败: \(self?.msg(er) ?? "")"

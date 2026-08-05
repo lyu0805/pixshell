@@ -105,7 +105,7 @@ public class LatencyChart : FrameworkElement
                 _textBrush,
                 VisualTreeHelper.GetDpi(this).PixelsPerDip);
 #pragma warning restore CS0618
-
+            
             ft.TextAlignment = TextAlignment.Right;
             ft.MaxTextWidth = labelWidth;
             dc.DrawText(ft, new Point(0, y - ft.Height / 2));

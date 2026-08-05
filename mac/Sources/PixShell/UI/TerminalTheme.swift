@@ -22,12 +22,12 @@ enum TermTheme {
         }
         let bg = dark ? "#1e1f29" : "#d4d6dc"
         let fg = dark ? "#f2f2f7" : "#0b0b0d"
-
+        
         let nBg = ns(bg)
         tv.nativeBackgroundColor = nBg
         tv.layer?.backgroundColor = nBg.cgColor
         tv.enclosingScrollView?.backgroundColor = nBg
-
+        
         let nFg = ns(fg)
         tv.nativeForegroundColor = nFg
         tv.caretColor = ns(dark ? "#f2f2f7" : "#0055d4")
@@ -42,7 +42,7 @@ enum TermTheme {
         tv.nativeBackgroundColor = nBg
         tv.layer?.backgroundColor = nBg.cgColor
         tv.enclosingScrollView?.backgroundColor = nBg
-
+        
         tv.nativeForegroundColor = s.foreground
         tv.caretColor = s.cursor
         tv.installColors(s.ansi.map(term))

@@ -241,11 +241,11 @@ final class HoverCardView: NSView {
             ctx.duration = 0.3
             ctx.allowsImplicitAnimation = true
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.175, 0.885, 0.32, 1.275)
-
+            
             self.layer?.borderColor = (self.hovering ? Theme.accent : self.baseBorder).cgColor
             self.layer?.borderWidth = self.hovering ? 1.5 : 1
             self.layer?.backgroundColor = (self.hovering ? Theme.bg3.withAlphaComponent(0.8) : self.baseBg).cgColor
-
+            
             // 物理悬浮效果
             if self.hovering {
                 let transform = CATransform3DMakeScale(1.02, 1.02, 1.0)
@@ -280,7 +280,7 @@ final class OverlayScrollView: NSScrollView {
         get { return .overlay }
         set { super.scrollerStyle = .overlay }
     }
-
+    
     override func tile() {
         super.tile()
         contentView.frame = bounds

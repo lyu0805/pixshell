@@ -85,7 +85,7 @@ public partial class ConnectionManagerWindow : Window
                 var hostsPanel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 6, 0, 0) };
                 foreach (var h in list)
                     hostsPanel.Children.Add(BuildRow(h));
-
+                
                 var sv = new ScrollViewer
                 {
                     Content = hostsPanel,
@@ -273,13 +273,13 @@ public partial class ConnectionManagerWindow : Window
 
     private void New_Click(object sender, RoutedEventArgs e) => OnNew?.Invoke();
     private void Close_Click(object sender, RoutedEventArgs e) { OnClose?.Invoke(); Close(); }
-
+    
     private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton == MouseButton.Left && e.ButtonState == MouseButtonState.Pressed)
             DragMove();
     }
-
+    
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Escape) { OnClose?.Invoke(); Close(); }

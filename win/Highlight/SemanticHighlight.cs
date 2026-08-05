@@ -260,7 +260,7 @@ public static class SemanticHighlight
         return string.IsNullOrEmpty(plain) ? DecorateBody(chunk, dark, ref activeColor) : Tc(plain!) + DecorateBody(chunk, dark, ref activeColor);
     }
 
-
+    
     private static string DecorateBody(string chunk, bool dark, ref bool activeColor)
     {
         var ms = AnsiRe.Matches(chunk);
@@ -285,7 +285,7 @@ public static class SemanticHighlight
                     sb.Append(DecoratePlainChunk(plain, dark));
                 }
             }
-
+            
             var ansi = m.Value;
             if (ansi == "\u001b[0m" || ansi == "\u001b[39m" || ansi == "\u001b[49m" || ansi == "\u001b[0;39m")
             {
@@ -295,7 +295,7 @@ public static class SemanticHighlight
             {
                 activeColor = true;
             }
-
+            
             // 强制将 37m (前景色白) 转换为 TrueColor 的纯白，这样既能保证“红底白字”清晰可见，又不会破坏 47m (背景色白) 对应调色板的浅灰
             if (ansi == "\u001b[37m")
             {
@@ -305,7 +305,7 @@ public static class SemanticHighlight
             {
                 ansi = "\u001b[0m\u001b[38;2;255;255;255m";
             }
-
+            
             // 拦截 2K/0K/K (清除行)，必须前置 0m 以避免背景色溢出成“黑条/彩条”
             if (ansi == "\u001b[2K" || ansi == "\u001b[K" || ansi == "\u001b[0K")
             {

@@ -52,10 +52,10 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
 
     private func build() {
         guard let w = window else { return }
-
+        
         card.rounded(Theme.radiusLg, bg: Theme.bg, border: Theme.borderStrong)
         card.translatesAutoresizingMaskIntoConstraints = false
-
+        
         let root = EscapableView()
         root.onEscape = { [weak self] in self?.hide() }
         root.addSubview(card)
