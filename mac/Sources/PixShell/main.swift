@@ -219,6 +219,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
 
 // MARK: - 入口
 setbuf(stdout, nil)   // 关掉 stdout 缓冲，便于观察 print（自测/调试）
+if ProxyStdioBridge.requested {
+    exit(ProxyStdioBridge.run())
+}
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

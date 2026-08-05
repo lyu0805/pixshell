@@ -115,6 +115,7 @@ public final class OpenSSHSFTPSession: SFTPService {
             env["DISPLAY"] = ":"
             env["SSH_ASKPASS_PROMPT"] = "none"
         }
+        OpenSSHSession.applyProxyEnvironment(creds, to: &env)
         p.environment = env
 
         // 脱离控制终端，强制走 ASKPASS（与交互 shell 的 forkpty 路径不同）

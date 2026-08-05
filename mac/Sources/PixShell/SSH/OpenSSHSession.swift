@@ -109,6 +109,10 @@ public final class OpenSSHSession: SSHSession {
             env.append("DISPLAY=:")
             env.append("SSH_ASKPASS_PROMPT=none")
         }
+        if let proxy = creds.proxy {
+            env.append("\(ProxyStdioBridge.usernameEnv)=\(proxy.username)")
+            env.append("\(ProxyStdioBridge.passwordEnv)=\(proxy.password)")
+        }
         var cEnv: [UnsafeMutablePointer<CChar>?] = env.map { strdup($0) }
         cEnv.append(nil)
 
@@ -174,6 +178,9 @@ public final class OpenSSHSession: SSHSession {
         a += ["-p", String(c.port)]
         a += ["-o", "StrictHostKeyChecking=accept-new"]
         a += ["-o", "NumberOfPasswordPrompts=1"]
+        // 限制 DNS / 代理 CONNECT / SSH 握手的初始等待时间，避免代理不可用时
+        // “打开会话…”覆盖层永久停留。ProxyStdioBridge 自身也有独立握手超时。
+        a += ["-o", "ConnectTimeout=15"]
         a += ["-o", "ServerAliveInterval=30"]
         a += compatibilityOptions()
 
@@ -201,14 +208,34 @@ public final class OpenSSHSession: SSHSession {
         if let p = c.proxy {
             switch p.type {
             case .socks5, .socks4:
-                a += ["-o", "ProxyCommand=/usr/bin/nc -x \(p.host):\(p.port) -X \(p.type == .socks5 ? "5" : "4") %h %p"]
+                a += ["-o", "ProxyCommand=\(proxyBridgeCommand(p))"]
             case .http:
-                a += ["-o", "ProxyCommand=/usr/bin/nc -x \(p.host):\(p.port) -X connect %h %p"]
+                a += ["-o", "ProxyCommand=\(proxyBridgeCommand(p))"]
             case .sshJump:
                 a += ["-J", "\(p.username.isEmpty ? "" : p.username + "@")\(p.host):\(p.port)"]
             }
         }
         return a
+    }
+
+    /// 使用应用自身作为 OpenSSH 的 ProxyCommand；代理密码只走环境变量，
+    /// 不进入命令行、日志或系统进程列表。
+    private static func proxyBridgeCommand(_ proxy: ProxyConfig) -> String {
+        let executable = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        return [executable, ProxyStdioBridge.flag, proxy.type.rawValue, proxy.host,
+                String(proxy.port), "%h", "%p"]
+            .map(shellQuote)
+            .joined(separator: " ")
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    static func applyProxyEnvironment(_ credentials: SSHCredentials, to environment: inout [String: String]) {
+        guard let proxy = credentials.proxy else { return }
+        environment[ProxyStdioBridge.usernameEnv] = proxy.username
+        environment[ProxyStdioBridge.passwordEnv] = proxy.password
     }
 
     /// 回落路径的最大算法兼容参数（交互 shell / 监控 exec / SFTP 共用）。
@@ -435,6 +462,7 @@ public final class OpenSSHSession: SSHSession {
                 env["DISPLAY"] = ":"
                 env["SSH_ASKPASS_PROMPT"] = "none"
             }
+            Self.applyProxyEnvironment(c, to: &env)
             p.environment = env
 
             // 命令级总超时：到期 terminate + 收口。不用 readDataToEndOfFile（会无限阻塞），

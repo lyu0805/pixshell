@@ -250,7 +250,8 @@ extension AppDelegate {
             "nio connection", "connect() failed", "无法分配伪终端",
             "socks5", "socks4", "http connect", "network is down",
             "host key verification failed",
-            "proxycommand", "proxy connect"
+            "proxycommand", "proxy connect", "proxy bridge",
+            "authentication method negotiation failed"
         ] {
             if blob.contains(k) { return true }
         }
@@ -281,11 +282,11 @@ extension AppDelegate {
 
     static func classifyClose(_ error: Error?) -> SSHCloseClass {
         guard let error = error else { return .clean }
-        // 算法/协议协商（含 Dropbear 无 AES-GCM 导致的裸 EOF）必须优先于 auth，
-        // 否则会清密码且跳过 OpenSSH 回落。
-        if looksLikeAlgorithmMismatch(error) { return .algorithm }
-        // 网络/端口/DNS/超时优先于宽字符串认证判断，避免权限不足等网络错误被误报成密码错误。
+        // 代理错误可能包含 “authentication method negotiation failed”；必须先按网络/代理
+        // 判断，否则其中的 negotiation 会被误当成 SSH 算法不兼容并重复回落。
         if looksLikeNetworkFailure(error) { return .network }
+        // 算法/协议协商（含 Dropbear 无 AES-GCM 导致的裸 EOF）仍优先于目标主机 auth。
+        if looksLikeAlgorithmMismatch(error) { return .algorithm }
         if looksLikeAuthFailure(error) { return .auth }
         // 未知错误且 shell 从未打开：保守当算法协商失败先回落一次系统 ssh
         // （比误清密码更安全；已回落过仍失败时由调用方按 auth 处理）。
@@ -326,6 +327,9 @@ extension AppDelegate {
             && SSHPrivateKeyLoader.load(path: host.keyPath) == nil
         // forceOpenSSH / 已回落标记 / 私钥不兼容时直接 OpenSSH，避免 NIO 空转。
         let useOpenSSH = forceOpenSSH || sess.triedOpenSSHFallback || keyRequiresOpenSSH
+        // 已经直接使用系统 OpenSSH 时，不要把它自身的失败再次误判成“NIO 算法失败”
+        // 并原样重试一遍；代理认证失败此前因此会闪退两次后留下空白标签。
+        if useOpenSSH { sess.triedOpenSSHFallback = true }
         let s: SSHSession = useOpenSSH ? OpenSSHSession() : NIOSSHSession()
         Log.info("SSH 引擎=\(useOpenSSH ? "OpenSSH" : "NIO") \(host.subtitle)", "ssh")
         s.delegate = self; sess.ssh = s
