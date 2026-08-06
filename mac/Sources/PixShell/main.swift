@@ -92,6 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     var isHeadless = false
     /// 无头模式下自建会话的桥宿主（有头时 AppDelegate 自己实现 BridgeHost）。
     var headlessHost: HeadlessBridgeHost?
+    /// 有头模式下供 agent 使用的**独立无头会话池**：agent 的 connect/exec/screen/sftp
+    /// 全部走这里自建的零 UI 会话（HeadlessSession），与用户 GUI 标签页完全隔离——
+    /// agent 调用**绝不会**在界面里新开标签、不会抢控制器、不会重复开 SSH。
+    var agentHeadlessHost: HeadlessBridgeHost?
     var bridgeTimer: Timer?            // 周期对齐桥状态 → 状态栏三态
     /// CLI 桥状态（与桥实现解耦：桥启动/收到鉴权请求时回填，状态栏据此显示三态）
     var bridgeStatus: (running: Bool, port: Int, clientIdle: TimeInterval?) = (false, 0, nil)
@@ -199,18 +203,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
         // 无头进程收到 reopen（用户 Finder 双击 / `open -a`）：说明想打开界面。
         // 无头是 .accessory 不建窗，`open -a` 只激活已运行实例不会新启有头，双击会"没反应"。
         // 解决：用 `open -n` 强制**新实例**启动有头（绕过 LaunchServices 实例复用，不依赖 terminate 时序）。
-        // 新有头启动后走 waitForHeadlessToYield → 让本无头退出（onPortBusy 让位）→ 接管 8766。
+        // 新有头启动后走 waitForHeadlessToYield → 让本无头退出（onPortBusy 让位）→ 接管主端口。
         Log.info("无头收到 reopen（用户想开界面）→ open -n 拉起新有头实例", "ui")
         let appPath = Bundle.main.bundlePath.hasSuffix(".app") ? Bundle.main.bundlePath : ""
         let args: [String] = appPath.isEmpty ? ["-n", "-a", "PixShell"] : ["-n", appPath]
         AgentBridge.spawnOpenApp(args)
         return false
-    }
-
-    /// 有头正常退出时拉起无头进程接续桥（跟随有头生命周期：有头关了 → 无头继续后台跑）。
-    func applicationWillTerminate(_ notification: Notification) {
-        guard !isHeadless else { return }
-        AgentBridge.spawnHeadlessProcess()
     }
 
     // MARK: - 通用小工具（供各扩展复用）

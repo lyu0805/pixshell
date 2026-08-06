@@ -69,6 +69,10 @@ public partial class MainWindow : Window
 
     // 本地 CLI/AI-Agent 桥（对齐 mac AppDelegate.agentBridge + bridgeTimer）。
     private Bridge.AgentBridge? _agentBridge;
+    /// <summary>有头模式下供 agent 使用的**独立无头会话池**：agent 的 connect/exec/screen/sftp
+    /// 全部走这里自建的零 UI 会话，与用户 GUI 标签页完全隔离——agent 调用**绝不会**在界面里
+    /// 新开标签、不会抢控制器、不会重复开 SSH。</summary>
+    private Bridge.HeadlessBridgeHost? _agentHeadlessHost;
     private readonly DispatcherTimer _bridgeStatusTimer = new() { Interval = TimeSpan.FromSeconds(3) };
 
     public MainWindow()
@@ -300,48 +304,21 @@ public partial class MainWindow : Window
     // =====================================================================
     private void StartAgentBridge()
     {
-        // 有头接管：若已有无头在听，先让它退出，等端口释放后再自己 bind。
-        // 探测用裸 TCP 建连：/v1/health 在鉴权后面（无 token 返回 401），HTTP GET 判断不了在听。
-        WaitForHeadlessToYield();
-
-        _agentBridge = new Bridge.AgentBridge(this);
-        // 有头 bind 与无头退出是异步竞态：失败先重试等端口释放，而不是直接放弃。
-        _agentBridge.RetryOnPortBusy = true;
+        // agent 专用隔离池：connect 建的是无 UI 会话，绝不开 UI 标签、不碰用户控制器。
+        _agentHeadlessHost ??= new Bridge.HeadlessBridgeHost();
+        // 有头用 GUI 专用端口（47867），与无头 agent 端口（47866）完全隔离，不互相让位/打架。
+        _agentBridge = new Bridge.AgentBridge(_agentHeadlessHost, Bridge.AgentBridge.GuiPort);
+        // 有头 GUI 端口被占 → 池避让试下一端口（高位段），绝不与无头抢同一端口。
+        _agentBridge.UsePortPool = true;
+        // 有头 GUI 桥不写 agent_port：CLI/MCP 发现的是无头进程的 47866。
+        _agentBridge.WritesAgentPort = false;
         _agentBridge.Start();
         Bridge.AgentCLI.Install(_agentBridge.Port);   // 生成 pixshell.cmd / pixshell.py（CLI + MCP server）
         UpdateCliStatus();
         _bridgeStatusTimer.Start();
     }
 
-    /// <summary>有头启动前：探测桥端口，若有无头在听 → 发 /v1/app/shutdown → 轮询直到端口释放
-    /// （无头退出）。最多等 5s，超时也继续启动——AgentBridge.RetryOnPortBusy 会继续等端口释放
-    /// 后再 bind，最终一定接管。对齐 mac waitForHeadlessToYield()。</summary>
-    private void WaitForHeadlessToYield()
-    {
-        // 端口解析与 AgentBridge 构造函数一致（PIXSHELL_BRIDGE_PORT env 或默认）。
-        var port = 8766;
-        var envPort = Environment.GetEnvironmentVariable("PIXSHELL_BRIDGE_PORT");
-        if (int.TryParse(envPort, out var p) && p > 0 && p < 65536) port = p;
-        if (!Bridge.AgentBridge.IsPortOpen(port) || !TryReadAgentToken(out var token)) return;
-        try
-        {
-            using var client = new HttpClient();
-            using var req = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/v1/app/shutdown");
-            req.Headers.Add("Authorization", $"Bearer {token}");
-            _ = client.SendAsync(req).ConfigureAwait(false);   // 发完即走，不等待响应
-        }
-        catch { /* 无头可能刚好退出，忽略 */ }
-        // 轮询端口释放（AgentBridge.RetryOnPortBusy 也兜底等待）。
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (DateTime.UtcNow < deadline)
-        {
-            if (!Bridge.AgentBridge.IsPortOpen(port)) return;   // 无头已退出，端口释放
-            Thread.Sleep(250);
-        }
-        Log.Warn("等待无头退出超时，靠 RetryOnPortBusy 继续等", "bridge");
-    }
-
-    /// <summary>读 %APPDATA%\PixShell\agent_token（只读不重建，供有头接管发 shutdown 用）。</summary>
+    /// <summary>读 %APPDATA%\PixShell\agent_token（只读不重建）。</summary>
     private static bool TryReadAgentToken(out string token)
     {
         token = "";
@@ -2808,35 +2785,10 @@ public partial class MainWindow : Window
         _monitorTimer.Stop();
         _bridgeStatusTimer.Stop();
         try { _agentBridge?.Stop(); } catch { }
-        // 有头正常退出 → 拉起无头进程接续桥（跟随有头生命周期：有头关了 → 无头继续后台跑）。
-        SpawnHeadlessProcess();
         try { Sftp.Cleanup(); } catch { }
         foreach (var obj in Sessions.Items)
             if (obj is TabItem { Tag: TerminalSession s })
                 try { s.Dispose(); } catch { }
-    }
-
-    /// <summary>有头退出时拉起无头进程接续桥：`PixShell.exe --headless`（不弹窗，后台跑桥）。</summary>
-    private static void SpawnHeadlessProcess()
-    {
-        try
-        {
-            var exe = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "PixShell.exe");
-            if (!File.Exists(exe)) return;
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = exe,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            psi.ArgumentList.Add("--headless");
-            using var p = System.Diagnostics.Process.Start(psi);
-            if (p == null) Log.Warn("拉起无头进程失败：Process.Start 返回 null", "bridge");
-        }
-        catch (Exception ex)
-        {
-            Log.Warn($"拉起无头进程失败: {ex.Message}", "bridge");
-        }
     }
 
     // ── Windows 窗口控制（右侧 — □ ✕，与 mac 左侧红绿灯相反，注意别照搬 mac 顺序）──

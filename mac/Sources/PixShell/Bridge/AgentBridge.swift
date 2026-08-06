@@ -16,8 +16,19 @@ import Security
 ///   - 请求体上限 8 MiB，超出返回 413；
 ///   - 绝不把 token 明文写进日志，只记录长度。
 final class AgentBridge {
-    /// 与老 JS 版 `DEFAULT_PORT` 保持一致。
-    static let defaultPort = 8766
+    /// 主端口：用户明确要求**严禁 8xxx**（太多软件占用），改用 47000–48000 高位段。
+    /// 若主端口被占，自动在端口池（主端口 … 47999）里尝试下一个（见 `portRange`）。
+    static let defaultPort = 47866
+    /// **GUI 有头模式专用端口**：与无头 agent 端口（defaultPort）**完全不同**，各自监听，
+    /// 永不互相让位/打架。GUI 只服务自己的功能（Web SSH 镜像页等）；agent 请求永远走
+    /// 无头进程的 defaultPort。
+    static let guiPort = 47867
+    /// 端口池上限：主端口被占 → 依次尝试到 47999（绝不回落 8xxx）。
+    static let portPoolEnd = 47999
+    /// 端口池（含两端）。客户端通过 `agent_port` 文件发现实际端口，见 `agentPortPath`。
+    static var portRange: ClosedRange<Int> { defaultPort...portPoolEnd }
+    /// 桥把实际监听端口写入此文件，供 MCP/CLI 发现（避免硬编码猜端口）。
+    static var agentPortPath: String { tokenDir().appendingPathComponent("agent_port").path }
     /// 请求体上限（sftp 上传等）：超过即拒绝，防止本地恶意/失控客户端把内存打爆。
     static let maxBodyBytes = 8 * 1024 * 1024
     /// 请求头上限：还没找到 `\r\n\r\n` 就超过这个尺寸，判定为异常请求，直接拒绝。
@@ -25,13 +36,19 @@ final class AgentBridge {
 
     weak var host: BridgeHost?
 
-    /// 监听失败（端口被占等）时回调。无头模式（--headless）用它来"端口被有头占 → 自己退出让位"；
-    /// 有头保持原有"只记日志不退出"的容错行为。
+    /// 监听失败（端口被占等）时回调。无头模式用它"已有桥在服务 → 本实例退出（去重）"；
+    /// 有头保持"只记日志不退出"的容错行为。
     var onPortBusy: (() -> Void)?
 
-    /// 端口被占用时的行为：有头 = 重试等无头让位（先发 /v1/app/shutdown 让它退）；无头 = 立即退出让位。
+    /// 端口被占用时的行为：有头 = 池避让试下一端口；无头 = 立即退出让位（去重）。
     /// 默认 false（无头行为）。
     var retryOnPortBusy = false
+    /// 端口池避让开关：**有头** GUI 端口被占时遍历池内下一端口；**无头** agent 端口固定
+    /// （被占即退出，因为已有桥在服务，绝不去抢 GUI 端口或换端口漂移）。
+    var usePortPool = false
+    /// 是否写 `agent_port` 发现文件：**仅无头 agent 桥**（47866）写，供 CLI/MCP 发现。
+    /// 有头 GUI 桥（47867）是 GUI 内部功能，不写——否则 CLI 会误连到 GUI 而不是无头进程。
+    var writesAgentPort = true
     private var failedRetryCount = 0
 
     private(set) var isRunning = false
@@ -40,6 +57,8 @@ final class AgentBridge {
 
     private var listener: NWListener?
     private var token: String
+    /// 端口池遍历游标：当前尝试到池内第几个端口。起始=主端口。
+    private var poolCursor: Int
     /// 承载 NWListener 状态回调 + 所有连接的分帧处理；App 状态访问一律转发主线程，
     /// 这条队列自身绝不触碰 host 的业务数据。
     private let queue = DispatchQueue(label: "com.pixshell.bridge")
@@ -64,13 +83,16 @@ final class AgentBridge {
         lastClientLock.unlock()
     }
 
-    init(host: BridgeHost? = nil) {
+    init(host: BridgeHost? = nil, port: Int? = nil) {
         self.host = host
-        self.port = AgentBridge.configuredPort
+        self.port = port ?? AgentBridge.configuredPort
+        self.poolCursor = self.port
         self.tokenPath = AgentBridge.computeTokenPath()
         self.token = AgentBridge.ensureToken(at: self.tokenPath)
     }
 
+    /// 解析端口：优先 `PIXSHELL_BRIDGE_PORT` 环境变量（合法端口直接用它，不做池避让）；
+    /// 否则默认主端口 47866（池避让在启动时进行）。
     static var configuredPort: Int {
         guard let raw = ProcessInfo.processInfo.environment["PIXSHELL_BRIDGE_PORT"],
               let port = Int(raw), port > 0, port < 65536 else { return defaultPort }
@@ -122,18 +144,6 @@ final class AgentBridge {
     /// 此时 open 会真正启动新有头实例，不再复用无头。参数是 `[appPath]` 或 `["-a","PixShell"]`。
     static func spawnOpenApp(_ args: [String]) {
         openProcess(open: "/usr/bin/open", args: args)
-    }
-
-    /// 有头退出时拉起无头进程接续桥：`open <App>.app --args --headless`。
-    /// 只有 bundle（.app）才有意义；debug 裸二进制（path 是目录）用名字兜底。
-    static func spawnHeadlessProcess() {
-        let rawPath = Bundle.main.bundlePath
-        let appPath = rawPath.hasSuffix(".app") ? rawPath : ""
-        if !appPath.isEmpty {
-            openProcess(open: "/usr/bin/open", args: [appPath, "--args", "--headless"])
-            return
-        }
-        openProcess(open: "/usr/bin/open", args: ["-a", "PixShell", "--args", "--headless"])
     }
 
     /// 异步 `open`（不阻塞主线程、无窗口）。
@@ -227,14 +237,26 @@ final class AgentBridge {
                     let actualPort = l.port.map { Int($0.rawValue) } ?? self.port
                     self.port = actualPort
                     self.isRunning = true
+                    // 写端口发现文件：仅无头 agent 桥（writesAgentPort=true）写，供 CLI/MCP 发现。
+                    if self.writesAgentPort {
+                        AgentBridge.writeAgentPort(actualPort)
+                    }
                     Log.info("本地桥已启动 http://127.0.0.1:\(actualPort)（token 长度 \(self.token.count)）", "bridge")
                 case .failed(let err):
                     self.isRunning = false
-                    Log.warn("本地桥监听失败，端口可能被占用，保持关闭不影响主程序: \(err)", "bridge")
                     self.listener?.cancel()
                     self.listener = nil
-                    // 有头模式：短暂重试，等无头收到 shutdown 退出、端口释放后再 bind。
-                    // 无头模式不重试：走 onPortBusy 立即退出让位。
+                    // 端口池避让：有头 GUI 端口被占 → 尝试池内下一个（高位段，绝不回落 8xxx）。
+                    // 无头 agent 端口固定：被占即退出（已有桥在服务），绝不漂移到 GUI 端口。
+                    // 显式环境变量指定的端口不做池避让（用户要求固定就固定）。
+                    if self.usePortPool, !AgentBridge.portIsExplicit, let next = self.nextPoolPort() {
+                        Log.warn("端口 \(self.port) 被占用，改试池内下一端口 \(next): \(err)", "bridge")
+                        self.port = next
+                        self.startLocked()
+                        return
+                    }
+                    // 有头模式（未开池避让的异常分支）：短暂重试。
+                    // 无头模式：走 onPortBusy 立即退出让位（去重）。
                     if self.retryOnPortBusy, self.failedRetryCount < 10 {
                         self.failedRetryCount += 1
                         let delay = 0.3 * Double(self.failedRetryCount)
@@ -263,6 +285,43 @@ final class AgentBridge {
             isRunning = false
             listener = nil
         }
+    }
+
+    /// 端口池内下一个端口（主端口…47999）。用完整个池返回 nil。
+    /// 每次失败都重置游标，避免进程内多次启动时游标残留越界。
+    private func nextPoolPort() -> Int? {
+        let next = poolCursor + 1
+        guard next <= AgentBridge.portPoolEnd else { poolCursor = AgentBridge.defaultPort; return nil }
+        poolCursor = next
+        return next
+    }
+
+    /// 端口是否由环境变量显式指定（显式指定的端口不做池避让）。
+    static var portIsExplicit: Bool {
+        guard let raw = ProcessInfo.processInfo.environment["PIXSHELL_BRIDGE_PORT"],
+              let port = Int(raw), port > 0, port < 65536 else { return false }
+        return true
+    }
+
+    /// 写端口发现文件 `agent_port`（0600）。客户端（MCP/CLI）读取它定位桥，
+    /// 不必硬编码猜端口（端口池避让后实际端口可能不是主端口）。
+    static func writeAgentPort(_ p: Int) {
+        let fm = FileManager.default
+        let dir = tokenDir()
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        if fm.createFile(atPath: agentPortPath, contents: Data("\(p)".utf8), attributes: [.posixPermissions: 0o600]) {
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: agentPortPath)
+        } else {
+            try? Data("\(p)".utf8).write(to: URL(fileURLWithPath: agentPortPath), options: .atomic)
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: agentPortPath)
+        }
+    }
+
+    /// 读取桥实际端口（`agent_port` 文件）。文件不存在返回 nil。
+    static func readAgentPort() -> Int? {
+        guard let data = FileManager.default.contents(atPath: agentPortPath) else { return nil }
+        guard let s = String(data: data, encoding: .utf8), let p = Int(s.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+        return p > 0 && p < 65536 ? p : nil
     }
 
     func stop() {
@@ -526,7 +585,7 @@ private final class BridgeConnection {
         return true
     }
 
-    /// 是否本机回环 Origin（任意端口）——Web SSH 页从 8766 打开时 Origin 就是 `http://127.0.0.1:8766`。
+    /// 是否本机回环 Origin（任意端口）——Web SSH 页从本桥打开时 Origin 就是 `http://127.0.0.1:<port>`。
     private static func isLoopbackOrigin(_ origin: String) -> Bool {
         isAllowedOrigin(origin, portHint: nil)
     }

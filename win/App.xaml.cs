@@ -83,8 +83,9 @@ public partial class App : Application
         t.Start();
     }
 
-    /// <summary>无头模式启动桥：自建 HeadlessBridgeHost；端口被占（=有头已在）→ 立即退出让位。
-    /// 对齐 mac startHeadlessBridge()。</summary>
+    /// <summary>无头模式启动桥：自建 HeadlessBridgeHost，监听 agent 端口（47866）。
+    /// **不再因有头存在而让位**——有头用独立 GUI 端口（47867），两端各自监听，永不打架。
+    /// 端口被占（=已有无头在服务）→ 本实例退出（去重）。</summary>
     private static void StartHeadlessBridge()
     {
         var host = new Bridge.HeadlessBridgeHost();
@@ -93,12 +94,12 @@ public partial class App : Application
         {
             try { Current.Shutdown(); } catch { /* 退出收尾 */ }
         };
-        var b = new Bridge.AgentBridge(host);
-        // 端口已被有头占用 → 退出（有头接管了桥，无头让位；CLI 会再用到有头）。
+        var b = new Bridge.AgentBridge(host, Bridge.AgentBridge.DefaultPort);
+        // 端口已被占（已有无头在服务 / 其他软件）→ 本实例退出（去重），绝不让位给有头、不抢 GUI 端口。
         // OnPortBusy 可能在后台线程触发，跨回 Dispatcher 再 close（CloseAll 会触碰会话、触发 Shutdown）。
         b.OnPortBusy += () =>
         {
-            Log.Warn("本地桥端口被占用（有头已在），无头进程退出让位", "bridge");
+            Log.Warn("本地桥端口被占用（已有无头在服务），本无头实例退出（去重）", "bridge");
             Current?.Dispatcher.Invoke(() => { try { host.CloseAll(); } catch { } });
         };
         b.Start();

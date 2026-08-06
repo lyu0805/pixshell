@@ -32,8 +32,14 @@ namespace PixShell.Bridge;
 /// </summary>
 public sealed class AgentBridge
 {
-    /// <summary>与老 JS 版 DEFAULT_PORT / mac AgentBridge.defaultPort 保持一致。</summary>
-    public const int DefaultPort = 8766;
+    /// <summary>主端口：用户明确要求**严禁 8xxx**（太多软件占用），改用 47000–48000 高位段。
+    /// 若主端口被占，自动在端口池（主端口 … 47999）里尝试下一个。</summary>
+    public const int DefaultPort = 47866;
+    /// <summary>GUI 有头模式专用端口：与无头 agent 端口（DefaultPort）**完全不同**，各自监听，
+    /// 永不互相让位/打架。GUI 只服务自己的功能；agent 请求永远走无头进程的 DefaultPort。</summary>
+    public const int GuiPort = 47867;
+    /// <summary>端口池上限：主端口被占 → 依次尝试到 47999（绝不回落 8xxx）。</summary>
+    public const int PortPoolEnd = 47999;
     /// <summary>请求体上限（sftp 上传等）：超过即拒绝，防止本地恶意/失控客户端把内存打爆。</summary>
     public const int MaxBodyBytes = 8 * 1024 * 1024;
 
@@ -65,11 +71,18 @@ public sealed class AgentBridge
         lock (_lastClientLock) _lastClientAt = DateTime.UtcNow;
     }
 
-    public AgentBridge(IBridgeHost? host = null)
+    public AgentBridge(IBridgeHost? host = null, int? port = null)
     {
         Host = host;
-        var envPort = Environment.GetEnvironmentVariable("PIXSHELL_BRIDGE_PORT");
-        Port = (int.TryParse(envPort, out var p) && p > 0 && p < 65536) ? p : DefaultPort;
+        if (port.HasValue)
+        {
+            Port = port.Value;
+        }
+        else
+        {
+            var envPort = Environment.GetEnvironmentVariable("PIXSHELL_BRIDGE_PORT");
+            Port = (int.TryParse(envPort, out var p) && p > 0 && p < 65536) ? p : DefaultPort;
+        }
         TokenPath = ComputeTokenPath();
         _token = EnsureToken(TokenPath);
     }
@@ -152,11 +165,18 @@ public sealed class AgentBridge
     // Lifecycle
     // =====================================================================
 
-    /// <summary>端口被占用（=有头/无头已在听）时触发。无头模式：收到即退出让位；
-    /// 有头模式：配合 retryOnPortBusy 先等端口释放再重试 bind。</summary>
+    /// <summary>端口池避让开关：**有头** GUI 端口被占时遍历池内下一端口；**无头** agent 端口固定
+    /// （被占即退出，因为已有桥在服务，绝不去抢 GUI 端口或换端口漂移）。</summary>
+    public bool UsePortPool;
+
+    /// <summary>是否写 `agent_port` 发现文件：**仅无头 agent 桥**（DefaultPort）写，供 CLI/MCP 发现。
+    /// 有头 GUI 桥（GuiPort）是 GUI 内部功能，不写——否则 CLI 会误连到 GUI 而不是无头进程。</summary>
+    public bool WritesAgentPort = true;
+
+    /// <summary>端口被占用（=已有桥/其他软件在听）时触发。无头模式：收到即退出（去重）；</summary>
     public event Action? OnPortBusy;
 
-    /// <summary>有头模式：bind 失败先重试等无头让位（先发 /v1/app/shutdown 让它退），默认 false（无头行为：立即退出让位）。</summary>
+    /// <summary>有头模式：bind 失败走端口池避让；无头模式固定端口被占即退出（去重）。</summary>
     public bool RetryOnPortBusy;
 
     public void Start()
@@ -171,6 +191,11 @@ public sealed class AgentBridge
             _listener = listener;
             _cts = new CancellationTokenSource();
             IsRunning = true;
+            // 写端口发现文件：仅无头 agent 桥（WritesAgentPort=true）写，供 CLI/MCP 发现。
+            if (WritesAgentPort)
+            {
+                WriteAgentPort(Port);
+            }
             Log.Info($"本地桥已启动 http://127.0.0.1:{Port}（token 长度 {_token.Length}）", "bridge");
             _ = AcceptLoopAsync(listener, _cts.Token);
         }
@@ -179,6 +204,16 @@ public sealed class AgentBridge
             IsRunning = false;
             _listener = null;
             Log.Warn($"本地桥启动异常，端口可能被占用，保持关闭不影响主程序: {ex.Message}", "bridge");
+            // 端口池避让：有头 GUI 端口被占 → 尝试池内下一个（高位段，绝不回落 8xxx）。
+            // 无头 agent 端口固定：被占即退出（已有桥在服务），绝不漂移到 GUI 端口。
+            // 显式环境变量指定的端口不做池避让（用户要求固定就固定）。
+            if (UsePortPool && !PortIsExplicit && TryNextPoolPort(out var nextPort))
+            {
+                Log.Warn($"端口 {Port} 被占用，改试池内下一端口 {nextPort}", "bridge");
+                Port = nextPort;
+                Start();
+                return;
+            }
             if (RetryOnPortBusy)
             {
                 _ = RetryBindAsync(ex);
@@ -188,6 +223,50 @@ public sealed class AgentBridge
                 OnPortBusy?.Invoke();
             }
         }
+    }
+
+    /// <summary>端口池内下一个端口（主端口…47999）。池耗尽返回 false（游标回主端口）。</summary>
+    private int _poolCursor = DefaultPort;
+    private bool TryNextPoolPort(out int next)
+    {
+        var candidate = _poolCursor + 1;
+        if (candidate > PortPoolEnd)
+        {
+            _poolCursor = DefaultPort;
+            next = DefaultPort;
+            return false;
+        }
+        _poolCursor = candidate;
+        next = candidate;
+        return true;
+    }
+
+    /// <summary>端口是否由环境变量显式指定（显式指定的端口不做池避让）。</summary>
+    private static bool PortIsExplicit =>
+        int.TryParse(Environment.GetEnvironmentVariable("PIXSHELL_BRIDGE_PORT"), out var p) && p > 0 && p < 65536;
+
+    /// <summary>写端口发现文件 `agent_port`。客户端（MCP/CLI）读取它定位桥。</summary>
+    public static void WriteAgentPort(int port)
+    {
+        try
+        {
+            var path = Path.Combine(TokenDir(), "agent_port");
+            File.WriteAllText(path, port.ToString());
+        }
+        catch { /* 写失败不影响桥运行，客户端回落主端口 */ }
+    }
+
+    /// <summary>读桥实际端口（`agent_port` 文件）。不存在返回 null。</summary>
+    public static int? ReadAgentPort()
+    {
+        try
+        {
+            var path = Path.Combine(TokenDir(), "agent_port");
+            if (File.Exists(path) && int.TryParse(File.ReadAllText(path).Trim(), out var p) && p > 0 && p < 65536)
+                return p;
+        }
+        catch { }
+        return null;
     }
 
     private async Task RetryBindAsync(Exception firstError)
