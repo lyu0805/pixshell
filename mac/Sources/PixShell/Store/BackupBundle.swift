@@ -2,7 +2,7 @@ import Foundation
 
 /// 备份包（格式 1:1 对齐老仓库 packages/sync/src/index.js 的 exportBundle/importBundle）：
 /// `{ version:1, exportedAt, hosts(**不含密码**), settings, quickCommands }`
-struct BackupBundle: Codable {
+struct BackupBundle: Codable, Equatable {
     var version: Int = 1
     var exportedAt: String
     var hosts: [Host]
@@ -62,6 +62,13 @@ enum WebDAVBackup {
     }
 
     private static let key = "pixshell.webdav"
+    /// 只检查非敏感配置是否存在，不读取 Keychain，避免为了刷新 UI 徽章触发授权弹窗。
+    static var isConfigured: Bool {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let config = try? JSONDecoder().decode(Config.self, from: data) else { return false }
+        return !config.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !config.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     static func load() -> Config? {
         guard let d = UserDefaults.standard.data(forKey: key) else { return nil }
         guard var c = try? JSONDecoder().decode(Config.self, from: d) else { return nil }
@@ -92,6 +99,57 @@ enum WebDAVBackup {
         if body != nil { r.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         r.httpBody = body
         return r
+    }
+
+    struct RawResponse {
+        let data: Data?
+        let etag: String?
+        let status: Int
+    }
+
+    /// 双向同步使用的原始 GET，返回 ETag；404 作为正常的“远端尚无备份”返回。
+    static func fetchRaw(_ c: Config, completion: @escaping (Result<RawResponse, Error>) -> Void) {
+        guard let req = request(c, method: "GET", body: nil) else {
+            completion(.failure(NSError(domain: "PixShell", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "URL 无效"]))); return
+        }
+        URLSession.shared.dataTask(with: req) { data, resp, error in
+            DispatchQueue.main.async {
+                if let error { completion(.failure(error)); return }
+                guard let http = resp as? HTTPURLResponse else {
+                    completion(.failure(NSError(domain: "PixShell", code: 0,
+                        userInfo: [NSLocalizedDescriptionKey: "WebDAV 未返回 HTTP 响应"]))); return
+                }
+                let result = RawResponse(data: data, etag: http.value(forHTTPHeaderField: "ETag"), status: http.statusCode)
+                if (200...299).contains(http.statusCode) || http.statusCode == 404 { completion(.success(result)) }
+                else { completion(.failure(NSError(domain: "PixShell", code: http.statusCode,
+                    userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"]))) }
+            }
+        }.resume()
+    }
+
+    /// 带 If-Match / If-None-Match 的条件上传，防止另一台设备刚写入的数据被覆盖。
+    static func putRaw(_ c: Config, data: Data, etag: String?, createOnly: Bool,
+                       completion: @escaping (Result<RawResponse, Error>) -> Void) {
+        guard var req = request(c, method: "PUT", body: data) else {
+            completion(.failure(NSError(domain: "PixShell", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "URL 无效"]))); return
+        }
+        if createOnly { req.setValue("*", forHTTPHeaderField: "If-None-Match") }
+        else if let etag, !etag.isEmpty { req.setValue(etag, forHTTPHeaderField: "If-Match") }
+        URLSession.shared.dataTask(with: req) { responseData, resp, error in
+            DispatchQueue.main.async {
+                if let error { completion(.failure(error)); return }
+                guard let http = resp as? HTTPURLResponse else {
+                    completion(.failure(NSError(domain: "PixShell", code: 0,
+                        userInfo: [NSLocalizedDescriptionKey: "WebDAV 未返回 HTTP 响应"]))); return
+                }
+                let result = RawResponse(data: responseData, etag: http.value(forHTTPHeaderField: "ETag"), status: http.statusCode)
+                if (200...299).contains(http.statusCode) { completion(.success(result)) }
+                else { completion(.failure(NSError(domain: "PixShell", code: http.statusCode,
+                    userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"]))) }
+            }
+        }.resume()
     }
 
     /// 上传备份包；completion 传 nil 表示成功

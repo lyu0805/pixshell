@@ -9,7 +9,7 @@ final class BackupPanel: NSWindowController {
     }
     static let providers: [Provider] = [
         .init(id: "local", name: "本地", desc: "导出/导入本机 JSON 备份包（hosts / 设置 / 快捷命令）"),
-        .init(id: "webdav", name: "WebDAV", desc: "一键打开坚果云等登录页，再填应用密码/路径"),
+        .init(id: "webdav", name: "WebDAV", desc: "多设备双向同步；启动、定时及本地修改后自动合并"),
         .init(id: "github", name: "GitHub", desc: "一键登录 GitHub（Device Flow）或浏览器授权，自动写入 Token"),
         .init(id: "google", name: "谷歌云盘", desc: "Google Drive API（OAuth 客户端）"),
         .init(id: "onedrive", name: "微软 OneDrive", desc: "Microsoft Graph / OneDrive"),
@@ -19,11 +19,15 @@ final class BackupPanel: NSWindowController {
 
     private let card = NSView()
     private var checks: [String: NSButton] = [:]
+    private var badges: [String: Badge] = [:]
+    private let syncLog = NSTextView()
+    private var logObserver: NSObjectProtocol?
 
     var enabled: Set<String> = []
     var onSave: ((Set<String>) -> Void)?
     var onExport: (() -> Void)?
     var onImport: (() -> Void)?
+    var onConfigureWebDAV: (() -> Void)?
     var onClose: (() -> Void)?
 
     init() {
@@ -44,15 +48,32 @@ final class BackupPanel: NSWindowController {
         w.standardWindowButton(.zoomButton)?.isHidden = true
         super.init(window: w)
         build()
+        logObserver = NotificationCenter.default.addObserver(forName: WebDAVSyncCoordinator.logChanged,
+                                                               object: nil, queue: .main) { [weak self] _ in
+            self?.refreshSyncLog()
+        }
     }
     required init?(coder: NSCoder) { fatalError() }
+    deinit { if let logObserver { NotificationCenter.default.removeObserver(logObserver) } }
 
     func show(enabled set: Set<String>) {
         enabled = set
         for (id, b) in checks { b.state = set.contains(id) ? .on : .off }
+        refreshConfigurationState()
+        refreshSyncLog()
         window?.center()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func embeddedView(enabled set: Set<String>) -> NSView {
+        enabled = set
+        for (id, button) in checks { button.state = set.contains(id) ? .on : .off }
+        refreshConfigurationState()
+        refreshSyncLog()
+        guard let view = window?.contentView else { return NSView() }
+        view.removeFromSuperview()
+        return view
     }
 
     func hide() {
@@ -86,7 +107,7 @@ final class BackupPanel: NSWindowController {
         head.spacing = 10; head.alignment = .centerY
         head.translatesAutoresizingMaskIntoConstraints = false
 
-        let hint = NSTextField(wrappingLabelWithString: "默认全部关闭。勾选「启用」并保存后，对应云端同步菜单才会真正执行备份。")
+        let hint = NSTextField(wrappingLabelWithString: "启用 WebDAV 后会自动双向同步；其他云服务仍为预留入口。本地密码不会上传。")
         hint.font = Theme.ui(11.5); hint.textColor = Theme.muted
         hint.translatesAutoresizingMaskIntoConstraints = false
         hint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -119,7 +140,19 @@ final class BackupPanel: NSWindowController {
         foot.spacing = 6; foot.alignment = .centerY
         foot.translatesAutoresizingMaskIntoConstraints = false
 
-        card.addSubview(head); card.addSubview(hint); card.addSubview(scroll); card.addSubview(foot)
+        let logTitle = NSTextField(labelWithString: "WebDAV 同步日志（最近 100 条）")
+        logTitle.font = Theme.ui(11.5, .semibold); logTitle.textColor = Theme.text
+        logTitle.translatesAutoresizingMaskIntoConstraints = false
+        syncLog.isEditable = false; syncLog.isSelectable = true
+        syncLog.font = Theme.mono(10.5); syncLog.textColor = Theme.muted
+        syncLog.backgroundColor = Theme.bg2
+        syncLog.textContainerInset = NSSize(width: 8, height: 6)
+        let logScroll = NSScrollView(); logScroll.hasVerticalScroller = true; logScroll.drawsBackground = false
+        logScroll.borderType = .noBorder; logScroll.documentView = syncLog
+        logScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        card.addSubview(head); card.addSubview(hint); card.addSubview(scroll)
+        card.addSubview(logTitle); card.addSubview(logScroll); card.addSubview(foot)
         NSLayoutConstraint.activate([
             head.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
             head.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
@@ -130,16 +163,24 @@ final class BackupPanel: NSWindowController {
             scroll.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 10),
             scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
             scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            scroll.bottomAnchor.constraint(equalTo: foot.topAnchor, constant: -10),
+            scroll.bottomAnchor.constraint(equalTo: logTitle.topAnchor, constant: -10),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 160),
             grid.topAnchor.constraint(equalTo: doc.topAnchor),
             grid.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
             grid.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
             grid.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
+            logTitle.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            logTitle.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            logScroll.topAnchor.constraint(equalTo: logTitle.bottomAnchor, constant: 6),
+            logScroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            logScroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            logScroll.bottomAnchor.constraint(equalTo: foot.topAnchor, constant: -10),
+            logScroll.heightAnchor.constraint(equalToConstant: 96),
             foot.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
             foot.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
             foot.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
         ])
+        refreshSyncLog()
     }
 
     private func providerCard(_ p: Provider) -> NSView {
@@ -147,6 +188,7 @@ final class BackupPanel: NSWindowController {
         let name = NSTextField(labelWithString: p.name)
         name.font = Theme.ui(12.5, .semibold); name.textColor = Theme.text
         let badge = Badge("未配置", kind: .gray)
+        badges[p.id] = badge
         let top = NSStackView(views: [name, NSView(), badge]); top.spacing = 6; top.alignment = .centerY
         let desc = NSTextField(wrappingLabelWithString: p.desc)
         desc.font = Theme.ui(10.5); desc.textColor = Theme.muted
@@ -183,10 +225,11 @@ final class BackupPanel: NSWindowController {
     @objc private func configProvider(_ b: NSButton) {
         guard let id = b.identifier?.rawValue,
               let p = Self.providers.first(where: { $0.id == id }) else { return }
+        if id == "webdav" { onConfigureWebDAV?(); refreshConfigurationState(); return }
         let a = NSAlert.pix(); a.messageText = "\(p.name) · 配置"
         a.informativeText = p.id == "local"
             ? "本地备份无需凭据：用下方「导出/导入本地包」即可。"
-            : "\(p.desc)\n\n凭据请在此填写（保存在本机设置中）。"
+            : "\(p.desc)\n\n此服务尚未接入真实授权和同步接口，目前不能配置。"
         a.addButton(withTitle: "好")
         if let win = window { a.beginSheetModal(for: win) } else { a.runModal() }
     }
@@ -194,4 +237,22 @@ final class BackupPanel: NSWindowController {
     @objc private func importAction() { onImport?() }
     @objc private func saveAction() { onSave?(enabled); hide() }
     @objc private func hideAction() { hide() }
+
+    func refreshConfigurationState() {
+        for provider in Self.providers {
+            guard let badge = badges[provider.id] else { continue }
+            switch provider.id {
+            case "local": badge.update("可用", kind: .green)
+            case "webdav": badge.update(WebDAVBackup.isConfigured ? "已配置" : "未配置",
+                                          kind: WebDAVBackup.isConfigured ? .green : .gray)
+            default: badge.update("未实现", kind: .gray)
+            }
+        }
+    }
+
+    private func refreshSyncLog() {
+        let lines = WebDAVSyncCoordinator.logLines
+        syncLog.string = lines.isEmpty ? "暂无同步记录" : lines.joined(separator: "\n")
+        syncLog.scrollToEndOfDocument(nil)
+    }
 }

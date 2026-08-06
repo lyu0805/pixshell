@@ -108,10 +108,23 @@ final class PillButton: NSButton {
 /// 药丸徽章：gray(端口/计数) / green(已记住密码) / accent。
 final class Badge: NSView {
     enum Kind { case gray, green, accent }
+    private let label = NSTextField(labelWithString: "")
     init(_ text: String, kind: Kind = .gray) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true; layer?.cornerRadius = 8
+        label.font = Theme.ui(9.5, .medium)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        update(text, kind: kind)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 5),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -5),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 1.5),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1.5),
+        ])
+    }
+    func update(_ text: String, kind: Kind) {
         let bgc: NSColor, fgc: NSColor
         switch kind {
         case .gray:   bgc = Theme.fill; fgc = Theme.muted
@@ -119,16 +132,8 @@ final class Badge: NSView {
         case .accent: bgc = Theme.accentSoft; fgc = Theme.accent
         }
         layer?.backgroundColor = bgc.cgColor
-        let label = NSTextField(labelWithString: text)
-        label.font = Theme.ui(9.5, .medium); label.textColor = fgc
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 5),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -5),
-            label.topAnchor.constraint(equalTo: topAnchor, constant: 1.5),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1.5),
-        ])
+        label.stringValue = text
+        label.textColor = fgc
     }
     required init?(coder: NSCoder) { fatalError() }
 }

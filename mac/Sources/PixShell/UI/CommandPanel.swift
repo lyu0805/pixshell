@@ -231,6 +231,11 @@ final class CommandPanel: NSView {
         reloadChips()
     }
 
+    func applySyncedCommands(_ commands: [QuickCommand]) {
+        store.replaceAll(commands)
+        reload()
+    }
+
     func reloadTargets() {
         for p in [edTargetPopup] {
             let keep = p.indexOfSelectedItem

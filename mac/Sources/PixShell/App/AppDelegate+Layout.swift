@@ -293,9 +293,24 @@ extension AppDelegate {
 
         // 备份选项弹窗（独立 NSWindow，对齐连接管理器尺寸；不再嵌主窗全屏遮罩）
         backupPanel = BackupPanel()
-        backupPanel.onSave = { [weak self] set in self?.backupEnabled = set }
+        backupPanel.onSave = { [weak self] set in
+            guard let self else { return }
+            self.backupEnabled = set
+            UserDefaults.standard.set(Array(set).sorted(), forKey: "pixshell.backup.enabled")
+            self.webdavSync.enabled = set.contains("webdav")
+            if self.webdavSync.enabled { self.webdavSync.sync(reason: "启用") }
+        }
         backupPanel.onExport = { [weak self] in self?.exportHosts() }
         backupPanel.onImport = { [weak self] in self?.importHosts() }
+        backupPanel.onConfigureWebDAV = { [weak self] in self?.webdavConfigure() }
+        webdavSync.makeLocalBundle = { [weak self] in self?.currentBundle() ?? BackupBundle.make(hosts: [], quick: [], settings: [:]) }
+        webdavSync.applyMergedBundle = { [weak self] bundle in self?.applySyncedBundle(bundle) }
+        webdavSync.statusChanged = { [weak self] status in self?.setStatus(status) }
+        webdavSync.enabled = backupEnabled.contains("webdav")
+        store.onChange = { [weak self] in self?.webdavSync.localDidChange() }
+        quickSyncObserver = NotificationCenter.default.addObserver(
+            forName: QuickCommandStore.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.webdavSync.localDidChange() }
 
         // 侧栏折叠后的「⟩ 侧栏」竖条（点击展开）
         sidebarEdge = buildSidebarEdge(); sidebarEdge.isHidden = !sideCollapsed

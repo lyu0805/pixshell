@@ -4,6 +4,7 @@ import Foundation
 /// 另存"最近连接历史"(recents)：一串主机 id，供快速连接落地页展示。
 final class HostStore {
     private(set) var hosts: [Host] = []
+    var onChange: (() -> Void)?
     private(set) var recents: [String] = []   // 最近连接的主机 id（最新在前）
     private let url: URL
     private let recentsURL: URL
@@ -53,7 +54,15 @@ final class HostStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(hosts) {
             try? data.write(to: url, options: .atomic)
+            onChange?()
         }
+    }
+
+    func replaceAll(_ newHosts: [Host]) {
+        hosts = newHosts
+        let valid = Set(hosts.map(\.id))
+        recents.removeAll { !valid.contains($0) }
+        saveRecents(); save()
     }
 
     func upsert(_ h: Host) {

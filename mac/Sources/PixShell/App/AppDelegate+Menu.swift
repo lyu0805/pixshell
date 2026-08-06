@@ -83,6 +83,21 @@ extension AppDelegate {
         alert("导入失败", "不是 PixShell 备份包")
     }
 
+    /// 自动同步应用完整快照。replaceAll 才能同步另一设备上的删除；密码仍保留在本机 Keychain。
+    func applySyncedBundle(_ bundle: BackupBundle) {
+        store.replaceAll(bundle.hosts)
+        cmdPanel?.applySyncedCommands(bundle.quickCommands)
+        if let value = bundle.settings["highlight"] { highlightEnabled = value == "1" }
+        if let value = bundle.settings["syncDirWithSftp"] { syncDirWithSftp = value == "1" }
+        if let value = bundle.settings["fontSize"], let number = Double(value) {
+            TermTheme.fontSize = CGFloat(max(9, min(24, number)))
+            setFontSize(TermTheme.fontSize)
+        }
+        if let value = bundle.settings["colorScheme"] { TermTheme.schemeId = value }
+        connMgr?.reload(); quickConnect?.reload(); cmdPanel?.reload()
+        Log.info("应用 WebDAV 合并结果：主机 \(bundle.hosts.count) / 快捷命令 \(bundle.quickCommands.count)", "backup")
+    }
+
     /// 当前配置打包（密码不入包，对齐老仓库）
     func currentBundle() -> BackupBundle {
         let hosts = store.hosts.map { h -> Host in var c = h; c.osId = h.osId; return c }
@@ -117,6 +132,13 @@ extension AppDelegate {
         let url = NSTextField(string: cur?.url ?? "")
         let user = NSTextField(string: cur?.username ?? "")
         let pass = NSSecureTextField(string: cur?.password ?? "")
+        let interval = NSPopUpButton()
+        let intervalValues: [TimeInterval] = [60, 300, 900, 1800]
+        interval.addItems(withTitles: ["1 分钟", "5 分钟", "15 分钟", "30 分钟"])
+        let currentInterval = webdavSync.interval
+        interval.selectItem(at: intervalValues.enumerated().min(by: {
+            abs($0.element - currentInterval) < abs($1.element - currentInterval)
+        })?.offset ?? 1)
         for f in [url, user, pass] as [NSTextField] {
             f.translatesAutoresizingMaskIntoConstraints = false
             f.widthAnchor.constraint(equalToConstant: 320).isActive = true
@@ -125,12 +147,22 @@ extension AppDelegate {
         grid.addRow(with: [NSTextField(labelWithString: "URL"), url])
         grid.addRow(with: [NSTextField(labelWithString: "用户名"), user])
         grid.addRow(with: [NSTextField(labelWithString: "应用密码"), pass])
-        grid.frame = NSRect(x: 0, y: 0, width: 420, height: 100)
+        grid.addRow(with: [NSTextField(labelWithString: "自动检查"), interval])
+        grid.frame = NSRect(x: 0, y: 0, width: 420, height: 132)
         a.accessoryView = grid
         guard a.runModal() == .alertFirstButtonReturn else { return }
         WebDAVBackup.save(.init(url: url.stringValue.trimmingCharacters(in: .whitespaces),
                                 username: user.stringValue, password: pass.stringValue))
-        alert("已保存", "接下来可用「上传到 WebDAV / 从 WebDAV 恢复」")
+        UserDefaults.standard.set(intervalValues[max(0, interval.indexOfSelectedItem)],
+                                  forKey: WebDAVSyncCoordinator.intervalKey)
+        if backupEnabled.contains("webdav") {
+            webdavSync.enabled = true
+            webdavSync.sync(reason: "配置更新")
+        }
+        backupPanel?.refreshConfigurationState()
+        setStatus(backupEnabled.contains("webdav")
+                  ? "WebDAV 配置已保存，双向同步已启用"
+                  : "WebDAV 配置已保存；在备份选项中启用后自动同步")
     }
     @objc func webdavPush() {
         guard let c = WebDAVBackup.load(), !c.url.isEmpty else { webdavConfigure(); return }
@@ -145,8 +177,7 @@ extension AppDelegate {
             switch r {
             case .failure(let e): self.alert("下载失败", e.localizedDescription)
             case .success(let b):
-                for h in b.hosts { self.store.upsert(h) }
-                self.connMgr?.reload(); self.quickConnect?.reload()
+                self.applySyncedBundle(b)
                 self.alert("恢复完成", "主机 \(b.hosts.count) 台（备份时间 \(b.exportedAt)）")
             }
         }

@@ -23,6 +23,7 @@ struct QuickCommand: Codable, Equatable, Identifiable {
 
 /// 快捷命令持久化 + 分组/渲染逻辑（移植老仓库 QuickCommandPanel）
 final class QuickCommandStore {
+    static let didChangeNotification = Notification.Name("PixShellQuickCommandsDidChange")
     private(set) var commands: [QuickCommand] = []
     /// 显式分组表。**必须单独存**：分组光靠命令的 group 字段派生的话，
     /// 新建一个还没放命令的空分组会立刻消失。这里记住用户建过的空分组。
@@ -54,7 +55,15 @@ final class QuickCommandStore {
     }
     func save() {
         let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let d = try? e.encode(commands) { try? d.write(to: url, options: .atomic) }
+        if let d = try? e.encode(commands) {
+            try? d.write(to: url, options: .atomic)
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        }
+    }
+
+    func replaceAll(_ newCommands: [QuickCommand]) {
+        commands = newCommands
+        save()
     }
     private func saveGroups() {
         let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted]

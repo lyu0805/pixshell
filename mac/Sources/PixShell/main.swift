@@ -79,7 +79,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     var aiSshBridgeManager: AiSshBridgeManager!  // AI 工具 SSH 一键注册窗口
     let proxyStore = ProxyStore()
     var editingRemotePath: String = "" // 当前编辑的远端文件路径
-    var backupEnabled: Set<String> = []
+    var backupEnabled: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "pixshell.backup.enabled") ?? [])
+    let webdavSync = WebDAVSyncCoordinator()
+    var quickSyncObserver: NSObjectProtocol?
     var downloadDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
     var menuBtn: NSButton!
     var monTimer: Timer?
@@ -128,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
         AppIcon.install()    // 没有 .app bundle 就没有图标资源，所有系统弹窗会退化成"蓝色文件夹"占位图
         buildMainMenu()
         buildWindow()
+        webdavSync.start()
         // macOS 15+：启动即触发「本地网络」系统弹窗（不能静默写 TCC，只能主动要一次）
         LocalNetworkAuth.requestAuthorizationIfNeeded()
         maybeSeedAndAutoConnect()
@@ -210,6 +213,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     /// 有头正常退出时拉起无头进程接续桥（跟随有头生命周期：有头关了 → 无头继续后台跑）。
     func applicationWillTerminate(_ notification: Notification) {
         guard !isHeadless else { return }
+        webdavSync.stop()
+        if let quickSyncObserver { NotificationCenter.default.removeObserver(quickSyncObserver) }
         AgentBridge.spawnHeadlessProcess()
     }
 
