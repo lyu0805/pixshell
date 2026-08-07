@@ -241,16 +241,21 @@ public final class NIOSSHSession: SSHSession {
     }
 
     public func exec(_ command: String, completion: @escaping (String) -> Void) {
-        guard let channel = tcpChannel else { DispatchQueue.main.async { completion("") }; return }
-        // 命令级总超时：远端命令不退出时 30s 兜底收口，避免 HTTP 永挂 → 后续工具调用排队超时。
-        let handler = ExecCollectHandler(command: command, timeout: Self.execTimeout) { out in
-            DispatchQueue.main.async { completion(out) }
+        exec(command, timeout: Self.execTimeout, maxBytes: 0) { out, _ in completion(out) }
+    }
+
+    public func exec(_ command: String, timeout: TimeInterval, maxBytes: Int,
+                     completion: @escaping (String, Bool) -> Void) {
+        guard let channel = tcpChannel else { DispatchQueue.main.async { completion("", false) }; return }
+        // 命令级总超时：远端命令不退出时兜底收口，避免 HTTP 永挂 → 后续工具调用排队超时。
+        let handler = ExecCollectHandler(command: command, timeout: timeout, maxBytes: maxBytes) { out, timedOut in
+            DispatchQueue.main.async { completion(out, timedOut) }
         }
         let promise = channel.eventLoop.makePromise(of: Channel.self)
         channel.pipeline.handler(type: NIOSSHHandler.self).whenComplete { result in
             switch result {
             case .failure:
-                DispatchQueue.main.async { completion("") }
+                DispatchQueue.main.async { completion("", false) }
             case .success(let sshHandler):
                 sshHandler.createChannel(promise) { childChannel, channelType in
                     guard channelType == .session else {
@@ -260,7 +265,7 @@ public final class NIOSSHSession: SSHSession {
                 }
             }
         }
-        promise.futureResult.whenFailure { _ in DispatchQueue.main.async { completion("") } }
+        promise.futureResult.whenFailure { _ in DispatchQueue.main.async { completion("", false) } }
     }
 
     public func close() {
@@ -316,16 +321,19 @@ final class ExecCollectHandler: ChannelDuplexHandler {
     typealias OutboundIn = SSHChannelData
     typealias OutboundOut = SSHChannelData
     private let command: String
-    private let onDone: (String) -> Void
+    private let onDone: (String, Bool) -> Void
     private let timeout: TimeInterval
+    private let maxBytes: Int
     private var buffer = ""
     private var done = false
     /// 记录是否因超时收口（区别于正常通道关闭），供上层区分。
     private(set) var timedOut = false
     /// 保存 context 以便超时主动 close 子通道。
     private var context: ChannelHandlerContext?
-    init(command: String, timeout: TimeInterval, onDone: @escaping (String) -> Void) {
-        self.command = command; self.timeout = timeout; self.onDone = onDone
+    init(command: String, timeout: TimeInterval, maxBytes: Int = 0,
+         onDone: @escaping (String, Bool) -> Void) {
+        self.command = command; self.timeout = timeout
+        self.maxBytes = maxBytes; self.onDone = onDone
     }
 
     func handlerAdded(context: ChannelHandlerContext) {
@@ -345,7 +353,14 @@ final class ExecCollectHandler: ChannelDuplexHandler {
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let d = unwrapInboundIn(data)
         guard case .byteBuffer(let buf) = d.data else { return }
-        if d.type == .channel, let s = buf.getString(at: buf.readerIndex, length: buf.readableBytes) { buffer += s }
+        if d.type == .channel, let s = buf.getString(at: buf.readerIndex, length: buf.readableBytes) {
+            buffer += s
+            // 输出上限：防止 cat 大文件/yes 这类命令攒出 GB 级内存 OOM 杀进程。
+            // 到上限即收口（不再等待通道关闭），保证 completion 必然回调。
+            if maxBytes > 0, buffer.count >= maxBytes {
+                finish(timedOut: false)
+            }
+        }
     }
     func channelInactive(context: ChannelHandlerContext) { finish() }
     func errorCaught(context: ChannelHandlerContext, error: Error) { finish(); context.close(promise: nil) }
@@ -358,7 +373,7 @@ final class ExecCollectHandler: ChannelDuplexHandler {
                 self.context?.close(promise: nil)
                 Log.warn("exec 命令超时被强制收口（\(Int(timeout))s）：\(command.prefix(80))", "ssh")
             }
-            onDone(buffer)
+            onDone(buffer, self.timedOut)
         }
     }
 }

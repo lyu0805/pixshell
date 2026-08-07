@@ -771,8 +771,28 @@ extension AppDelegate {
 
     func sshSession(_ s: SSHSession, didReceive data: [UInt8]) {
         guard let sess = session(forSSH: s) else { return }
-        
-        // 修复：缓冲跨网络包的残缺 ANSI 序列，防止被 SemanticHighlight 破坏
+        guard !data.isEmpty else { return }
+
+        // 帧级节流：只累积到会话的 pendingOutput，由 flushOutput 统一消化。
+        // 高频输出时把「每数据块一次主线程 decode+染色+feed」合并成「每帧一次」，
+        // 显著降低主线程负担（卡顿根因）。同一 runloop 周期内的多次 append 合并成一次 flush。
+        sess.pendingOutput.append(contentsOf: data)
+        guard !sess.flushScheduled else { return }
+        sess.flushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + TermSession.flushInterval) { [weak self] in
+            self?.flushOutput(for: sess)
+        }
+    }
+
+    /// 消化一个会话累积的输出：ANSI 分块 + 语义高亮 + feed 终端 + 写输出缓冲。
+    /// 在帧节流下每帧最多调用一次；也保留了交互场景的即时性（16ms 内必处理）。
+    private func flushOutput(for sess: TermSession) {
+        sess.flushScheduled = false
+        guard !sess.pendingOutput.isEmpty else { return }
+        let data = sess.pendingOutput
+        sess.pendingOutput.removeAll(keepingCapacity: true)
+
+        // 缓冲跨网络包的残缺 ANSI 序列，防止被 SemanticHighlight 破坏
         let fullData = sess.ansiBuffer + data
         let (completeBytes, incompleteBytes) = extractIncompleteANSI(from: fullData)
         sess.ansiBuffer = incompleteBytes
@@ -835,6 +855,9 @@ extension AppDelegate {
     func sshSession(_ s: SSHSession, didCloseWith error: Error?) {
         guard let sess = session(forSSH: s), !sess.closeHandled else { return }
         sess.closeHandled = true
+        // 清掉节流里还没 flush 的输出（会话已关，不再消化）
+        sess.pendingOutput.removeAll(keepingCapacity: false)
+        sess.flushScheduled = false
         // 用 shellOpened（曾经认证成功过）判断，不用 connected —— 见 TermSession.shellOpened 注释。
         let wasUp = sess.shellOpened
         sess.connected = false

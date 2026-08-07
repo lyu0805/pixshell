@@ -17,7 +17,7 @@ import AppKit
 ///  2. 命令列表在**带边框的盒子**里换行铺开，每条右边一个 ⚙（编辑/删除）；
 ///  3. 编辑器在**右栏**（不是压在下面），可收起成窄条；
 ///  4. 左右各有自己的 `发送到 + 发送`：左边发列表选中项，右边发编辑器内容。
-final class CommandPanel: NSView {
+final class CommandPanel: NSView, NSTextViewDelegate {
     private let store = QuickCommandStore()
     private let groupFlow = FlowView()          // 分类文件夹（换行）
     private let cmdFlow = FlowView()            // 命令列表（换行）
@@ -43,6 +43,10 @@ final class CommandPanel: NSView {
     var onShowHistory: ((NSView) -> Void)?
     /// 目标下拉数据源：已连接会话标题
     var sessionsProvider: (() -> [(title: String, connected: Bool)])?
+    /// 命令编辑器 ↑↓ 历史导航：参数 (当前文本, 是否上翻)，返回替换后的文本。
+    /// 命令板编辑器是 NSTextView（不是旧底栏的单行 NSTextField），↑↓ 默认是光标移动，
+    /// 需要 AppDelegate 注入 CommandHistory 的 older/newer 实现「终端式」历史翻查。
+    var onHistoryNav: ((String, Bool) -> String)?
 
     override init(frame frameRect: NSRect) { super.init(frame: frameRect); build(); reload() }
     required init?(coder: NSCoder) { fatalError() }
@@ -105,6 +109,7 @@ final class CommandPanel: NSView {
 
         (editorScroll, editor) = ScrollableText.make(font: Theme.mono(12), editable: true,
                                                      bg: Theme.bg2, border: Theme.border)
+        editor.delegate = self
 
         edTargetPopup.font = Theme.ui(11)
         edTargetPopup.translatesAutoresizingMaskIntoConstraints = false
@@ -180,6 +185,31 @@ final class CommandPanel: NSView {
     private func small(_ t: String) -> NSTextField {
         let l = NSTextField(labelWithString: t); l.font = Theme.ui(11); l.textColor = Theme.muted
         return l
+    }
+
+    // MARK: 编辑器历史导航（↑↓ 翻命令历史——终端基础功能）
+
+    /// NSTextView 方向键默认移动光标；这里把「编辑器内容为空 或 光标已到行首」时的
+    /// ↑↓ 转成历史导航（等价终端 shell 的 history 上翻/下翻）。
+    /// 不拦截的情况：编辑器有内容且光标不在行首 → 方向键仍做正常光标移动（不打断输入）。
+    /// 但多数用户预期是「命令框里按 ↑ 直接翻历史」——这里采用命令框语义：
+    /// 编辑器是**单命令输入**场景，↑↓ 一律翻历史（与底栏旧命令框行为一致），
+    /// 不做光标位移。
+    func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard textView === editor, let nav = onHistoryNav else { return false }
+        switch commandSelector {
+        case #selector(NSResponder.moveUp(_:)):
+            editor.string = nav(editor.string, true)
+            moveCaretToEnd(); return true
+        case #selector(NSResponder.moveDown(_:)):
+            editor.string = nav(editor.string, false)
+            moveCaretToEnd(); return true
+        default:
+            return false
+        }
+    }
+    private func moveCaretToEnd() {
+        editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
     }
 
     // MARK: 数据

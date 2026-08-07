@@ -18,6 +18,9 @@ protocol BridgeHost: AnyObject {
     func bridgeWrite(session: Int, text: String) -> Bool
     /// 一次性执行命令并返回 stdout（独立通道，不进终端画面）。
     func bridgeExec(session: Int, cmd: String, completion: @escaping (String) -> Void)
+    /// 带超时/输出上限的 exec（桥/MCP 用）：completion 传 (output, timedOut)，支持长任务。
+    func bridgeExec(session: Int, cmd: String, timeout: Double, maxBytes: Int,
+                    completion: @escaping (String, Bool) -> Void)
     /// 读取某会话最近的终端输出（最多 lines 行；<=0 表示使用默认值）。
     func bridgeScreen(session: Int, lines: Int) -> String
     /// SFTP 列目录。
@@ -34,6 +37,11 @@ protocol BridgeHost: AnyObject {
 
 extension BridgeHost {
     func bridgeShutdown() {}
+    /// 默认实现：旧签名 exec（30s / 不限制输出），供未重写新方法的宿主用。
+    func bridgeExec(session: Int, cmd: String, timeout: Double, maxBytes: Int,
+                    completion: @escaping (String, Bool) -> Void) {
+        bridgeExec(session: session, cmd: cmd) { out in completion(out, false) }
+    }
 }
 
 /// 一次已解析的 HTTP 请求：AgentBridge 完成分帧、鉴权、Origin 校验之后，把纯业务部分
@@ -73,10 +81,13 @@ enum BridgeRouter {
     /// 桥接协议自身的版本号（区别于 App 版本），供 CLI 诊断用。
     static let bridgeVersion = "1.0.0-swift"
 
-    /// 会话号是否真的存在。越界必须明确报错，不能返回 ok:true + 空输出 ——
-    /// 那样 agent 分不清"命令没有输出"和"会话号写错了"，只能瞎猜。
+    /// 会话号是否真的存在且**仍连接**。越界/已断开必须明确报错，不能返回 ok:true + 空输出 ——
+    /// 那样 agent 分不清"命令没有输出"和"会话死了"（181 静默的根因），只能瞎猜。
     private static func validSession(_ host: BridgeHost, _ sid: Int) -> Bool {
-        sid >= 0 && sid < host.bridgeSessions().count
+        guard sid >= 0 else { return false }
+        let sessions = host.bridgeSessions()
+        guard sid < sessions.count else { return false }
+        return (sessions[sid]["connected"] as? Bool) ?? false
     }
 
     static func route(_ req: BridgeRequest, host: BridgeHost?, completion: @escaping (BridgeResponse) -> Void) {
@@ -183,12 +194,26 @@ enum BridgeRouter {
                 return
             }
             guard validSession(host, sid) else {
-                Log.warn("exec 指定的会话不存在 session=\(sid)（共 \(host.bridgeSessions().count) 个）", "bridge")
-                completion(.fail(404, "会话 \(sid) 不存在（当前共 \(host.bridgeSessions().count) 个，用 /v1/app/sessions 查）"))
+                let sessions = host.bridgeSessions()
+                let exists = sid >= 0 && sid < sessions.count
+                let detail = exists ? "会话 \(sid) 已断开（用 /v1/app/sessions 查，或 /v1/app/connect 重连）"
+                                    : "会话 \(sid) 不存在（当前共 \(sessions.count) 个，用 /v1/app/sessions 查）"
+                Log.warn("exec 会话不可用 session=\(sid)（共 \(sessions.count) 个）：\(detail)", "bridge")
+                completion(.fail(410, detail))
                 return
             }
-            host.bridgeExec(session: sid, cmd: cmd) { stdout in
-                completion(.ok(["ok": true, "sessionId": sid, "stdout": stdout, "stderr": ""]))
+            // 客户端可传 timeout（毫秒）——长任务不再被 30s 硬杀；max_bytes 防大输出 OOM。
+            var execTimeout = 30.0
+            if let t = req.body?["timeout"] as? NSNumber {
+                execTimeout = max(1.0, Double(t.doubleValue) / 1000.0)
+            }
+            var maxBytes = 0
+            if let mb = req.body?["max_bytes"] as? NSNumber {
+                maxBytes = max(0, mb.intValue)
+            }
+            host.bridgeExec(session: sid, cmd: cmd, timeout: execTimeout, maxBytes: maxBytes) { stdout, timedOut in
+                completion(.ok(["ok": true, "sessionId": sid, "stdout": stdout, "stderr": "",
+                                "timedOut": timedOut]))
             }
 
         case ("/v1/app/screen", _), ("/v1/app/read", _):

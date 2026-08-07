@@ -625,6 +625,11 @@ extension AppDelegate {
             self.cmdHistory.push(text)
         }
         cmdPanel.onShowHistory = { [weak self] v in self?.showCommandHistory(v) }
+        // 命令板编辑器 ↑↓ 翻历史：复用 AppDelegate 的 cmdHistory（older/newer）
+        cmdPanel.onHistoryNav = { [weak self] current, up in
+            guard let self = self else { return current }
+            return up ? self.cmdHistory.older(current: current) : self.cmdHistory.newer()
+        }
         sftpPanel.onPathChange = { [weak self] p in self?.dockPathLabel?.stringValue = p }
         // P0：SFTP 独立于终端，禁止 onUserNavigate → 终端 cd 联动
         sftpPanel.onUserNavigate = nil

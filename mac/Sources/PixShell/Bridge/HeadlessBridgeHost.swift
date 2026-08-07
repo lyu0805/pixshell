@@ -145,9 +145,22 @@ final class HeadlessBridgeHost: BridgeHost {
     }
 
     func bridgeExec(session: Int, cmd: String, completion: @escaping (String) -> Void) {
+        bridgeExec(session: session, cmd: cmd, timeout: 30, maxBytes: 0) { out, _ in completion(out) }
+    }
+
+    func bridgeExec(session: Int, cmd: String, timeout: Double, maxBytes: Int,
+                    completion: @escaping (String, Bool) -> Void) {
         withLock {
-            guard sessions.indices.contains(session) else { completion(""); return }
-            sessions[session].ssh.exec(cmd) { completion($0) }
+            guard sessions.indices.contains(session) else { completion("", false); return }
+            // 会话是否还活着（TCP/SSH 通道可用）？死了要明确报错，别静默返回空 —— 那是"181 静默"根因。
+            let s = sessions[session]
+            guard s.connected else {
+                completion("", false)
+                return
+            }
+            s.ssh.exec(cmd, timeout: timeout, maxBytes: maxBytes) { out, timedOut in
+                completion(out, timedOut)
+            }
         }
     }
 

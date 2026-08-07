@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
@@ -21,10 +21,9 @@ let package = Package(
             path: "Sources/PixShell",
             resources: [
                 .process("Resources")
-            ],
-            // 顶层 NSApplication 全局用 Swift 5 语义，避开 Swift 6 严格并发误报
-            // （package 级 swiftLanguageModes 在 Swift 6.2 被移除，改 target 级指定）
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            ]
         ),
     ],
+    // 顶层 NSApplication 全局用 Swift 5 语义，避开 Swift 6 严格并发误报
+    swiftLanguageVersions: [.v5],
 )

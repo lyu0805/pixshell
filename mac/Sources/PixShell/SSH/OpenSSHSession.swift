@@ -410,7 +410,12 @@ public final class OpenSSHSession: SSHSession {
     /// 含命令级总超时（execTimeout）：远端命令不退出时 terminate 兜底收口，
     /// 避免 readDataToEndOfFile 无限阻塞 → HTTP 永不返回 → 后续工具调用排队超时（P0 根因）。
     public func exec(_ command: String, completion: @escaping (String) -> Void) {
-        guard let c = creds else { DispatchQueue.main.async { completion("") }; return }
+        exec(command, timeout: Self.execTimeout, maxBytes: 0) { out, _ in completion(out) }
+    }
+
+    public func exec(_ command: String, timeout: TimeInterval, maxBytes: Int,
+                     completion: @escaping (String, Bool) -> Void) {
+        guard let c = creds else { DispatchQueue.main.async { completion("", false) }; return }
         DispatchQueue.global(qos: .utility).async {
             // 与交互/SFTP 回落同一套算法+认证参数；有密码时用 ASKPASS（不再死守 BatchMode 空返回）。
             var args = Self.baseSSHOptions(c, batchIfKeyOnly: true)
@@ -439,15 +444,16 @@ public final class OpenSSHSession: SSHSession {
 
             // 命令级总超时：到期 terminate + 收口。不用 readDataToEndOfFile（会无限阻塞），
             // 改为 DispatchSource 异步读，超时由 timer 触发。
-            let timeout = Self.execTimeout
             let outFH = pipe.fileHandleForReading
             var text = ""
             let bufferLock = NSLock()
             var didFinish = false
+            var timedOutFlag = false
             // 子进程被 timer 或正常退出后，收集剩余数据并收口（只收一次）。
-            func collectAndFinish() {
+            func collectAndFinish(timedOut: Bool = false) {
                 guard !didFinish else { return }
                 didFinish = true
+                timedOutFlag = timedOut
                 // 读尽剩余数据（进程已退出/被 terminate，读不会无限阻塞）。
                 let rest = outFH.readDataToEndOfFile()
                 if let s = String(data: rest, encoding: .utf8) { bufferLock.lock(); text += s; bufferLock.unlock() }
@@ -457,7 +463,7 @@ public final class OpenSSHSession: SSHSession {
                     try? FileManager.default.removeItem(atPath: s)
                     try? FileManager.default.removeItem(atPath: dir)
                 }
-                DispatchQueue.main.async { completion(text) }
+                DispatchQueue.main.async { completion(text, timedOutFlag) }
             }
 
             do {
@@ -466,11 +472,18 @@ public final class OpenSSHSession: SSHSession {
                 collectAndFinish()
                 return
             }
-            // 异步读 stdout（不阻塞调用线程）。
+            // 异步读 stdout（不阻塞调用线程）+ 输出上限（防大输出 OOM）。
             outFH.readabilityHandler = { fh in
                 let d = fh.availableData
                 if !d.isEmpty, let s = String(data: d, encoding: .utf8) {
-                    bufferLock.lock(); text += s; bufferLock.unlock()
+                    bufferLock.lock(); text += s
+                    let capped = maxBytes > 0 && text.count >= maxBytes
+                    bufferLock.unlock()
+                    if capped {
+                        fh.readabilityHandler = nil
+                        p.terminate()  // 到输出上限：杀掉子进程收口
+                        DispatchQueue.global(qos: .utility).async { collectAndFinish() }
+                    }
                 } else if d.isEmpty {
                     fh.readabilityHandler = nil
                     DispatchQueue.global(qos: .utility).async { collectAndFinish() }
@@ -487,6 +500,8 @@ public final class OpenSSHSession: SSHSession {
                             kill(pid, SIGKILL)
                         }
                     }
+                    // 标记超时（即使收口时子进程已退出，也如实上报）。
+                    bufferLock.lock(); timedOutFlag = true; bufferLock.unlock()
                 }
             }
             // 正常退出兜底：进程退出后补一次收口（readabilityHandler 若因无更多数据未触发）。

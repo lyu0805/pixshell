@@ -60,6 +60,13 @@ extension AppDelegate: BridgeHost {
             NSApp.terminate(nil)
         }
         let b = AgentBridge(host: host, port: AgentBridge.defaultPort)
+        // 无头端口被占（已有桥在服务）→ 立即退出让位（去重）。
+        // 之前没设这个：端口被占时无头静默僵尸（不退出也不服务），CLI/MCP 竞态多拉时
+        // 出现"旧桥死了但僵尸占位/僵尸永远不接管"的静默期 —— 通道死掉的隐藏来源。
+        b.onPortBusy = {
+            self.agentBridge?.stop()
+            NSApp.terminate(nil)
+        }
         agentBridge = b
         b.start()
         AgentCLI.install(port: b.port)

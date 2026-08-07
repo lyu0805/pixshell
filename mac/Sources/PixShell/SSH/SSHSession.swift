@@ -59,6 +59,20 @@ public protocol SSHSession: AnyObject {
     /// 一次性执行命令并收集 stdout（用于监控采集等，与交互 shell 并行、独立通道）。
     /// completion 在主线程回调，返回完整 stdout 文本（失败返回空串）。
     func exec(_ command: String, completion: @escaping (String) -> Void)
+    /// 带超时/输出上限的 exec（桥/MCP 用，支持长任务）。
+    /// - timeout：命令总超时秒（默认 30；长任务可调大）
+    /// - maxBytes：stdout 收集上限（默认 0=不限制；防大输出 OOM）
+    /// - completion：(output, timedOut) —— timedOut 标记命令是否被超时收口（区别于正常完成）
+    func exec(_ command: String, timeout: TimeInterval, maxBytes: Int,
+              completion: @escaping (String, Bool) -> Void)
     /// 主动断开。
     func close()
+}
+
+extension SSHSession {
+    /// 旧签名 exec 默认走带参版（30s / 不限制输出），行为不变。
+    public func exec(_ command: String, completion: @escaping (String) -> Void) {
+        exec(command, timeout: Self.execTimeout, maxBytes: 0) { out, _ in completion(out) }
+    }
+    static var execTimeout: TimeInterval { 30 }
 }

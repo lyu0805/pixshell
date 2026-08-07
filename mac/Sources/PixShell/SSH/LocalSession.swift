@@ -164,6 +164,12 @@ public final class LocalSession: SSHSession {
         }
     }
 
+    /// 本地会话无需超时/输出上限（本地命令快且受控），委托旧签名。
+    public func exec(_ command: String, timeout: TimeInterval, maxBytes: Int,
+                     completion: @escaping (String, Bool) -> Void) {
+        exec(command) { out in completion(out, false) }
+    }
+
     public func close() {
         guard !closed else { return }
         if pid > 0 { kill(pid, SIGHUP) }
