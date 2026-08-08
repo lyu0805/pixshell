@@ -152,28 +152,6 @@ enum Keychain {
         return dict
     }
 
-    private static func loadMap() -> [String: String] {
-        let raw = loadRawMap()
-        var plain: [String: String] = [:]
-        var needsMigrate = false
-        var migrationIsComplete = true
-        for (k, v) in raw {
-            let pw = decodeAny(v)
-            if !pw.isEmpty {
-                plain[k] = pw
-            } else if !v.isEmpty {
-                migrationIsComplete = false
-            }
-            if !v.hasPrefix(v3Prefix) {
-                needsMigrate = true
-            }
-        }
-        if needsMigrate, migrationIsComplete, !plain.isEmpty {
-            // 静默升级到 v3，避免可离线推导的旧格式长期滞留。
-            saveMap(plain)
-        }
-        return plain
-    }
 
     @discardableResult
     private static func saveMap(_ map: [String: String]) -> Bool {
@@ -206,13 +184,44 @@ enum Keychain {
     // MARK: - Public API（兼容老接口）
 
     private static let lock = NSLock()
+    /// 内存缓存解密后的明文 map：连接热路径每次 password() 都全量读文件+解密，
+    /// 主线程同步 IO 是 UI 卡顿 P1 来源。首次加载后走内存，写操作时失效刷新。
+    private static var cachedPlain: [String: String]?
+
+    /// 读明文 map（缓存优先）：返回 nil 表示首次加载且文件为空/损坏。
+    private static func plainMap() -> [String: String]? {
+        if let c = cachedPlain { return c }
+        let raw = loadRawMap()
+        if raw.isEmpty { return nil }
+        var plain: [String: String] = [:]
+        var needsMigrate = false
+        var migrationIsComplete = true
+        for (k, v) in raw {
+            let pw = decodeAny(v)
+            if !pw.isEmpty { plain[k] = pw } else if !v.isEmpty { migrationIsComplete = false }
+            if !v.hasPrefix(v3Prefix) { needsMigrate = true }
+        }
+        if needsMigrate, migrationIsComplete, !plain.isEmpty {
+            saveMap(plain)
+        }
+        cachedPlain = plain
+        return plain
+    }
+
+    /// 写盘并刷新缓存（写失败返回 false）。
+    @discardableResult
+    private static func persistMap(_ map: [String: String]) -> Bool {
+        let ok = saveMap(map)
+        if ok { cachedPlain = map }
+        return ok
+    }
 
     @discardableResult
     static func setPassword(_ password: String, for id: String, label hostHint: String? = nil) -> Bool {
         lock.lock(); defer { lock.unlock() }
         let raw = loadRawMap()
-        var map = loadMap()
-        guard map.count == raw.count else {
+        var map = plainMap() ?? [:]
+        guard map.count == raw.count || raw.isEmpty else {
             Log.error("凭据文件包含无法解密的条目，拒绝覆盖", "keychain")
             return false
         }
@@ -221,33 +230,31 @@ enum Keychain {
         } else {
             map[id] = password
         }
-        let saved = saveMap(map)
+        let saved = persistMap(map)
         _ = hostHint // 保留签名兼容；v3 不再需要 label
         return saved
     }
 
     static func password(for id: String) -> String? {
         lock.lock(); defer { lock.unlock() }
-        let map = loadMap()
-        guard let pw = map[id], !pw.isEmpty else { return nil }
+        guard let pw = plainMap()?[id], !pw.isEmpty else { return nil }
         return pw
     }
 
     static func has(_ id: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        let map = loadMap()
-        return !(map[id]?.isEmpty ?? true)
+        return !(plainMap()?[id]?.isEmpty ?? true)
     }
 
     static func delete(_ id: String) {
         lock.lock(); defer { lock.unlock() }
         let raw = loadRawMap()
-        var map = loadMap()
-        guard map.count == raw.count else {
+        var map = plainMap() ?? [:]
+        guard map.count == raw.count || raw.isEmpty else {
             Log.error("凭据文件包含无法解密的条目，拒绝覆盖", "keychain")
             return
         }
         map.removeValue(forKey: id)
-        saveMap(map)
+        persistMap(map)
     }
 }

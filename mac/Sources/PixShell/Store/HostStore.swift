@@ -7,6 +7,8 @@ final class HostStore {
     private(set) var recents: [String] = []   // 最近连接的主机 id（最新在前）
     private let url: URL
     private let recentsURL: URL
+    /// 串行后台写盘队列：save() 不在主线程做磁盘 IO（文件大/磁盘忙时会卡 UI）。
+    private let ioQueue = DispatchQueue(label: "com.pixshell.hoststore.io", qos: .utility)
 
     init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -45,15 +47,17 @@ final class HostStore {
     }
     func clearRecents() { recents = []; saveRecents() }
     private func saveRecents() {
-        if let data = try? JSONEncoder().encode(recents) { try? data.write(to: recentsURL, options: .atomic) }
+        let data = try? JSONEncoder().encode(recents)
+        let u = recentsURL
+        ioQueue.async { if let data { try? data.write(to: u, options: .atomic) } }
     }
 
     func save() {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(hosts) {
-            try? data.write(to: url, options: .atomic)
-        }
+        let data = try? encoder.encode(hosts)
+        let u = url
+        ioQueue.async { if let data { try? data.write(to: u, options: .atomic) } }
     }
 
     func upsert(_ h: Host) {

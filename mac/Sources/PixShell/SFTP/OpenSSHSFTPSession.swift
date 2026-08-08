@@ -321,7 +321,9 @@ public final class OpenSSHSFTPSession: SFTPService {
     }
 
     public func close() {
-        queue.sync { teardownLocked() }
+        // 非阻塞：queue.sync 会让主线程等 teardown 里的 p.terminate() + waitUntilExit()（最多 1.5s），
+        // 关标签/切会话时 UI 卡顿。改 queue.async 后台收口，立即返回。
+        queue.async { [weak self] in self?.teardownLocked() }
     }
 
     // MARK: - 低层 SFTP 操作

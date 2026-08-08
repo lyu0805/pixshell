@@ -65,8 +65,15 @@ public final class NIOSSHSession: SSHSession {
         let bootstrap = ClientBootstrap(group: group)
             .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             // TCP_NODELAY：交互式 shell 小包立即发，别被 Nagle 攒着（局域网体感延迟）
-            .channelOption(ChannelOptions.socketOption(.tcp_nodelay), value: 1)
+            .channelOption(ChannelOptions.socket(IPPROTO_TCP, TCP_NODELAY), value: 1)
             .channelOption(ChannelOptions.connectTimeout, value: .seconds(12))
+            // 半开连接探测：静默断网（无 FIN/RST）时 OS 默认 2 小时才检测，connected 长期为 true，
+            // exec/type_text 全部静默失败（会话"active 但 disconnected"的 Phase-A 根因）。
+            // 开 SO_KEEPALIVE + 30s 探测间隔 + 3 次重探（对齐 OpenSSH ServerAliveInterval=30）。
+            .channelOption(ChannelOptions.socketOption(.so_keepalive), value: 1)
+            .channelOption(ChannelOptions.socket(IPPROTO_TCP, TCP_KEEPALIVE), value: 30_000)
+            .channelOption(ChannelOptions.socket(IPPROTO_TCP, TCP_KEEPINTVL), value: 10)
+            .channelOption(ChannelOptions.socket(IPPROTO_TCP, TCP_KEEPCNT), value: 3)
             .channelInitializer { channel in
                 // NIOSSHHandler 库侧标记 Sendable unavailable；用 syncOperations 在本 event loop 同步装，避开 @Sendable 捕获。
                 channel.eventLoop.makeCompletedFuture {
@@ -271,8 +278,16 @@ public final class NIOSSHSession: SSHSession {
     public func close() {
         childChannel?.close(promise: nil)
         tcpChannel?.close(promise: nil)
-        try? group?.syncShutdownGracefully()
+        // 异步关 EventLoopGroup：syncShutdownGracefully 会等所有 pending IO 收尾，
+        // 在慢网络/挂起连接下阻塞主线程数百 ms 到数秒（关闭标签/切会话时 UI 卡顿 P0 根因）。
+        // 改回调式：立即返回，event loop 在后台自然收口。
+        let g = group
         group = nil
+        if let g {
+            DispatchQueue.global(qos: .utility).async {
+                g.shutdownGracefully { _ in }
+            }
+        }
     }
 
     // MARK: - 主线程回调

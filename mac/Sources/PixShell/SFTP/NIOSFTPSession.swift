@@ -293,8 +293,14 @@ public final class NIOSFTPSession: SFTPService {
     public func close() {
         childChannel?.close(promise: nil)
         tcpChannel?.close(promise: nil)
-        try? group?.syncShutdownGracefully()
+        // 异步关 EventLoopGroup：syncShutdownGracefully 在慢连接下阻塞主线程（UI 卡顿 P0）。
+        let g = group
         group = nil
+        if let g {
+            DispatchQueue.global(qos: .utility).async {
+                g.shutdownGracefully { _ in }
+            }
+        }
         handler = nil
         childChannel = nil
         tcpChannel = nil

@@ -17,8 +17,11 @@ final class HeadlessBridgeHost: BridgeHost {
     final class HeadlessSession {
         let title: String
         let host: Host
-        let ssh: SSHSession
+        /// 内部 SSH 会话：断开后可原地重建（自动重连），下标永不变。
+        private(set) var ssh: SSHSession
         let password: String
+        /// 正在自动重连（防并发 exec/type 各拉一条连接）。
+        var reconnecting = false
         /// 交互 shell 的最近输出（exec 是独立通道不进这里；screen 读它）。
         private var output = ""
         private let lock = NSLock()
@@ -51,6 +54,40 @@ final class HeadlessBridgeHost: BridgeHost {
             let rows = output.split(separator: "\n", omittingEmptySubsequences: false)
             return rows.suffix(n).joined(separator: "\n")
         }
+
+        /// 原地重连（自动）：换新 ssh、复用下标，等 shell 打开。
+        /// - Parameters:
+        ///   - onReady: 重连结果。成功 true；失败 false（网络真断，不再重试）。
+        func reconnect(creds: SSHCredentials, keyNeedsOpenSSH: Bool,
+                       onReady: @escaping (Bool) -> Void) {
+            if connected { onReady(true); return }
+            if reconnecting { onReady(false); return }   // 已有重连在跑，别重复拉
+            reconnecting = true
+            // 关掉旧的（异步，不阻塞），换新的
+            let old = ssh
+            connected = false
+            let newSsh: SSHSession = keyNeedsOpenSSH ? OpenSSHSession() : NIOSSHSession()
+            ssh = newSsh
+            newSsh.delegate = self
+            old.close()
+            newSsh.connectAndOpenShell(creds, term: "xterm-256color", cols: 100, rows: 30)
+            // 等 shell 打开，最多 20s（与 bridgeConnect 一致）
+            var waited = 0.0
+            func poll() {
+                if connected {
+                    reconnecting = false
+                    onReady(true); return
+                }
+                waited += 0.25
+                if waited > 20 {
+                    reconnecting = false
+                    newSsh.close()
+                    onReady(false); return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: poll)
+            }
+            poll()
+        }
     }
 
     private var sessions: [HeadlessSession] = []
@@ -79,7 +116,10 @@ final class HeadlessBridgeHost: BridgeHost {
         withLock {
             sessions.enumerated().map { (i, s) in
                 ["session": i, "title": s.title, "host": s.host.host,
-                 "username": s.host.username, "connected": s.connected, "active": i == currentIndex]
+                 "username": s.host.username, "connected": s.connected,
+                 // active 必须是「当前会话且仍连接」——死会话不得再报 active，
+                 // 否则 agent 拿到 active:true disconnected:false 的误导状态反复重连。
+                 "active": i == currentIndex && s.connected]
             }
         }
     }
@@ -97,6 +137,24 @@ final class HeadlessBridgeHost: BridgeHost {
         if let idx = withLock({ sessions.firstIndex { $0.host.id == hostId && $0.connected } }) {
             withLock { currentIndex = idx }
             completion(.success(["session": idx, "title": sessions[idx].title])); return
+        }
+        // 同主机已有**死**会话 → 原地重连（复用下标，不新增堆积）。
+        // 否则每次 connect 都 append 新会话，死会话永不清理 → 数组无限膨胀
+        // （用户实测 26 个会话 25 个 disconnected，agent 拿到 stale 下标反复 410）。
+        if let idx = withLock({ sessions.firstIndex { $0.host.id == hostId } }) {
+            let s = sessions[idx]
+            withLock { currentIndex = idx }
+            reconnectIfNeeded(session: idx, s: s) { ok in
+                if ok {
+                    completion(.success(["session": idx, "title": s.title]))
+                } else {
+                    // 重连失败：移除这个死会话，避免数组继续堆积
+                    self.withLock { if self.sessions.indices.contains(idx) { self.sessions.remove(at: idx) } }
+                    completion(.failure(NSError(domain: "PixShell", code: 504,
+                        userInfo: [NSLocalizedDescriptionKey: "会话 \(idx) 重连失败"])))
+                }
+            }
+            return
         }
         let pw = Keychain.password(for: h.id) ?? ""
         guard !pw.isEmpty || !h.keyPath.isEmpty else {
@@ -139,9 +197,30 @@ final class HeadlessBridgeHost: BridgeHost {
     func bridgeWrite(session: Int, text: String) -> Bool {
         withLock {
             guard sessions.indices.contains(session) else { return false }
-            sessions[session].ssh.send(Array(text.utf8))
+            let s = sessions[session]
+            // 死会话：先原地重连再发送（type_text 自愈，不再静默吞掉）。
+            if !s.connected {
+                reconnectIfNeeded(session: session, s: s) { _ in }
+                return false   // 本次请求走重连，不误报成功；调用方重试即命中重连后的会话
+            }
+            s.ssh.send(Array(text.utf8))
             return true
         }
+    }
+
+    /// 死会话原地重连（复用下标，agent 的 session 号永不变）。重连成功回调 true。
+    private func reconnectIfNeeded(session: Int, s: HeadlessSession, done: @escaping (Bool) -> Void) {
+        let h = s.host
+        let pw = s.password.isEmpty ? (Keychain.password(for: h.id) ?? "") : s.password
+        guard !pw.isEmpty || !h.keyPath.isEmpty else {
+            done(false); return
+        }
+        let proxy = h.proxyId.isEmpty ? nil : ProxyStore().list().first { $0.id == h.proxyId }
+        let creds = SSHCredentials(host: h.host, port: h.port, username: h.username,
+                                   password: pw, keyPath: h.keyPath.isEmpty ? nil : h.keyPath,
+                                   proxy: proxy)
+        let keyNeedsOpenSSH = !h.keyPath.isEmpty && SSHPrivateKeyLoader.load(path: h.keyPath) == nil
+        s.reconnect(creds: creds, keyNeedsOpenSSH: keyNeedsOpenSSH, onReady: done)
     }
 
     func bridgeExec(session: Int, cmd: String, completion: @escaping (String) -> Void) {
@@ -152,10 +231,24 @@ final class HeadlessBridgeHost: BridgeHost {
                     completion: @escaping (String, Bool) -> Void) {
         withLock {
             guard sessions.indices.contains(session) else { completion("", false); return }
-            // 会话是否还活着（TCP/SSH 通道可用）？死了要明确报错，别静默返回空 —— 那是"181 静默"根因。
             let s = sessions[session]
             guard s.connected else {
-                completion("", false)
+                // 死会话：自动重连后再执行（根治「exec 遇断线不生效」）。
+                // 重连期间其他 exec/type 会因 reconnecting 去重，等这一条完成。
+                reconnectIfNeeded(session: session, s: s) { ok in
+                    if ok {
+                        // 重连成功：再执行命令（重连是异步的，此时已在锁外，需显式 self）
+                        guard let ss = self.withLock({ self.sessions.indices.contains(session) ? self.sessions[session] : nil }) else {
+                            completion("", false); return
+                        }
+                        ss.ssh.exec(cmd, timeout: timeout, maxBytes: maxBytes) { out, timedOut in
+                            completion(out, timedOut)
+                        }
+                    } else {
+                        // 重连失败（网络真断）→ 明确报错，不静默空
+                        completion("", false)
+                    }
+                }
                 return
             }
             s.ssh.exec(cmd, timeout: timeout, maxBytes: maxBytes) { out, timedOut in
@@ -278,6 +371,8 @@ extension HeadlessBridgeHost.HeadlessSession: SSHSessionDelegate {
     }
     func sshSession(_ s: SSHSession, didCloseWith error: Error?) {
         connected = false
+        // 断开后清残留输出：screen 不该读旧画面（会误导 agent 以为还活着）
+        lock.lock(); output = ""; lock.unlock()
     }
     func sshSessionDidOpenShell(_ s: SSHSession) {
         connected = true

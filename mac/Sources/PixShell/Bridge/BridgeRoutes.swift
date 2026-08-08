@@ -165,6 +165,14 @@ enum BridgeRouter {
                 completion(.fail(400, "会话不存在或 id 不唯一"))
                 return
             }
+            // 只拦「会话越界」。死会话放行给宿主：bridgeWrite 会原地重连后再发送，
+            // 重连期间本次返回 false（调用方重试即命中重连后的会话），不再静默 200 吞掉。
+            let allSessions = host.bridgeSessions()
+            guard sid >= 0 && sid < allSessions.count else {
+                let detail = "会话 \(sid) 不存在（当前共 \(allSessions.count) 个，用 /v1/app/sessions 查）"
+                completion(.fail(410, detail))
+                return
+            }
             let cmd = stringField(req.body, ["cmd"])
             var text = stringField(req.body, ["text"]) ?? cmd ?? ""
             if req.body?["cmd"] != nil, req.body?["text"] == nil {
@@ -193,12 +201,13 @@ enum BridgeRouter {
                 completion(.fail(400, "缺少 cmd"))
                 return
             }
-            guard validSession(host, sid) else {
-                let sessions = host.bridgeSessions()
-                let exists = sid >= 0 && sid < sessions.count
-                let detail = exists ? "会话 \(sid) 已断开（用 /v1/app/sessions 查，或 /v1/app/connect 重连）"
-                                    : "会话 \(sid) 不存在（当前共 \(sessions.count) 个，用 /v1/app/sessions 查）"
-                Log.warn("exec 会话不可用 session=\(sid)（共 \(sessions.count) 个）：\(detail)", "bridge")
+            // 只拦「会话越界」（真不存在）。**死会话放行**给宿主自愈：
+            // HeadlessBridgeHost.bridgeExec 会对死会话自动重连后再执行（agent 反复 410 的根治）。
+            // 若宿主重连失败会回空 + 由 410 语义由桥的响应表达。
+            let allSessions = host.bridgeSessions()
+            guard sid >= 0 && sid < allSessions.count else {
+                let detail = "会话 \(sid) 不存在（当前共 \(allSessions.count) 个，用 /v1/app/sessions 查）"
+                Log.warn("exec 会话不存在 session=\(sid)（共 \(allSessions.count) 个）", "bridge")
                 completion(.fail(410, detail))
                 return
             }
