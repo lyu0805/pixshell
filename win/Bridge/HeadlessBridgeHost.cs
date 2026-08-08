@@ -108,7 +108,9 @@ public sealed class HeadlessBridgeHost : IBridgeHost
                 ["host"] = s.Host.Host,
                 ["username"] = s.Host.Username,
                 ["connected"] = s.Connected,
-                ["active"] = i == _sessions.Count - 1,
+                // active 必须是「当前会话且仍连接」——死会话不得再报 active，
+                // 否则 agent 拿到 active:true disconnected:false 的误导状态反复重连（对齐 mac）。
+                ["active"] = i == _sessions.Count - 1 && s.Connected,
             }).ToList();
         }
     }
@@ -133,6 +135,23 @@ public sealed class HeadlessBridgeHost : IBridgeHost
             var existing = _sessions.FindIndex(x => x.Host.Id == hostId && x.Connected);
             if (existing >= 0)
                 return new Dictionary<string, object?> { ["session"] = existing, ["title"] = _sessions[existing].Title, ["ok"] = true };
+        }
+        // 同主机已有**死**会话 → 原地重连（复用下标，不新增堆积——对齐 mac）。
+        lock (_lock)
+        {
+            var dead = _sessions.FindIndex(x => x.Host.Id == hostId);
+            if (dead >= 0)
+            {
+                var ds = _sessions[dead];
+                ReconnectSessionAsync(dead, ds).Wait();
+                lock (_lock)
+                {
+                    if (ds.Connected)
+                        return new Dictionary<string, object?> { ["session"] = dead, ["title"] = ds.Title, ["ok"] = true };
+                    _sessions.Remove(ds);   // 重连失败：移除死会话，避免堆积
+                }
+                throw new Exception($"会话 {dead} 重连失败");
+            }
         }
 
         // 只用已保存的密码/私钥；桥不弹密码框（无人值守场景不该阻塞）。
@@ -248,23 +267,93 @@ public sealed class HeadlessBridgeHost : IBridgeHost
         });
     }
 
-    public Task<string> BridgeExecAsync(int session, string cmd)
+    public async Task<string> BridgeExecAsync(int session, string cmd)
     {
         var s = WithLock(() => Valid(session, out var v) ? v : null);
-        if (s == null) return Task.FromResult("");
-        if (s.Ssh is not { IsConnected: true }) return Task.FromResult("");
+        if (s == null) return "";
+        if (s.Ssh is { IsConnected: true })
+            return await Task.Run(() => ExecOnSession(s, cmd)).ConfigureAwait(false);
+        // 死会话：原地自动重连后再执行（对齐 mac——agent 反复 410 的根治）。
+        var ok = await ReconnectSessionAsync(session, s).ConfigureAwait(false);
+        if (!ok) return "";   // 重连失败 → 明确空（路由层会报错）
+        var s2 = WithLock(() => Valid(session, out var v) ? v : null);
+        if (s2?.Ssh is { IsConnected: true })
+            return await Task.Run(() => ExecOnSession(s2, cmd)).ConfigureAwait(false);
+        return "";
+    }
+
+    private string ExecOnSession(HeadlessSession s, string cmd)
+    {
+        try
+        {
+            using var c = s.Ssh.CreateCommand(cmd);
+            c.CommandTimeout = TimeSpan.FromSeconds(20);
+            var result = c.Execute();
+            return string.IsNullOrEmpty(result) ? (c.Error ?? "") : result;
+        }
+        catch (Exception ex)
+        {
+            return "执行失败: " + ex.Message;
+        }
+    }
+
+    /// <summary>死会话原地重连（复用下标，agent 的 session 号不变）。线程池执行，对齐 mac 的 reconnectIfNeeded。</summary>
+    private Task<bool> ReconnectSessionAsync(int session, HeadlessSession s)
+    {
         return Task.Run(() =>
         {
             try
             {
-                using var c = s.Ssh.CreateCommand(cmd);
-                c.CommandTimeout = TimeSpan.FromSeconds(20);
-                var result = c.Execute();
-                return string.IsNullOrEmpty(result) ? (c.Error ?? "") : result;
+                var h = s.Host;
+                if (h.IsRdp || h.IsLocal) return false;
+                var pw = s.Password;
+                if (string.IsNullOrEmpty(pw)) pw = CredentialStore.GetPassword(h.Id) ?? "";
+                if (string.IsNullOrEmpty(pw) && string.IsNullOrEmpty(h.KeyPath)) return false;
+                // Web 标记剥掉（对齐 ConnectOnPool）
+                if (h.IsWebSsh)
+                {
+                    h = new HostEntry
+                    {
+                        Id = h.Id, Name = h.Name, Host = h.Host, Port = h.Port,
+                        Username = h.Username, Group = h.Group, OsId = h.OsId,
+                        KeyPath = h.KeyPath, ProxyId = h.ProxyId, ConnectionType = 100,
+                    };
+                }
+                var proxy = ProxyStore.Find(h.ProxyId);
+                var connectHost = ResolveFast(h.Host);
+                var info = TerminalSession.BuildConnectionInfo(connectHost, h.Port, h.Username, pw, h.KeyPath, proxy);
+                info.Timeout = TimeSpan.FromSeconds(20);
+                var ssh = new SshClient(info) { KeepAliveInterval = TimeSpan.FromSeconds(30) };
+                ssh.Connect();
+                var shell = ssh.CreateShellStream("xterm-256color", 100, 30, 0, 0, 4096);
+
+                // 原地替换旧会话的 Ssh/Shell（锁内换，下标不变）
+                lock (_lock)
+                {
+                    var cur = Valid(session, out var v) ? v : null;
+                    if (cur == null) { ssh.Dispose(); return false; }
+                    var oldSsh = cur.Ssh;
+                    var oldShell = cur.Shell;
+                    cur.Ssh = ssh;
+                    cur.Shell = shell;
+                    cur.Connected = true;
+                    // 旧连接后台释放
+                    try { oldShell?.Dispose(); } catch { }
+                    try { oldSsh?.Dispose(); } catch { }
+                }
+                // 重启读线程
+                var readThread = new Thread(() => ReadPump(WithLock(() => Valid(session, out var v) ? v : null!)))
+                {
+                    IsBackground = true,
+                    Name = "headless-ssh-read",
+                };
+                readThread.Start();
+                return true;
             }
             catch (Exception ex)
             {
-                return "执行失败: " + ex.Message;
+                Log.Warn($"无头自动重连失败 {s.Host.Username}@{s.Host.Host}:{s.Host.Port}: {ex.Message}", "bridge");
+                return false;
             }
         });
     }
