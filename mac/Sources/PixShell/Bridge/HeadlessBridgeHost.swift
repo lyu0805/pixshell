@@ -148,10 +148,13 @@ final class HeadlessBridgeHost: BridgeHost {
                 if ok {
                     completion(.success(["session": idx, "title": s.title]))
                 } else {
-                    // 重连失败：移除这个死会话，避免数组继续堆积
-                    self.withLock { if self.sessions.indices.contains(idx) { self.sessions.remove(at: idx) } }
+                    // 重连失败：**保留死会话**（标 connected=false），不删除。
+                    // 网络抖动期（TCP 间歇超时）一次失败就把会话删掉，后续
+                    // bridgeExec 对死会话的自动重连路径就永远触不到了（数组里
+                    // 没有它），agent 只能反复 410/建新会话 → 恶性循环。
+                    // 保留后，下一次 exec/connect 仍能走 reconnectIfNeeded 再试。
                     completion(.failure(NSError(domain: "PixShell", code: 504,
-                        userInfo: [NSLocalizedDescriptionKey: "会话 \(idx) 重连失败"])))
+                        userInfo: [NSLocalizedDescriptionKey: "会话 \(idx) 重连失败（保留死会话待下次重试）"])))
                 }
             }
             return
