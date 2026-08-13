@@ -33,10 +33,18 @@ protocol BridgeHost: AnyObject {
     func bridgeSFTPUpload(session: Int, local: String, remote: String, completion: @escaping (Result<String, Error>) -> Void)
     /// 收到 `POST /v1/app/shutdown` 时调用（有头接管无头 / 让无头退出）。有头忽略（默认空实现）。
     func bridgeShutdown()
+    /// 无头 host 不触碰 AppKit 状态，可以脱离 GUI 主线程路由；有头 UI host 保持 true。
+    var bridgeRequiresMainThread: Bool { get }
+    /// 异步写入交互 shell：必须等自动重连完成后再报告成功/失败。
+    func bridgeWrite(session: Int, text: String, completion: @escaping (Bool) -> Void)
 }
 
 extension BridgeHost {
+    var bridgeRequiresMainThread: Bool { true }
     func bridgeShutdown() {}
+    func bridgeWrite(session: Int, text: String, completion: @escaping (Bool) -> Void) {
+        completion(bridgeWrite(session: session, text: text))
+    }
     /// 默认实现：旧签名 exec（30s / 不限制输出），供未重写新方法的宿主用。
     func bridgeExec(session: Int, cmd: String, timeout: Double, maxBytes: Int,
                     completion: @escaping (String, Bool) -> Void) {
@@ -185,10 +193,12 @@ enum BridgeRouter {
             } else if cmd != nil {
                 if !text.hasSuffix("\n") { text += "\n" }
             }
-            if host.bridgeWrite(session: sid, text: text) {
-                completion(.ok(["ok": true, "sessionId": sid, "bytes": text.utf8.count]))
-            } else {
-                completion(.fail(400, "write failed"))
+            host.bridgeWrite(session: sid, text: text) { ok in
+                if ok {
+                    completion(.ok(["ok": true, "sessionId": sid, "bytes": text.utf8.count]))
+                } else {
+                    completion(.fail(503, "会话未连接，自动重连失败；请稍后重试"))
+                }
             }
 
         case ("/v1/app/exec", _), ("/v1/app/direct", _):

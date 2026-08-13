@@ -563,12 +563,17 @@ private final class BridgeConnection {
         }
 
         let req = BridgeRequest(method: method, path: path, query: query, body: bodyObj)
-        // 铁律：碰 App 状态的处理一律在主线程；回到 bridge 队列后再写连接（避免跨线程碰同一个连接对象）。
-        // 静态资源无 App 状态，可在 bridge 队列直接路由，但走同一路径更简单一致。
-        DispatchQueue.main.async { [weak self] in
-            BridgeRouter.route(req, host: self?.host) { response in
-                self?.queue.async { self?.respond(response) }
+        // 无头 host 只操作独立 SSH 会话，不触碰 AppKit；脱离主线程路由，避免 GUI 卡顿把
+        // MCP/CLI 请求全部堵在 main queue。只有有头 UI host 才切主线程。
+        let route: (@escaping (BridgeResponse) -> Void) -> Void = { [weak self] done in
+            BridgeRouter.route(req, host: self?.host, completion: done)
+        }
+        if host?.bridgeRequiresMainThread == true {
+            DispatchQueue.main.async { [weak self] in
+                route { response in self?.queue.async { self?.respond(response) } }
             }
+        } else {
+            route { [weak self] response in self?.queue.async { self?.respond(response) } }
         }
     }
 

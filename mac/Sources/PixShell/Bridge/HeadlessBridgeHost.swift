@@ -11,6 +11,8 @@ import Foundation
 /// 会话生命周期随本进程：CLI 通过 /v1/app/connect 建会话 → exec/screen/sftp 操作 →
 /// 进程退出（有头接管发 /v1/app/shutdown 或自然退出）时 close 全部。
 final class HeadlessBridgeHost: BridgeHost {
+    /// 无头桥只操作锁保护的 SSH 会话，不触碰 AppKit；请求可直接在桥队列处理。
+    let bridgeRequiresMainThread = false
 
     /// 无头会话：逻辑 SSH 会话 + 自管输出缓冲 + 凭据快照。
     /// 非 private：文件底部 extension 里当自己的 SSHSessionDelegate。
@@ -20,16 +22,19 @@ final class HeadlessBridgeHost: BridgeHost {
         /// 内部 SSH 会话：断开后可原地重建（自动重连），下标永不变。
         private(set) var ssh: SSHSession
         let password: String
-        /// 正在自动重连（防并发 exec/type 各拉一条连接）。
-        var reconnecting = false
         /// 交互 shell 的最近输出（exec 是独立通道不进这里；screen 读它）。
         private var output = ""
-        private let lock = NSLock()
+        private let stateLock = NSLock()
         private var connectedState = false
+        private var reconnectingState = false
+        private var reconnectWaiters: [(Bool) -> Void] = []
+        private var serializedOperations: [(@escaping () -> Void) -> Void] = []
+        private var runningOperations = 0
+        private let maxConcurrentOperations = 4
 
         var connected: Bool {
-            get { lock.lock(); defer { lock.unlock() }; return connectedState }
-            set { lock.lock(); defer { lock.unlock() }; connectedState = newValue }
+            get { stateLock.lock(); defer { stateLock.unlock() }; return connectedState }
+            set { stateLock.lock(); defer { stateLock.unlock() }; connectedState = newValue }
         }
 
         init(title: String, host: Host, ssh: SSHSession, password: String) {
@@ -39,8 +44,40 @@ final class HeadlessBridgeHost: BridgeHost {
             self.password = password
         }
 
+        func currentSSH() -> SSHSession {
+            stateLock.lock(); defer { stateLock.unlock() }
+            return ssh
+        }
+
+        /// 同一 SSH transport 上的 exec/type/SFTP 操作串行，跨 session 仍可并行。
+        /// NIO SSH handler 对并发 createChannel/close 的支持不是无限制的；串行化避免
+        /// 多个 agent 同时抢同一 transport 导致 ok:true 但 stdout 为空。
+        func enqueueOperation(_ operation: @escaping (@escaping () -> Void) -> Void) {
+            stateLock.lock()
+            serializedOperations.append(operation)
+            let shouldStart = runningOperations < maxConcurrentOperations
+            if shouldStart { runningOperations += 1 }
+            stateLock.unlock()
+            if shouldStart { runNextOperation() }
+        }
+
+        private func runNextOperation() {
+            stateLock.lock()
+            guard !serializedOperations.isEmpty else {
+                runningOperations = max(0, runningOperations - 1)
+                stateLock.unlock()
+                return
+            }
+            let operation = serializedOperations.removeFirst()
+            stateLock.unlock()
+            operation { [weak self] in
+                guard let self else { return }
+                self.runNextOperation()
+            }
+        }
+
         func appendOutput(_ text: String) {
-            lock.lock(); defer { lock.unlock() }
+            stateLock.lock(); defer { stateLock.unlock() }
             output += text
             // 防无限增长：只保留最近 512 KiB
             if output.count > 512 * 1024 {
@@ -49,44 +86,62 @@ final class HeadlessBridgeHost: BridgeHost {
         }
 
         func recentOutput(lines: Int) -> String {
-            lock.lock(); defer { lock.unlock() }
+            stateLock.lock(); defer { stateLock.unlock() }
             let n = lines > 0 ? lines : 200
             let rows = output.split(separator: "\n", omittingEmptySubsequences: false)
             return rows.suffix(n).joined(separator: "\n")
         }
 
-        /// 原地重连（自动）：换新 ssh、复用下标，等 shell 打开。
-        /// - Parameters:
-        ///   - onReady: 重连结果。成功 true；失败 false（网络真断，不再重试）。
-        func reconnect(creds: SSHCredentials, keyNeedsOpenSSH: Bool,
-                       onReady: @escaping (Bool) -> Void) {
-            if connected { onReady(true); return }
-            if reconnecting { onReady(false); return }   // 已有重连在跑，别重复拉
-            reconnecting = true
-            // 关掉旧的（异步，不阻塞），换新的
+        /// 确保 shell 已连接。并发调用在同一次重连上排队，绝不让第二个请求瞬时失败。
+        func ensureConnected(creds: SSHCredentials, keyNeedsOpenSSH: Bool,
+                             onReady: @escaping (Bool) -> Void) {
+            stateLock.lock()
+            if connectedState {
+                stateLock.unlock()
+                onReady(true)
+                return
+            }
+            reconnectWaiters.append(onReady)
+            if reconnectingState {
+                stateLock.unlock()
+                return
+            }
+            reconnectingState = true
             let old = ssh
-            connected = false
+            connectedState = false
             let newSsh: SSHSession = keyNeedsOpenSSH ? OpenSSHSession() : NIOSSHSession()
             ssh = newSsh
             newSsh.delegate = self
+            stateLock.unlock()
+
+            // 旧 transport 只异步收口；新连接不会阻塞调用线程。
             old.close()
             newSsh.connectAndOpenShell(creds, term: "xterm-256color", cols: 100, rows: 30)
-            // 等 shell 打开，最多 20s（与 bridgeConnect 一致）
             var waited = 0.0
             func poll() {
-                if connected {
-                    reconnecting = false
-                    onReady(true); return
+                if self.connected {
+                    self.finishReconnect(true)
+                    return
                 }
                 waited += 0.25
                 if waited > 20 {
-                    reconnecting = false
                     newSsh.close()
-                    onReady(false); return
+                    self.finishReconnect(false)
+                    return
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: poll)
+                // 不依赖 GUI 主线程：无头桥的重连不能被 GUI 卡顿拖死。
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25, execute: poll)
             }
             poll()
+        }
+
+        private func finishReconnect(_ ok: Bool) {
+            stateLock.lock()
+            reconnectingState = false
+            let waiters = reconnectWaiters
+            reconnectWaiters.removeAll(keepingCapacity: false)
+            stateLock.unlock()
+            for waiter in waiters { waiter(ok) }
         }
     }
 
@@ -144,15 +199,11 @@ final class HeadlessBridgeHost: BridgeHost {
         if let idx = withLock({ sessions.firstIndex { $0.host.id == hostId } }) {
             let s = sessions[idx]
             withLock { currentIndex = idx }
-            reconnectIfNeeded(session: idx, s: s) { ok in
+            ensureSessionReady(s) { ok in
                 if ok {
                     completion(.success(["session": idx, "title": s.title]))
                 } else {
-                    // 重连失败：**保留死会话**（标 connected=false），不删除。
-                    // 网络抖动期（TCP 间歇超时）一次失败就把会话删掉，后续
-                    // bridgeExec 对死会话的自动重连路径就永远触不到了（数组里
-                    // 没有它），agent 只能反复 410/建新会话 → 恶性循环。
-                    // 保留后，下一次 exec/connect 仍能走 reconnectIfNeeded 再试。
+                    // 保留死会话，下一次 connect/exec 继续复用同一下标重试。
                     completion(.failure(NSError(domain: "PixShell", code: 504,
                         userInfo: [NSLocalizedDescriptionKey: "会话 \(idx) 重连失败（保留死会话待下次重试）"])))
                 }
@@ -172,13 +223,13 @@ final class HeadlessBridgeHost: BridgeHost {
         // NIO 无法加载 RSA/DSA/加密私钥 → 预检失败直接用系统 OpenSSH（与有头一致）。
         let keyNeedsOpenSSH = !h.keyPath.isEmpty && SSHPrivateKeyLoader.load(path: h.keyPath) == nil
         let sess = HeadlessSession(title: h.display, host: h, ssh: keyNeedsOpenSSH ? OpenSSHSession() : NIOSSHSession(), password: pw)
-        withLock {
+        let idx = withLock { () -> Int in
             sessions.append(sess)
             currentIndex = sessions.count - 1
+            return sessions.count - 1
         }
-        let idx = sessions.count - 1
-        sess.ssh.delegate = sess
-        sess.ssh.connectAndOpenShell(creds, term: "xterm-256color", cols: 100, rows: 30)
+        sess.currentSSH().delegate = sess
+        sess.currentSSH().connectAndOpenShell(creds, term: "xterm-256color", cols: 100, rows: 30)
         // 等 shell 打开再回（与有头 bridgeConnect 的 poll 语义一致，最多 20s）。
         var waited = 0.0
         func poll() {
@@ -187,43 +238,55 @@ final class HeadlessBridgeHost: BridgeHost {
             }
             waited += 0.25
             if waited > 20 {
-                sess.ssh.close()
-                withLock { if sessions.indices.contains(idx) { sessions.remove(at: idx) } }
+                sess.currentSSH().close()
+                // 保留数组槽位，绝不 remove：session 是外部句柄，删除前项会让所有后续
+                // session 编号整体漂移，造成 agent 复用旧号时命中另一台主机。
                 completion(.failure(NSError(domain: "PixShell", code: 504,
-                    userInfo: [NSLocalizedDescriptionKey: "连接超时"]))); return
+                    userInfo: [NSLocalizedDescriptionKey: "连接超时（保留 session 编号，稍后可重试）"]))); return
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: poll)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25, execute: poll)
         }
         poll()
     }
 
     func bridgeWrite(session: Int, text: String) -> Bool {
-        withLock {
-            guard sessions.indices.contains(session) else { return false }
-            let s = sessions[session]
-            // 死会话：先原地重连再发送（type_text 自愈，不再静默吞掉）。
-            if !s.connected {
-                reconnectIfNeeded(session: session, s: s) { _ in }
-                return false   // 本次请求走重连，不误报成功；调用方重试即命中重连后的会话
+        guard let s = withLock({ sessions.indices.contains(session) ? sessions[session] : nil }), s.connected else {
+            return false
+        }
+        s.currentSSH().send(Array(text.utf8))
+        return true
+    }
+
+    func bridgeWrite(session: Int, text: String, completion: @escaping (Bool) -> Void) {
+        guard let s = withLock({ sessions.indices.contains(session) ? sessions[session] : nil }) else {
+            completion(false)
+            return
+        }
+        s.enqueueOperation { [weak self, weak s] next in
+            guard let self, let s else { completion(false); next(); return }
+            self.ensureSessionReady(s) { ok in
+                guard ok else { completion(false); next(); return }
+                s.currentSSH().send(Array(text.utf8))
+                completion(true)
+                next()
             }
-            s.ssh.send(Array(text.utf8))
-            return true
         }
     }
 
-    /// 死会话原地重连（复用下标，agent 的 session 号永不变）。重连成功回调 true。
-    private func reconnectIfNeeded(session: Int, s: HeadlessSession, done: @escaping (Bool) -> Void) {
+    /// 获取凭据并把重连请求合并到同一个 HeadlessSession 的等待队列。
+    private func ensureSessionReady(_ s: HeadlessSession, done: @escaping (Bool) -> Void) {
         let h = s.host
         let pw = s.password.isEmpty ? (Keychain.password(for: h.id) ?? "") : s.password
         guard !pw.isEmpty || !h.keyPath.isEmpty else {
-            done(false); return
+            done(false)
+            return
         }
         let proxy = h.proxyId.isEmpty ? nil : ProxyStore().list().first { $0.id == h.proxyId }
         let creds = SSHCredentials(host: h.host, port: h.port, username: h.username,
                                    password: pw, keyPath: h.keyPath.isEmpty ? nil : h.keyPath,
                                    proxy: proxy)
         let keyNeedsOpenSSH = !h.keyPath.isEmpty && SSHPrivateKeyLoader.load(path: h.keyPath) == nil
-        s.reconnect(creds: creds, keyNeedsOpenSSH: keyNeedsOpenSSH, onReady: done)
+        s.ensureConnected(creds: creds, keyNeedsOpenSSH: keyNeedsOpenSSH, onReady: done)
     }
 
     func bridgeExec(session: Int, cmd: String, completion: @escaping (String) -> Void) {
@@ -232,30 +295,18 @@ final class HeadlessBridgeHost: BridgeHost {
 
     func bridgeExec(session: Int, cmd: String, timeout: Double, maxBytes: Int,
                     completion: @escaping (String, Bool) -> Void) {
-        withLock {
-            guard sessions.indices.contains(session) else { completion("", false); return }
-            let s = sessions[session]
-            guard s.connected else {
-                // 死会话：自动重连后再执行（根治「exec 遇断线不生效」）。
-                // 重连期间其他 exec/type 会因 reconnecting 去重，等这一条完成。
-                reconnectIfNeeded(session: session, s: s) { ok in
-                    if ok {
-                        // 重连成功：再执行命令（重连是异步的，此时已在锁外，需显式 self）
-                        guard let ss = self.withLock({ self.sessions.indices.contains(session) ? self.sessions[session] : nil }) else {
-                            completion("", false); return
-                        }
-                        ss.ssh.exec(cmd, timeout: timeout, maxBytes: maxBytes) { out, timedOut in
-                            completion(out, timedOut)
-                        }
-                    } else {
-                        // 重连失败（网络真断）→ 明确报错，不静默空
-                        completion("", false)
-                    }
+        guard let s = withLock({ sessions.indices.contains(session) ? sessions[session] : nil }) else {
+            completion("", false)
+            return
+        }
+        s.enqueueOperation { [weak self, weak s] next in
+            guard let self, let s else { completion("", false); next(); return }
+            self.ensureSessionReady(s) { ok in
+                guard ok else { completion("", false); next(); return }
+                s.currentSSH().exec(cmd, timeout: timeout, maxBytes: maxBytes) { out, timedOut in
+                    completion(out, timedOut)
+                    next()
                 }
-                return
-            }
-            s.ssh.exec(cmd, timeout: timeout, maxBytes: maxBytes) { out, timedOut in
-                completion(out, timedOut)
             }
         }
     }
@@ -355,7 +406,7 @@ final class HeadlessBridgeHost: BridgeHost {
     /// 关闭全部会话并触发退出回调（有头接管 / 无头自然退出用）。
     func closeAll() {
         let all = withLock { () -> [SSHSession] in
-            let list = sessions.map { $0.ssh }
+            let list = sessions.map { $0.currentSSH() }
             sessions.removeAll()
             currentIndex = -1
             return list
@@ -368,16 +419,19 @@ final class HeadlessBridgeHost: BridgeHost {
 /// 让 HeadlessSession 直接当自己的 SSHSessionDelegate：收字节进缓冲、记录打开/关闭。
 extension HeadlessBridgeHost.HeadlessSession: SSHSessionDelegate {
     func sshSession(_ s: SSHSession, didReceive data: [UInt8]) {
+        guard s === currentSSH() else { return }
         if let text = String(bytes: data, encoding: .utf8) {
             appendOutput(text)
         }
     }
     func sshSession(_ s: SSHSession, didCloseWith error: Error?) {
+        guard s === currentSSH() else { return }
         connected = false
         // 断开后清残留输出：screen 不该读旧画面（会误导 agent 以为还活着）
-        lock.lock(); output = ""; lock.unlock()
+        stateLock.lock(); output = ""; stateLock.unlock()
     }
     func sshSessionDidOpenShell(_ s: SSHSession) {
+        guard s === currentSSH() else { return }
         connected = true
     }
 }

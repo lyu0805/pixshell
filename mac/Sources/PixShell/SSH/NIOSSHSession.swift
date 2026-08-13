@@ -253,16 +253,25 @@ public final class NIOSSHSession: SSHSession {
 
     public func exec(_ command: String, timeout: TimeInterval, maxBytes: Int,
                      completion: @escaping (String, Bool) -> Void) {
-        guard let channel = tcpChannel else { DispatchQueue.main.async { completion("", false) }; return }
+        let completionLock = NSLock()
+        var completed = false
+        func finish(_ output: String, _ timedOut: Bool) {
+            completionLock.lock()
+            guard !completed else { completionLock.unlock(); return }
+            completed = true
+            completionLock.unlock()
+            DispatchQueue.main.async { completion(output, timedOut) }
+        }
+        guard let channel = tcpChannel else { finish("", false); return }
         // 命令级总超时：远端命令不退出时兜底收口，避免 HTTP 永挂 → 后续工具调用排队超时。
         let handler = ExecCollectHandler(command: command, timeout: timeout, maxBytes: maxBytes) { out, timedOut in
-            DispatchQueue.main.async { completion(out, timedOut) }
+            finish(out, timedOut)
         }
         let promise = channel.eventLoop.makePromise(of: Channel.self)
         channel.pipeline.handler(type: NIOSSHHandler.self).whenComplete { result in
             switch result {
             case .failure:
-                DispatchQueue.main.async { completion("", false) }
+                finish("", false)
             case .success(let sshHandler):
                 sshHandler.createChannel(promise) { childChannel, channelType in
                     guard channelType == .session else {
@@ -272,7 +281,7 @@ public final class NIOSSHSession: SSHSession {
                 }
             }
         }
-        promise.futureResult.whenFailure { _ in DispatchQueue.main.async { completion("", false) } }
+        promise.futureResult.whenFailure { _ in finish("", false) }
     }
 
     public func close() {
