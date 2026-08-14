@@ -88,6 +88,17 @@ final class TermSession {
     var flushScheduled = false
     /// 帧间隔：60fps 一帧，视觉无感且能聚合高频突发。
     static let flushInterval: TimeInterval = 1.0 / 60.0
+    /// 单帧 feed 硬上限（字节）。输出洪水（seq/编译流）下不加封顶时，单帧会把
+    /// 积压的几 MB 一次性 feed 渲染，占死主线程 1.5s+（实测）——这是「洪水时关标签/
+    /// 点确定卡几秒」的根因。封顶后每帧 feed 有界（~15ms），主线程始终有余量响应交互。
+    static let maxFlushBytes = 64 * 1024
+    /// 单帧 feed 耗时的指数滑动平均（秒），驱动自适应帧间隔（feed 越贵，间隔越久）。
+    var flushCostEMA: TimeInterval = 0
+    /// 自适应帧间隔：常态 = flushInterval（60fps）；feed 贵时按 EMA 拉长（上限 100ms），
+    /// 目标把主线程 feed 占用压到 ~15%（间隔 ≈ 代价×6）。feed 已封顶，拉长间隔只会
+    /// 「更频繁空闲」，不会再让单帧 feed 变大。积压靠每帧整体 drain（swap 取出）清空，
+    /// 不会无界增长。
+    var adaptiveFlushInterval: TimeInterval = TermSession.flushInterval
 
     func appendOutput(_ s: String) {
         guard !s.isEmpty else { return }

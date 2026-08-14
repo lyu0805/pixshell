@@ -140,12 +140,13 @@ extension AppDelegate {
     // 真正建立 SSH 连接并开一个终端 tab。
     func beginSession(to host: Host, password: String) {
         if host.isLocal { openLocalTerminal(host: host); return }
-        let tv = TerminalView(frame: termContainer.bounds)
+        let tv = PixTerminalView(frame: termContainer.bounds)
         tv.terminalDelegate = self
         TermTheme.apply(to: tv, dark: darkTheme)
         tv.menu = buildTerminalMenu()                 // 右键：复制/粘贴/清屏/设置背景/字号
         if !termBgOverride.isEmpty { tv.nativeBackgroundColor = TermTheme.ns(termBgOverride) }
         let sess = TermSession(host: host, termView: tv)
+        wireCursorReposition(tv, for: sess)
         // 密码要在 selectSession 之前赋值：selectSession 会触发 SFTP 面板用它连接。
         sess.password = password
         Log.info("打开会话 \(host.subtitle)", "session")
@@ -154,16 +155,33 @@ extension AppDelegate {
         startSSH(for: sess, password: password)
     }
 
+    /// 单击移动 shell 光标：把列差换算成等量的左/右方向键转义序列发给远端。
+    /// readline 收到方向键就挪光标 —— 与手敲 ←→ 完全同构，对 shell 零侵入。
+    /// DECCKM 应用光标模式下转义序列不同（\eOA/\eOD），按终端当前模式选。
+    private func wireCursorReposition(_ tv: PixTerminalView, for sess: TermSession) {
+        tv.onCursorReposition = { [weak sess, weak tv] delta in
+            guard let sess, let tv, let ssh = sess.ssh, sess.connected, delta != 0 else { return }
+            let appCursor = tv.getTerminal().applicationCursor
+            let seq = delta < 0 ? (appCursor ? "\u{1b}OD" : "\u{1b}[D")
+                                : (appCursor ? "\u{1b}OC" : "\u{1b}[C")
+            var bytes: [UInt8] = []
+            bytes.reserveCapacity(abs(delta) * 3)
+            for _ in 0..<abs(delta) { bytes.append(contentsOf: seq.utf8) }
+            ssh.send(bytes)
+        }
+    }
+
     /// 快速连接 logo / 菜单：在软件内新开本机终端标签（forkpty 本地 shell）。
     /// **禁止** NSWorkspace 拉起 Terminal.app。
     func openLocalTerminal(host: Host? = nil) {
         let h = host ?? Host.localTerminal()
-        let tv = TerminalView(frame: termContainer.bounds)
+        let tv = PixTerminalView(frame: termContainer.bounds)
         tv.terminalDelegate = self
         TermTheme.apply(to: tv, dark: darkTheme)
         tv.menu = buildTerminalMenu()
         if !termBgOverride.isEmpty { tv.nativeBackgroundColor = TermTheme.ns(termBgOverride) }
         let sess = TermSession(host: h, termView: tv)
+        wireCursorReposition(tv, for: sess)
         sess.password = nil
         Log.info("打开本机终端 \(h.display)", "session")
         // 本机会话不记入「远程历史」列表，避免污染快速连接卡片。
@@ -779,7 +797,8 @@ extension AppDelegate {
         sess.pendingOutput.append(contentsOf: data)
         guard !sess.flushScheduled else { return }
         sess.flushScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + TermSession.flushInterval) { [weak self] in
+        // 自适应间隔：feed 贵时拉长（见 flushOutput 末尾 EMA），常态 60fps。
+        DispatchQueue.main.asyncAfter(deadline: .now() + sess.adaptiveFlushInterval) { [weak self] in
             self?.flushOutput(for: sess)
         }
     }
@@ -789,11 +808,33 @@ extension AppDelegate {
     private func flushOutput(for sess: TermSession) {
         sess.flushScheduled = false
         guard !sess.pendingOutput.isEmpty else { return }
+        // swap 取出：O(1) 免拷贝，原缓冲复位继续承接下一帧（避免 removeFirst 的 O(n) memmove）。
         let data = sess.pendingOutput
-        sess.pendingOutput.removeAll(keepingCapacity: true)
+        sess.pendingOutput = []
+        sess.pendingOutput.reserveCapacity(TermSession.maxFlushBytes)
+        let __f0 = CFAbsoluteTimeGetCurrent()
+        defer {
+            // EMA 更新本次 flush 的主线程耗时，并据此调整下一帧间隔：
+            // 目标把主线程 feed 占用压到 ~15%（间隔 ≈ 代价×6）。单帧 feed 已封顶
+            // （maxFlushBytes），所以拉长间隔只会更频繁空闲，不会让单帧 feed 变大。
+            let cost = CFAbsoluteTimeGetCurrent() - __f0
+            sess.flushCostEMA = sess.flushCostEMA == 0 ? cost : sess.flushCostEMA * 0.7 + cost * 0.3
+            sess.adaptiveFlushInterval = min(max(TermSession.flushInterval, sess.flushCostEMA * 6), 0.1)
+            AppDelegate.perfNote(kind: "flush", ms: cost * 1000, bytes: data.count)
+        }
+
+        // 单帧 feed 封顶：输出洪水下每帧最多 feed maxFlushBytes，超出的部分丢最旧留尾部
+        // （终端滚动只关心最新输出）。这是洪水卡死的根治——没有它，一次 feed 几 MB
+        // 会把主线程占死 1.5s+，关标签/点确定/拖鼠标全部无响应。
+        let bounded: [UInt8]
+        if data.count > TermSession.maxFlushBytes {
+            bounded = Array(data[(data.count - TermSession.maxFlushBytes)...])
+        } else {
+            bounded = data
+        }
 
         // 缓冲跨网络包的残缺 ANSI 序列，防止被 SemanticHighlight 破坏
-        let fullData = sess.ansiBuffer + data
+        let fullData = sess.ansiBuffer + bounded
         let (completeBytes, incompleteBytes) = extractIncompleteANSI(from: fullData)
         sess.ansiBuffer = incompleteBytes
         if completeBytes.isEmpty { return }
@@ -856,7 +897,7 @@ extension AppDelegate {
         guard let sess = session(forSSH: s), !sess.closeHandled else { return }
         sess.closeHandled = true
         // 清掉节流里还没 flush 的输出（会话已关，不再消化）
-        sess.pendingOutput.removeAll(keepingCapacity: false)
+        sess.pendingOutput = []
         sess.flushScheduled = false
         // 用 shellOpened（曾经认证成功过）判断，不用 connected —— 见 TermSession.shellOpened 注释。
         let wasUp = sess.shellOpened
