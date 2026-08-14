@@ -362,7 +362,7 @@ public static class AgentCLI
             "    if method == 'initialize':",
             "        log('initialize 来自客户端')",
             "        reply(rid, {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}},",
-            "                    'serverInfo': {'name': 'pixshell', 'version': '0.1.7'}})",
+            "                    'serverInfo': {'name': 'pixshell', 'version': '0.1.8'}})",
             "    elif method == 'tools/list':",
             "        reply(rid, {'tools': TOOLS})",
             "    elif method == 'tools/call':",

@@ -57,7 +57,7 @@ public partial class App : Application
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             // 渲染/崩溃标记全部跳过。
             base.OnStartup(e);
-            Log.Banner("0.1.7 [headless]");
+            Log.Banner("0.1.8 [headless]");
             StartHeadlessBridge();
             return;
         }

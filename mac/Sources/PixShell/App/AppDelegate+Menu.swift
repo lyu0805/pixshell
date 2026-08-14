@@ -371,14 +371,14 @@ extension AppDelegate {
     // MARK: 软件更新（对接 GitHub Releases：比较 + 匹配资产下载 / 打开该次发行页）
     @objc func checkUpdate() {
         setStatus("检查更新…")
-        AppUpdate.check(current: "0.1.7") { [weak self] result in
+        AppUpdate.check(current: "0.1.8") { [weak self] result in
             guard let self = self else { return }
             self.setStatus(result.text)
             switch result.kind {
             case .updateAvailable(let v):
                 let a = NSAlert.pix()
                 a.messageText = "发现新版本 \(v)"
-                var info = "当前 0.1.7，来源 GitHub Releases（lyu0805/pixshell）。"
+                var info = "当前 0.1.8，来源 GitHub Releases（lyu0805/pixshell）。"
                 if let name = result.assetName {
                     info += "\n匹配资产：\(name)"
                 }
@@ -407,7 +407,7 @@ extension AppDelegate {
                     NSWorkspace.shared.open(result.releasePageURL ?? AppUpdate.releasesURL!)
                 }
             case .latest:
-                self.alert("已是最新", "当前 0.1.7 已是最新版本（GitHub Releases）")
+                self.alert("已是最新", "当前 0.1.8 已是最新版本（GitHub Releases）")
             case .unknown:
                 let a = NSAlert.pix()
                 a.messageText = "检查更新"
@@ -422,7 +422,7 @@ extension AppDelegate {
 
     // MARK: 帮助
     @objc func menuAbout() {
-        alert("PixShell 0.1.7", "macOS 原生 SSH / SFTP 客户端\nSwift + AppKit + SwiftTerm + swift-nio-ssh\nhttps://github.com/lyu0805/pixshell")
+        alert("PixShell 0.1.8", "macOS 原生 SSH / SFTP 客户端\nSwift + AppKit + SwiftTerm + swift-nio-ssh\nhttps://github.com/lyu0805/pixshell")
     }
     @objc func menuRepo() {
         if let u = AppUpdate.repoURL { NSWorkspace.shared.open(u) }

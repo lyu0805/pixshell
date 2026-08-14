@@ -319,10 +319,12 @@ jobs:
           fi
           notes="PixShell ${VERSION}
 
-          - macOS arm64 / x64: .dmg + .zip (unsigned CI build)
-          - Windows x64: self-contained .zip + Inno Setup installer
+          - 终端单击移动光标：长命令改中间直接点，不再只能敲方向键
+          - 输出洪水时 UI 不再卡顿：关标签 / 点确定保持流畅
+          - MCP/SSH 多线程复用稳定性：并发 exec 不再丢输出
 
-          Tag: ${TAG}"
+          - macOS arm64 / x64：.dmg（未签名 CI 构建）
+          - Windows x64：便携 .zip + Inno Setup 安装器"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG exists — uploading assets"
