@@ -2,6 +2,15 @@ import AppKit
 import SwiftTerm
 @preconcurrency import NIOSSH
 
+private final class TermSessionFlushBuffers {
+    var draining: [UInt8] = []
+    var offset = 0
+}
+
+private enum TermSessionFlushState {
+    nonisolated(unsafe) static var buffers: [ObjectIdentifier: TermSessionFlushBuffers] = [:]
+}
+
 // 多会话开/切/关 + 顶栏 tab + SSH/终端 delegate。
 extension AppDelegate {
     // MARK: - 会话（顶栏多 tab）
@@ -191,6 +200,7 @@ extension AppDelegate {
 
     /// 在已有标签上启动本机 shell（LocalSession）。
     func startLocalShell(for sess: TermSession) {
+        clearPendingOutput(for: sess)
         if let old = sess.ssh {
             sess.ssh = nil
             old.close()
@@ -318,6 +328,7 @@ extension AppDelegate {
         let host = sess.host
         sess.password = password
         // 先拆旧传输，避免 EventLoopGroup / 旧 pty 泄漏，也防止迟到回调串台。
+        clearPendingOutput(for: sess)
         if let old = sess.ssh {
             sess.ssh = nil
             old.close()
@@ -365,6 +376,7 @@ extension AppDelegate {
         // 先摘掉 ssh 引用再关：这样旧连接回调走 session(forSSH:) 查不到会话，
         // 不会把"主动断开"当成异常关闭去刷终端/弹框。
         let old = sess.ssh
+        clearPendingOutput(for: sess)
         sess.ssh = nil
         old?.close()
         // 用户显式重连 = 新生命周期：允许再走 NIO，也允许再回落一次 OpenSSH。
@@ -501,8 +513,10 @@ extension AppDelegate {
     func closeSession(_ i: Int) {
         guard i >= 0, i < sessions.count else { return }
         let wasActive = i == current
-        sessions[i].ssh?.close()
-        sessions[i].contentView.removeFromSuperview()
+        let sess = sessions[i]
+        clearPendingOutput(for: sess)
+        sess.ssh?.close()
+        sess.contentView.removeFromSuperview()
         sessions[i].webSSHView = nil
         sessions.remove(at: i)
         if sessions.isEmpty {
@@ -603,6 +617,7 @@ extension AppDelegate {
         guard sessions.indices.contains(s.tag) else { return }
         let keep = sessions[s.tag]
         for sess in sessions where sess !== keep {
+            clearPendingOutput(for: sess)
             sess.ssh?.close()
             sess.contentView.removeFromSuperview()
             sess.webSSHView = nil
@@ -677,6 +692,7 @@ extension AppDelegate {
         w.makeKeyAndOrderFront(nil)
 
         // 从 sessions 里移除并修正 current，再重建标签/面板
+        clearPendingOutput(for: sess)
         sessions.remove(at: i)
         if sessions.isEmpty {
             current = 0
@@ -759,32 +775,76 @@ extension AppDelegate {
     """
 
     // MARK: - SSHSessionDelegate（主线程）
-    private func extractIncompleteANSI(from bytes: [UInt8]) -> (complete: [UInt8], incomplete: [UInt8]) {
-        let maxLookback = min(bytes.count, 2048)
-        for i in stride(from: bytes.count - 1, through: bytes.count - maxLookback, by: -1) {
-            if bytes[i] == 0x1B {
-                if i + 1 >= bytes.count { return (Array(bytes[0..<i]), Array(bytes[i...])) }
-                let next = bytes[i+1]
-                if next == 0x5B { // '['
-                    var complete = false
-                    for j in (i+2)..<bytes.count {
-                        if bytes[j] >= 0x40 && bytes[j] <= 0x7E { complete = true; break }
-                    }
-                    if !complete { return (Array(bytes[0..<i]), Array(bytes[i...])) }
-                } else if next == 0x5D { // ']'
-                    var complete = false
-                    for j in (i+2)..<bytes.count {
-                        if bytes[j] == 0x07 { complete = true; break }
-                        if bytes[j] == 0x1B && j+1 < bytes.count && bytes[j+1] == 0x5C { complete = true; break }
-                    }
-                    if !complete { return (Array(bytes[0..<i]), Array(bytes[i...])) }
-                } else if next == 0x28 || next == 0x29 { // '(' or ')'
-                    if i + 2 >= bytes.count { return (Array(bytes[0..<i]), Array(bytes[i...])) }
-                }
-                break // Found the last ESC and it was complete
-            }
+    private func extractIncompleteANSI(from bytes: ArraySlice<UInt8>) -> (complete: [UInt8], incomplete: [UInt8]) {
+        guard !bytes.isEmpty else { return ([], []) }
+        let count = bytes.count
+        let start = bytes.startIndex
+        let maxLookback = min(count, 2048)
+
+        func split(at relativeIndex: Int) -> (complete: [UInt8], incomplete: [UInt8]) {
+            (Array(bytes.prefix(relativeIndex)), Array(bytes.dropFirst(relativeIndex)))
         }
-        return (bytes, [])
+
+        for relativeI in stride(from: count - 1, through: count - maxLookback, by: -1) {
+            let value = bytes[bytes.index(start, offsetBy: relativeI)]
+            guard value == 0x1B else { continue }
+            guard relativeI + 1 < count else { return split(at: relativeI) }
+            let next = bytes[bytes.index(start, offsetBy: relativeI + 1)]
+            if next == 0x5B { // '['
+                var complete = false
+                if relativeI + 2 < count {
+                    for relativeJ in (relativeI + 2)..<count {
+                        let value = bytes[bytes.index(start, offsetBy: relativeJ)]
+                        if value >= 0x40 && value <= 0x7E { complete = true; break }
+                    }
+                }
+                if !complete { return split(at: relativeI) }
+            } else if next == 0x5D { // ']'
+                var complete = false
+                if relativeI + 2 < count {
+                    for relativeJ in (relativeI + 2)..<count {
+                        let value = bytes[bytes.index(start, offsetBy: relativeJ)]
+                        if value == 0x07 {
+                            complete = true
+                            break
+                        }
+                        if value == 0x1B, relativeJ + 1 < count,
+                           bytes[bytes.index(start, offsetBy: relativeJ + 1)] == 0x5C {
+                            complete = true
+                            break
+                        }
+                    }
+                }
+                if !complete { return split(at: relativeI) }
+            } else if next == 0x28 || next == 0x29 { // '(' or ')'
+                if relativeI + 2 >= count { return split(at: relativeI) }
+            }
+            break // Found the last ESC and it was complete
+        }
+        return (Array(bytes), [])
+    }
+
+    private func scheduleFlush(for sess: TermSession) {
+        guard !sess.flushScheduled else { return }
+        sess.flushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + sess.adaptiveFlushInterval) { [weak self, weak sess] in
+            guard let self = self, let sess = sess else { return }
+            guard self.sessions.contains(where: { $0 === sess }), !sess.closeHandled else {
+                self.clearPendingOutput(for: sess)
+                return
+            }
+            self.flushOutput(for: sess)
+        }
+    }
+
+    private func clearPendingOutput(for sess: TermSession) {
+        sess.pendingOutput.removeAll(keepingCapacity: true)
+        sess.ansiBuffer.removeAll(keepingCapacity: true)
+        sess.flushScheduled = false
+        if let buffers = TermSessionFlushState.buffers.removeValue(forKey: ObjectIdentifier(sess)) {
+            buffers.draining.removeAll(keepingCapacity: true)
+            buffers.offset = 0
+        }
     }
 
     func sshSession(_ s: SSHSession, didReceive data: [UInt8]) {
@@ -792,52 +852,76 @@ extension AppDelegate {
         guard !data.isEmpty else { return }
 
         // 帧级节流：只累积到会话的 pendingOutput，由 flushOutput 统一消化。
-        // 高频输出时把「每数据块一次主线程 decode+染色+feed」合并成「每帧一次」，
+        // 高频输出时把「每数据块一次主线程 decode+染色+feed」合并成「每帧一次」
         // 显著降低主线程负担（卡顿根因）。同一 runloop 周期内的多次 append 合并成一次 flush。
         sess.pendingOutput.append(contentsOf: data)
-        guard !sess.flushScheduled else { return }
-        sess.flushScheduled = true
-        // 自适应间隔：feed 贵时拉长（见 flushOutput 末尾 EMA），常态 60fps。
-        DispatchQueue.main.asyncAfter(deadline: .now() + sess.adaptiveFlushInterval) { [weak self] in
-            self?.flushOutput(for: sess)
-        }
+        scheduleFlush(for: sess)
     }
 
     /// 消化一个会话累积的输出：ANSI 分块 + 语义高亮 + feed 终端 + 写输出缓冲。
     /// 在帧节流下每帧最多调用一次；也保留了交互场景的即时性（16ms 内必处理）。
     private func flushOutput(for sess: TermSession) {
         sess.flushScheduled = false
-        guard !sess.pendingOutput.isEmpty else { return }
-        // swap 取出：O(1) 免拷贝，原缓冲复位继续承接下一帧（避免 removeFirst 的 O(n) memmove）。
-        let data = sess.pendingOutput
-        sess.pendingOutput = []
-        sess.pendingOutput.reserveCapacity(TermSession.maxFlushBytes)
-        let __f0 = CFAbsoluteTimeGetCurrent()
-        defer {
-            // EMA 更新本次 flush 的主线程耗时，并据此调整下一帧间隔：
-            // 目标把主线程 feed 占用压到 ~15%（间隔 ≈ 代价×6）。单帧 feed 已封顶
-            // （maxFlushBytes），所以拉长间隔只会更频繁空闲，不会让单帧 feed 变大。
-            let cost = CFAbsoluteTimeGetCurrent() - __f0
-            sess.flushCostEMA = sess.flushCostEMA == 0 ? cost : sess.flushCostEMA * 0.7 + cost * 0.3
-            sess.adaptiveFlushInterval = min(max(TermSession.flushInterval, sess.flushCostEMA * 6), 0.1)
-            AppDelegate.perfNote(kind: "flush", ms: cost * 1000, bytes: data.count)
+        guard sessions.contains(where: { $0 === sess }), !sess.closeHandled else {
+            clearPendingOutput(for: sess)
+            return
         }
 
-        // 单帧 feed 封顶：输出洪水下每帧最多 feed maxFlushBytes，超出的部分丢最旧留尾部
-        // （终端滚动只关心最新输出）。这是洪水卡死的根治——没有它，一次 feed 几 MB
-        // 会把主线程占死 1.5s+，关标签/点确定/拖鼠标全部无响应。
-        let bounded: [UInt8]
-        if data.count > TermSession.maxFlushBytes {
-            bounded = Array(data[(data.count - TermSession.maxFlushBytes)...])
+        let key = ObjectIdentifier(sess)
+        let buffers: TermSessionFlushBuffers
+        if let existing = TermSessionFlushState.buffers[key] {
+            buffers = existing
         } else {
-            bounded = data
+            let created = TermSessionFlushBuffers()
+            TermSessionFlushState.buffers[key] = created
+            buffers = created
         }
 
-        // 缓冲跨网络包的残缺 ANSI 序列，防止被 SemanticHighlight 破坏
-        let fullData = sess.ansiBuffer + bounded
-        let (completeBytes, incompleteBytes) = extractIncompleteANSI(from: fullData)
+        // 双缓冲：draining 保存当前待处理批次，pendingOutput 继续接收新数据。
+        // 只有批次耗尽时才交换，避免每帧 pendingOutput=[] + reserveCapacity 的分配。
+        if buffers.offset >= buffers.draining.count {
+            buffers.draining.removeAll(keepingCapacity: true)
+            buffers.offset = 0
+            guard !sess.pendingOutput.isEmpty else { return }
+            swap(&buffers.draining, &sess.pendingOutput)
+        }
+
+        let start = buffers.offset
+        let end = min(start + TermSession.maxFlushBytes, buffers.draining.count)
+        let bounded = buffers.draining[start..<end]
+        buffers.offset = end
+        let __f0 = CFAbsoluteTimeGetCurrent()
+        var didProcess = false
+        defer {
+            // 不完整 ANSI 片段本次没有实际 feed，不应污染 flushCostEMA。
+            if didProcess {
+                let cost = CFAbsoluteTimeGetCurrent() - __f0
+                sess.flushCostEMA = sess.flushCostEMA == 0 ? cost : sess.flushCostEMA * 0.7 + cost * 0.3
+                sess.adaptiveFlushInterval = min(max(TermSession.flushInterval, sess.flushCostEMA * 6), 0.1)
+                AppDelegate.perfNote(kind: "flush", ms: cost * 1000, bytes: bounded.count)
+            }
+        }
+
+        // 每次最多 feed maxFlushBytes；超出的字节仍留在 draining，下一帧继续按原顺序处理。
+        // 缓冲跨网络包的残缺 ANSI 序列，防止被 SemanticHighlight 破坏。
+        let completeBytes: [UInt8]
+        let incompleteBytes: [UInt8]
+        if sess.ansiBuffer.isEmpty {
+            (completeBytes, incompleteBytes) = extractIncompleteANSI(from: bounded)
+        } else {
+            var fullData = sess.ansiBuffer
+            fullData.append(contentsOf: bounded)
+            (completeBytes, incompleteBytes) = extractIncompleteANSI(from: fullData[...])
+        }
         sess.ansiBuffer = incompleteBytes
-        if completeBytes.isEmpty { return }
+
+        if completeBytes.isEmpty {
+            if buffers.offset < buffers.draining.count || !sess.pendingOutput.isEmpty {
+                scheduleFlush(for: sess)
+            }
+            return
+        }
+        didProcess = true
 
         // 语义高亮：仅对能完整 UTF-8 解码的块染色（保留已有转义），否则回退原始字节。
         // 关键：染色后仍走 termView.feed(byteArray:)（会触发视图重绘）——不要用
@@ -851,6 +935,10 @@ extension AppDelegate {
         } else {
             if let str = String(bytes: completeBytes, encoding: .utf8) { sess.appendOutput(str) }
             sess.termView.feed(byteArray: ArraySlice(completeBytes))
+        }
+
+        if buffers.offset < buffers.draining.count || !sess.pendingOutput.isEmpty {
+            scheduleFlush(for: sess)
         }
     }
     func sshSessionDidOpenShell(_ s: SSHSession) {
@@ -896,9 +984,8 @@ extension AppDelegate {
     func sshSession(_ s: SSHSession, didCloseWith error: Error?) {
         guard let sess = session(forSSH: s), !sess.closeHandled else { return }
         sess.closeHandled = true
-        // 清掉节流里还没 flush 的输出（会话已关，不再消化）
-        sess.pendingOutput = []
-        sess.flushScheduled = false
+        // 清掉节流里还没 flush 的输出（会话已关，不再消化），同时清 ANSI 跨块状态。
+        clearPendingOutput(for: sess)
         // 用 shellOpened（曾经认证成功过）判断，不用 connected —— 见 TermSession.shellOpened 注释。
         let wasUp = sess.shellOpened
         sess.connected = false
