@@ -100,6 +100,18 @@ final class TermSession {
     /// 不会无界增长。
     var adaptiveFlushInterval: TimeInterval = TermSession.flushInterval
 
+    /// 双缓冲：`drainingOutput` 保存正在消化的批次，`drainingOffset` 是下一个待 feed 的位置。
+    /// pendingOutput 继续接收新数据，批次耗尽时才 swap —— 避免每帧重新分配。
+    /// **随会话对象持有**（早先是全局 `[ObjectIdentifier: …]` 字典）：随 TermSession 一起
+    /// 释放，不再依赖每条销毁路径手动清理，也杜绝 ObjectIdentifier 地址复用导致的 key 碰撞。
+    var drainingOutput: [UInt8] = []
+    var drainingOffset = 0
+    /// 输出洪水硬上限（字节）：pendingOutput + draining 未消费部分的总积压超过此值时，
+    /// 丢弃最旧的积压、只保留最新（洪水刷屏时用户本来也只看得清最新画面）。防止远端持续
+    /// 高速输出（`yes` / `cat 大文件` / `cat /dev/urandom | base64`）时积压无界增长 → 内存
+    /// 暴涨甚至 OOM。消化速率 ≈ maxFlushBytes×60fps ≈ 3.75MB/s，远端更快时靠此上限兜底。
+    static let maxBacklogBytes = 8 * 1024 * 1024
+
     func appendOutput(_ s: String) {
         guard !s.isEmpty else { return }
         _outputChunks.append(s)

@@ -36,7 +36,7 @@ public struct SSHCredentials: Sendable {
     }
 }
 
-/// 会话事件回调（都在主线程投递，供 UI 直接用）。
+/// 会话事件回调（默认主线程投递供 UI 直接用；无头桥经 SSHSession.deliversOnMainThread=false 改为 IO 线程回调）。
 public protocol SSHSessionDelegate: AnyObject {
     /// 远端 shell 输出的原始字节（直接 feed 给 SwiftTerm）。
     func sshSession(_ s: SSHSession, didReceive data: [UInt8])
@@ -50,6 +50,10 @@ public protocol SSHSessionDelegate: AnyObject {
 /// 开 PTY、请求 shell、把远端输出经 delegate 抛回、把本地输入写进去、窗口尺寸变更、关闭。
 public protocol SSHSession: AnyObject {
     var delegate: SSHSessionDelegate? { get set }
+    /// 事件回调投递线程：true（默认）=主线程，供 UI 直接用；false=IO 线程（无头/桥场景）。
+    /// 桥场景的 delegate（HeadlessSession）内部自带锁，可安全在 IO 线程回调；这样 `connected`
+    /// 状态翻转与后台 poll 读取彻底脱离主线程/GUI 卡顿 —— "重连无响应 / 连接死掉"的直接根因。
+    var deliversOnMainThread: Bool { get set }
     /// 异步连接并打开一个 PTY shell（term 如 "xterm-256color"）。
     func connectAndOpenShell(_ creds: SSHCredentials, term: String, cols: Int, rows: Int)
     /// 把本地键入的字节写给远端 shell。

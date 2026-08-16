@@ -54,6 +54,18 @@ public final class OpenSSHSession: SSHSession {
 
     public weak var delegate: SSHSessionDelegate?
 
+    /// 事件回调投递线程开关：true（默认，UI 会话）走主线程供 SwiftTerm 直接用；
+    /// false（无头/桥会话）直接在 IO 线程回调，让 `connected` 翻转与后台 poll 脱离主线程/
+    /// GUI 卡顿。桥的 delegate（HeadlessSession）内部自带锁，IO 线程回调安全。
+    public var deliversOnMainThread: Bool = true
+
+    /// 回调/防抖投递队列：UI 会话用主线程（供 SwiftTerm/AppKit 直接用）；无头/桥会话用专用
+    /// 串行队列，让 open 防抖与 didReceive/didOpen/didClose 回调彻底脱离主线程 —— 否则 GUI
+    /// 卡顿会拖住 `pendingOpenWorkItem`（原调度到 main queue），`connected` 翻转随之延迟，
+    /// 表现为「重连无响应」。每次按当前开关返回，不用 lazy 以免依赖 delegate/开关的设置时序。
+    private let ioCallbackQueue = DispatchQueue(label: "pixshell.openssh.callback")
+    private var callbackQueue: DispatchQueue { deliversOnMainThread ? .main : ioCallbackQueue }
+
     /// exec 命令级总超时（秒）。远端命令不退出（tail -f / 挂起 / 网络黑洞）时 terminate 兜底收口，
     /// 避免 completion 永不回调 → HTTP 永不返回 → 后续工具调用排队超时。
     static let execTimeout: TimeInterval = 30
@@ -324,7 +336,7 @@ public final class OpenSSHSession: SSHSession {
             if n > 0 {
                 let chunk = Array(buf[0..<n])
                 self.considerOpen(afterReceiving: chunk)
-                DispatchQueue.main.async { self.delegate?.sshSession(self, didReceive: chunk) }
+                self.callbackQueue.async { self.delegate?.sshSession(self, didReceive: chunk) }
             } else if n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR) {
                 if n < 0 { Log.warn("系统 ssh 读取结束 errno=\(errno)", "ssh") }
                 // 读侧 EOF：真正的结果以 waitpid 的 exit code 为准，这里不抢先 finish(nil)。
@@ -381,7 +393,7 @@ public final class OpenSSHSession: SSHSession {
             self?.emitOpenIfNeeded()
         }
         pendingOpenWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        callbackQueue.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func emitOpenIfNeeded() {
@@ -415,7 +427,7 @@ public final class OpenSSHSession: SSHSession {
 
     public func exec(_ command: String, timeout: TimeInterval, maxBytes: Int,
                      completion: @escaping (String, Bool) -> Void) {
-        guard let c = creds else { DispatchQueue.main.async { completion("", false) }; return }
+        guard let c = creds else { callbackQueue.async { completion("", false) }; return }
         DispatchQueue.global(qos: .utility).async {
             // 与交互/SFTP 回落同一套算法+认证参数；有密码时用 ASKPASS（不再死守 BatchMode 空返回）。
             var args = Self.baseSSHOptions(c, batchIfKeyOnly: true)
@@ -463,7 +475,7 @@ public final class OpenSSHSession: SSHSession {
                     try? FileManager.default.removeItem(atPath: s)
                     try? FileManager.default.removeItem(atPath: dir)
                 }
-                DispatchQueue.main.async { completion(text, timedOutFlag) }
+                self.callbackQueue.async { completion(text, timedOutFlag) }
             }
 
             do {
@@ -570,7 +582,7 @@ public final class OpenSSHSession: SSHSession {
         if masterFD >= 0 { Darwin.close(masterFD); masterFD = -1 }
         pid = -1
         cleanupAskPass()
-        DispatchQueue.main.async { [weak self] in
+        callbackQueue.async { [weak self] in
             guard let self = self else { return }
             self.delegate?.sshSession(self, didCloseWith: error)
         }

@@ -19,6 +19,12 @@ import CryptoKit
 public final class NIOSSHSession: SSHSession {
     public weak var delegate: SSHSessionDelegate?
 
+    /// 事件回调投递线程开关：true（默认，UI 会话）走主线程供 SwiftTerm 直接用；
+    /// false（无头/桥会话）直接在 NIO event loop 线程回调，让 `connected` 翻转与后台 poll
+    /// 彻底脱离主线程/GUI 卡顿 ——「重连无响应 / 连接死掉」的直接根因。桥的 delegate
+    /// （HeadlessSession）内部自带锁，IO 线程回调安全。
+    public var deliversOnMainThread: Bool = true
+
     /// exec 命令级总超时（秒）。远端命令不退出（tail -f / 挂起 / 网络黑洞）时兜底收口，
     /// 避免 completion 永不回调 → HTTP 永不返回 → 后续工具调用排队超时。
     static let execTimeout: TimeInterval = 30
@@ -260,7 +266,9 @@ public final class NIOSSHSession: SSHSession {
             guard !completed else { completionLock.unlock(); return }
             completed = true
             completionLock.unlock()
-            DispatchQueue.main.async { completion(output, timedOut) }
+            // 与事件回调同源：桥会话下 exec completion 若走 main，GUI 卡顿会拖住结果写回
+            // HTTP + 操作队列 next() 推进 → 「exec 无响应」。deliver 让无头会话直接在 IO 线程收口。
+            deliver { completion(output, timedOut) }
         }
         guard let channel = tcpChannel else { finish("", false); return }
         // 命令级总超时：远端命令不退出时兜底收口，避免 HTTP 永挂 → 后续工具调用排队超时。
@@ -268,6 +276,14 @@ public final class NIOSSHSession: SSHSession {
             finish(out, timedOut)
         }
         let promise = channel.eventLoop.makePromise(of: Channel.self)
+        // 建通道独立超时(≤15s)：half-open TCP 时 createChannel 的 promise 可能既不 succeed
+        // 也不 fail（whenFailure 永不触发）→ completion 永挂 → 同一 session 操作队列堵死、
+        // 后续 exec/type 全部排队超时（「连接死掉 / 重连无响应」的直接根因之一）。定时器到点
+        // 收口(timedOut=true)让队列的 next() 得以推进；正常命令的超时仍由 ExecCollectHandler 负责。
+        let channelDeadline = min(max(timeout, 1), 15)
+        let timeoutTask = channel.eventLoop.scheduleTask(in: .milliseconds(Int64(channelDeadline * 1000))) {
+            finish("", true)
+        }
         channel.pipeline.handler(type: NIOSSHHandler.self).whenComplete { result in
             switch result {
             case .failure:
@@ -281,7 +297,17 @@ public final class NIOSSHSession: SSHSession {
                 }
             }
         }
-        promise.futureResult.whenFailure { _ in finish("", false) }
+        promise.futureResult.whenComplete { result in
+            timeoutTask.cancel()   // 建通道已定论：撤掉建通道定时器，命令级超时交给 ExecCollectHandler
+            switch result {
+            case .failure:
+                finish("", false)
+            case .success(let child):
+                // 已因建通道超时收口 → 关掉迟到建成的子通道，防泄漏（幂等锁挡住二次 finish）。
+                completionLock.lock(); let already = completed; completionLock.unlock()
+                if already { child.close(promise: nil) }
+            }
+        }
     }
 
     public func close() {
@@ -299,13 +325,23 @@ public final class NIOSSHSession: SSHSession {
         }
     }
 
-    // MARK: - 主线程回调
+    // MARK: - 事件回调投递
+    /// 按 `deliversOnMainThread` 选择投递线程：true（UI 会话）切主线程供 SwiftTerm 直接用；
+    /// false（无头/桥会话）直接在 NIO event loop 线程回调，让 `connected` 翻转与后台 poll
+    /// 脱离主线程/GUI 卡顿。桥的 delegate 内部自带锁，IO 线程回调安全。
+    private func deliver(_ block: @escaping () -> Void) {
+        if deliversOnMainThread {
+            DispatchQueue.main.async(execute: block)
+        } else {
+            block()
+        }
+    }
     private func emitData(_ bytes: [UInt8]) {
-        DispatchQueue.main.async { self.delegate?.sshSession(self, didReceive: bytes) }
+        deliver { self.delegate?.sshSession(self, didReceive: bytes) }
     }
     private func emitOpen() {
         Log.info("shell 已打开", "ssh")
-        DispatchQueue.main.async { self.delegate?.sshSessionDidOpenShell(self) }
+        deliver { self.delegate?.sshSessionDidOpenShell(self) }
     }
     private func emitClose(_ error: Error?) {
         // Dropbear/OpenWrt 等无 AES-GCM 时，NIO 常在 shell 打开前以裸 EOF 断连。
@@ -330,7 +366,7 @@ public final class NIOSSHSession: SSHSession {
             out = nil
             Log.info("连接关闭", "ssh")
         }
-        DispatchQueue.main.async { self.delegate?.sshSession(self, didCloseWith: out) }
+        deliver { self.delegate?.sshSession(self, didCloseWith: out) }
     }
 }
 

@@ -2,15 +2,6 @@ import AppKit
 import SwiftTerm
 @preconcurrency import NIOSSH
 
-private final class TermSessionFlushBuffers {
-    var draining: [UInt8] = []
-    var offset = 0
-}
-
-private enum TermSessionFlushState {
-    nonisolated(unsafe) static var buffers: [ObjectIdentifier: TermSessionFlushBuffers] = [:]
-}
-
 // 多会话开/切/关 + 顶栏 tab + SSH/终端 delegate。
 extension AppDelegate {
     // MARK: - 会话（顶栏多 tab）
@@ -841,10 +832,8 @@ extension AppDelegate {
         sess.pendingOutput.removeAll(keepingCapacity: true)
         sess.ansiBuffer.removeAll(keepingCapacity: true)
         sess.flushScheduled = false
-        if let buffers = TermSessionFlushState.buffers.removeValue(forKey: ObjectIdentifier(sess)) {
-            buffers.draining.removeAll(keepingCapacity: true)
-            buffers.offset = 0
-        }
+        sess.drainingOutput.removeAll(keepingCapacity: true)
+        sess.drainingOffset = 0
     }
 
     func sshSession(_ s: SSHSession, didReceive data: [UInt8]) {
@@ -855,7 +844,30 @@ extension AppDelegate {
         // 高频输出时把「每数据块一次主线程 decode+染色+feed」合并成「每帧一次」
         // 显著降低主线程负担（卡顿根因）。同一 runloop 周期内的多次 append 合并成一次 flush。
         sess.pendingOutput.append(contentsOf: data)
+        // 洪水兜底：远端持续高速输出时消化速率追不上，pendingOutput 会无界增长 → 内存暴涨。
+        // 未消费积压 = draining 剩余 + pending，超过硬上限就丢最旧的（洪水刷屏时只有最新
+        // 画面有意义）。常态下积压远低于上限，一字节不丢。
+        let backlog = (sess.drainingOutput.count - sess.drainingOffset) + sess.pendingOutput.count
+        if backlog > TermSession.maxBacklogBytes {
+            dropOldestBacklog(for: sess, keepingNewest: TermSession.maxBacklogBytes)
+        }
         scheduleFlush(for: sess)
+    }
+
+    /// 洪水兜底：把「draining 未消费部分 + pendingOutput」合起来只保留最新 `keepingNewest` 字节，
+    /// 丢掉更旧的。合并后统一装回 pendingOutput，并清空 draining（下一帧重新 swap 出新批次）。
+    /// ansiBuffer 一并清掉：残缺 ANSI 前缀所对应的后续字节已被丢弃，留着它反而会把下一批
+    /// 正常数据错误粘连成畸形转义序列。
+    private func dropOldestBacklog(for sess: TermSession, keepingNewest: Int) {
+        var merged = Array(sess.drainingOutput[sess.drainingOffset...])
+        merged.append(contentsOf: sess.pendingOutput)
+        if merged.count > keepingNewest {
+            merged.removeFirst(merged.count - keepingNewest)
+        }
+        sess.drainingOutput.removeAll(keepingCapacity: true)
+        sess.drainingOffset = 0
+        sess.pendingOutput = merged
+        sess.ansiBuffer.removeAll(keepingCapacity: true)
     }
 
     /// 消化一个会话累积的输出：ANSI 分块 + 语义高亮 + feed 终端 + 写输出缓冲。
@@ -867,29 +879,19 @@ extension AppDelegate {
             return
         }
 
-        let key = ObjectIdentifier(sess)
-        let buffers: TermSessionFlushBuffers
-        if let existing = TermSessionFlushState.buffers[key] {
-            buffers = existing
-        } else {
-            let created = TermSessionFlushBuffers()
-            TermSessionFlushState.buffers[key] = created
-            buffers = created
-        }
-
-        // 双缓冲：draining 保存当前待处理批次，pendingOutput 继续接收新数据。
+        // 双缓冲：drainingOutput 保存当前待处理批次，pendingOutput 继续接收新数据。
         // 只有批次耗尽时才交换，避免每帧 pendingOutput=[] + reserveCapacity 的分配。
-        if buffers.offset >= buffers.draining.count {
-            buffers.draining.removeAll(keepingCapacity: true)
-            buffers.offset = 0
+        if sess.drainingOffset >= sess.drainingOutput.count {
+            sess.drainingOutput.removeAll(keepingCapacity: true)
+            sess.drainingOffset = 0
             guard !sess.pendingOutput.isEmpty else { return }
-            swap(&buffers.draining, &sess.pendingOutput)
+            swap(&sess.drainingOutput, &sess.pendingOutput)
         }
 
-        let start = buffers.offset
-        let end = min(start + TermSession.maxFlushBytes, buffers.draining.count)
-        let bounded = buffers.draining[start..<end]
-        buffers.offset = end
+        let start = sess.drainingOffset
+        let end = min(start + TermSession.maxFlushBytes, sess.drainingOutput.count)
+        let bounded = sess.drainingOutput[start..<end]
+        sess.drainingOffset = end
         let __f0 = CFAbsoluteTimeGetCurrent()
         var didProcess = false
         defer {
@@ -916,7 +918,7 @@ extension AppDelegate {
         sess.ansiBuffer = incompleteBytes
 
         if completeBytes.isEmpty {
-            if buffers.offset < buffers.draining.count || !sess.pendingOutput.isEmpty {
+            if sess.drainingOffset < sess.drainingOutput.count || !sess.pendingOutput.isEmpty {
                 scheduleFlush(for: sess)
             }
             return
@@ -937,7 +939,7 @@ extension AppDelegate {
             sess.termView.feed(byteArray: ArraySlice(completeBytes))
         }
 
-        if buffers.offset < buffers.draining.count || !sess.pendingOutput.isEmpty {
+        if sess.drainingOffset < sess.drainingOutput.count || !sess.pendingOutput.isEmpty {
             scheduleFlush(for: sess)
         }
     }

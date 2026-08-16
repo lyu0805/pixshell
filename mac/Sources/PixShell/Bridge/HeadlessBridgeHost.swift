@@ -112,6 +112,9 @@ final class HeadlessBridgeHost: BridgeHost {
             let newSsh: SSHSession = keyNeedsOpenSSH ? OpenSSHSession() : NIOSSHSession()
             ssh = newSsh
             newSsh.delegate = self
+            // 无头桥：回调走 IO 线程，不切主线程。否则有头 GUI 下 agent 请求共用 main queue，
+            // GUI 一卡就拖住 connected 翻转与 poll → 「重连无响应」。见 SSHSession.deliversOnMainThread。
+            newSsh.deliversOnMainThread = false
             stateLock.unlock()
 
             // 旧 transport 只异步收口；新连接不会阻塞调用线程。
@@ -229,6 +232,8 @@ final class HeadlessBridgeHost: BridgeHost {
             return sessions.count - 1
         }
         sess.currentSSH().delegate = sess
+        // 无头桥：回调走 IO 线程（同 ensureConnected 重连路径），避免共用主线程被 GUI 卡顿拖死。
+        sess.currentSSH().deliversOnMainThread = false
         sess.currentSSH().connectAndOpenShell(creds, term: "xterm-256color", cols: 100, rows: 30)
         // 等 shell 打开再回（与有头 bridgeConnect 的 poll 语义一致，最多 20s）。
         var waited = 0.0

@@ -7,6 +7,10 @@ public final class LocalSession: SSHSession {
 
     public weak var delegate: SSHSessionDelegate?
 
+    /// 本机终端始终是有头 UI 会话，回调直接切主线程给 SwiftTerm 用；无头桥不会用本机会话，
+    /// 保持默认 true 即可（协议要求）。
+    public var deliversOnMainThread: Bool = true
+
     private var pid: pid_t = -1
     private var masterFD: Int32 = -1
     private var readSource: DispatchSourceRead?
