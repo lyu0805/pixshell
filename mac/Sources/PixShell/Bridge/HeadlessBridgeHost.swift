@@ -41,6 +41,18 @@ final class HeadlessBridgeHost: BridgeHost {
         private var staleExecStrikes = 0
         private static let staleExecStrikeLimit = 2
 
+        /// 交互 PTY 最近一次收发与自愈探针状态。
+        private var lastInboundAt = Date.distantPast
+        private var lastWriteAt = Date.distantPast
+        private var interactiveProbeInFlight = false
+        private var interactiveProbeGeneration = 0
+        private var probeConfirmedSinceWrite = true
+        private var everOpenedShell = false
+        private var resetNotice: String?
+        private static let interactiveStaleGrace: TimeInterval = 10
+        private static let interactiveProbeTimeout: TimeInterval = 6
+        private static let contextResetNotice = "警告：SSH 交互连接曾中断（半死或掉线），当前已建立全新 shell；原有嵌套上下文全部丢失。断开后第一次 type_text 不会执行，只会触发重连并展示此提示。请先 read_screen，或执行 pwd && hostname && whoami 确认位置，再重新输入命令。"
+
         var connected: Bool {
             get { stateLock.lock(); defer { stateLock.unlock() }; return connectedState }
             set { stateLock.lock(); defer { stateLock.unlock() }; connectedState = newValue }
@@ -85,8 +97,10 @@ final class HeadlessBridgeHost: BridgeHost {
             }
         }
 
-        func appendOutput(_ text: String) {
+        func appendOutput(_ text: String, from session: SSHSession? = nil) {
             stateLock.lock(); defer { stateLock.unlock() }
+            if let session, session !== ssh { return }
+            lastInboundAt = Date()
             output += text
             // 防无限增长：只保留最近 512 KiB
             if output.count > 512 * 1024 {
@@ -98,7 +112,61 @@ final class HeadlessBridgeHost: BridgeHost {
             stateLock.lock(); defer { stateLock.unlock() }
             let n = lines > 0 ? lines : 200
             let rows = output.split(separator: "\n", omittingEmptySubsequences: false)
-            return rows.suffix(n).joined(separator: "\n")
+            let recent = rows.suffix(n).joined(separator: "\n")
+            guard let notice = resetNotice else { return recent }
+            resetNotice = nil
+            return recent.isEmpty ? notice : notice + "\n" + recent
+        }
+
+        /// 记录一次交互输入；新的写入需要重新等待 shell 回显或探针确认。
+        func noteInteractiveWrite() {
+            stateLock.lock(); defer { stateLock.unlock() }
+            lastWriteAt = Date()
+            probeConfirmedSinceWrite = false
+        }
+
+        func hasPendingResetNotice() -> Bool {
+            stateLock.lock(); defer { stateLock.unlock() }
+            return resetNotice != nil
+        }
+
+        /// 交互 shell 最近写入后长时间无输入时，用独立 exec 通道探测 transport 是否仍活着。
+        func maybeProbeInteractiveLiveness() {
+            let now = Date()
+            stateLock.lock()
+            guard everOpenedShell, connectedState, resetNotice == nil,
+                  lastWriteAt > lastInboundAt,
+                  now.timeIntervalSince(lastWriteAt) >= Self.interactiveStaleGrace,
+                  !probeConfirmedSinceWrite,
+                  !interactiveProbeInFlight else {
+                stateLock.unlock()
+                return
+            }
+            interactiveProbeInFlight = true
+            interactiveProbeGeneration &+= 1
+            let generation = interactiveProbeGeneration
+            let probeSSH = ssh
+            stateLock.unlock()
+
+            Log.info("exec/探针：交互 shell 写入后超过 \(Int(Self.interactiveStaleGrace))s 无输入，开始 liveness probe", "ssh")
+            probeSSH.exec("true", timeout: Self.interactiveProbeTimeout, maxBytes: 0) { [weak self, weak probeSSH] out, timedOut in
+                guard let self, let probeSSH else { return }
+                self.stateLock.lock()
+                guard self.interactiveProbeInFlight,
+                      self.interactiveProbeGeneration == generation else {
+                    self.stateLock.unlock()
+                    return
+                }
+                let isCurrent = probeSSH === self.ssh
+                self.interactiveProbeInFlight = false
+                if isCurrent && !timedOut {
+                    self.probeConfirmedSinceWrite = true
+                }
+                self.stateLock.unlock()
+                guard isCurrent else { return }
+                Log.info("exec/探针：liveness probe \(timedOut ? "超时" : "确认")，输出=\(out.count)字节", "ssh")
+                self.noteExecResult(timedOut: timedOut, hadOutput: !out.isEmpty)
+            }
         }
 
         /// 确保 shell 已连接。并发调用在同一次重连上排队，绝不让第二个请求瞬时失败。
@@ -118,6 +186,11 @@ final class HeadlessBridgeHost: BridgeHost {
             reconnectingState = true
             let old = ssh
             connectedState = false
+            interactiveProbeInFlight = false
+            interactiveProbeGeneration &+= 1
+            lastInboundAt = .distantPast
+            lastWriteAt = .distantPast
+            probeConfirmedSinceWrite = true
             let newSsh: SSHSession = keyNeedsOpenSSH ? OpenSSHSession() : NIOSSHSession()
             ssh = newSsh
             newSsh.delegate = self
@@ -172,10 +245,13 @@ final class HeadlessBridgeHost: BridgeHost {
             if shouldReset {
                 staleExecStrikes = 0
                 connectedState = false   // 让下一个 exec 的 ensureConnected 触发重连
+                if everOpenedShell && resetNotice == nil {
+                    resetNotice = Self.contextResetNotice
+                }
             }
             stateLock.unlock()
             if let victim {
-                Log.warn("连续 \(Self.staleExecStrikeLimit) 次 exec 空手超时，判定 SSH transport 僵死，主动断开触发重连", "ssh")
+                Log.warn("exec/探针：连续 \(Self.staleExecStrikeLimit) 次空手超时，判定 SSH transport 僵死，主动断开触发重连", "ssh")
                 // 锁外 close：本地 close 立即触发交互通道 inactive → didCloseWith（幂等，connected 已置 false）。
                 victim.close()
             }
@@ -289,9 +365,11 @@ final class HeadlessBridgeHost: BridgeHost {
     }
 
     func bridgeWrite(session: Int, text: String) -> Bool {
-        guard let s = withLock({ sessions.indices.contains(session) ? sessions[session] : nil }), s.connected else {
+        guard let s = withLock({ sessions.indices.contains(session) ? sessions[session] : nil }) else {
             return false
         }
+        guard !s.hasPendingResetNotice(), s.connected else { return false }
+        s.noteInteractiveWrite()
         s.currentSSH().send(Array(text.utf8))
         return true
     }
@@ -303,8 +381,23 @@ final class HeadlessBridgeHost: BridgeHost {
         }
         s.enqueueOperation { [weak self, weak s] next in
             guard let self, let s else { completion(false); next(); return }
+            if s.hasPendingResetNotice() {
+                // 提示尚未被 screen 消费：先恢复 transport，但绝不吞掉/发送这次输入。
+                self.ensureSessionReady(s) { _ in
+                    completion(true)
+                    next()
+                }
+                return
+            }
             self.ensureSessionReady(s) { ok in
                 guard ok else { completion(false); next(); return }
+                // 重连期间可能刚产生了 resetNotice；调用方应先读取提示，再重发输入。
+                if s.hasPendingResetNotice() {
+                    completion(true)
+                    next()
+                    return
+                }
+                s.noteInteractiveWrite()
                 s.currentSSH().send(Array(text.utf8))
                 completion(true)
                 next()
@@ -352,10 +445,11 @@ final class HeadlessBridgeHost: BridgeHost {
     }
 
     func bridgeScreen(session: Int, lines: Int) -> String {
-        withLock {
-            guard sessions.indices.contains(session) else { return "" }
-            return sessions[session].recentOutput(lines: lines)
+        guard let s = withLock({ sessions.indices.contains(session) ? sessions[session] : nil }) else {
+            return ""
         }
+        s.maybeProbeInteractiveLiveness()
+        return s.recentOutput(lines: lines)
     }
 
     // MARK: - SFTP（独立 SFTP 连接，复用 SFTPService 零 UI 层）
@@ -459,19 +553,34 @@ final class HeadlessBridgeHost: BridgeHost {
 /// 让 HeadlessSession 直接当自己的 SSHSessionDelegate：收字节进缓冲、记录打开/关闭。
 extension HeadlessBridgeHost.HeadlessSession: SSHSessionDelegate {
     func sshSession(_ s: SSHSession, didReceive data: [UInt8]) {
-        guard s === currentSSH() else { return }
-        if let text = String(bytes: data, encoding: .utf8) {
-            appendOutput(text)
-        }
+        guard let text = String(bytes: data, encoding: .utf8) else { return }
+        appendOutput(text, from: s)
     }
     func sshSession(_ s: SSHSession, didCloseWith error: Error?) {
-        guard s === currentSSH() else { return }
-        connected = false
-        // 断开后清残留输出：screen 不该读旧画面（会误导 agent 以为还活着）
-        stateLock.lock(); output = ""; stateLock.unlock()
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard s === ssh else { return }
+        let wasConnected = connectedState
+        connectedState = false
+        output = ""
+        if everOpenedShell && wasConnected && resetNotice == nil {
+            resetNotice = Self.contextResetNotice
+        }
+        interactiveProbeInFlight = false
+        interactiveProbeGeneration &+= 1
+        lastInboundAt = .distantPast
+        lastWriteAt = .distantPast
+        probeConfirmedSinceWrite = true
     }
     func sshSessionDidOpenShell(_ s: SSHSession) {
-        guard s === currentSSH() else { return }
-        connected = true
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard s === ssh else { return }
+        connectedState = true
+        everOpenedShell = true
+        lastInboundAt = Date()
+        lastWriteAt = .distantPast
+        interactiveProbeInFlight = false
+        probeConfirmedSinceWrite = true
     }
 }

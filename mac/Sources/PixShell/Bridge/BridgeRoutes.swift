@@ -313,26 +313,43 @@ enum BridgeRouter {
             completion(.fail(400, "会话不存在或 id 不唯一"))
             return
         }
-        guard validSession(host, sid) else {
-            Log.warn("screen 指定的会话不存在 session=\(sid)（共 \(host.bridgeSessions().count) 个）", "bridge")
-            completion(.fail(404, "会话 \(sid) 不存在（当前共 \(host.bridgeSessions().count) 个，用 /v1/app/sessions 查）"))
+        let sessionCount = host.bridgeSessions().count
+        guard sid >= 0 && sid < sessionCount else {
+            Log.warn("screen 指定的会话不存在 session=\(sid)（共 \(sessionCount) 个）", "bridge")
+            completion(.fail(404, "会话 \(sid) 不存在（当前共 \(sessionCount) 个，用 /v1/app/sessions 查）"))
             return
         }
         let linesRaw = req.query["lines"] ?? req.query["n"] ?? stringField(req.body, ["lines", "n"])
         let n = linesRaw.flatMap { Int($0) } ?? 200
-        let text = host.bridgeScreen(session: sid, lines: n)
-        let lines = text.components(separatedBy: "\n")
-        var out: [String: Any] = [
-            "ok": true, "sessionId": sid, "text": text, "lines": lines, "totalLines": lines.count,
-        ]
-        if includeCursor {
-            // 简单稳定指纹：长度 + 末尾若干字节 hash，避免整屏重推。
-            var hasher = Hasher()
-            hasher.combine(text.utf8.count)
-            hasher.combine(text.suffix(512))
-            out["cursor"] = String(hasher.finalize())
+
+        func complete(_ text: String) {
+            let lines = text.components(separatedBy: "\n")
+            var out: [String: Any] = [
+                "ok": true, "sessionId": sid, "text": text, "lines": lines, "totalLines": lines.count,
+            ]
+            if includeCursor {
+                // 简单稳定指纹：长度 + 末尾若干字节 hash，避免整屏重推。
+                var hasher = Hasher()
+                hasher.combine(text.utf8.count)
+                hasher.combine(text.suffix(512))
+                out["cursor"] = String(hasher.finalize())
+            }
+            completion(.ok(out))
         }
-        completion(.ok(out))
+
+        if !validSession(host, sid) {
+            // 断线后的第一次 screen 仍需能取到一次性重置提示；无提示的死会话继续报 404。
+            let text = host.bridgeScreen(session: sid, lines: n)
+            guard !text.isEmpty else {
+                Log.warn("screen 指定的会话已断开 session=\(sid)（共 \(sessionCount) 个）", "bridge")
+                completion(.fail(404, "会话 \(sid) 已断开；请先 connect 或重试"))
+                return
+            }
+            complete(text)
+            return
+        }
+
+        complete(host.bridgeScreen(session: sid, lines: n))
     }
 
     // MARK: - 静态资源（/web/*）
