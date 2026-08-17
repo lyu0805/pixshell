@@ -31,6 +31,15 @@ final class HeadlessBridgeHost: BridgeHost {
         private var serializedOperations: [(@escaping () -> Void) -> Void] = []
         private var runningOperations = 0
         private let maxConcurrentOperations = 4
+        /// 半死 transport 自愈计数：TCP 通但 SSH 数据泵停时（对端 sshd 进程还在、只是不再
+        /// 响应 channel 请求，TCP keepalive 检不出），交互 shell 通道收不到 inactive →
+        /// connectedState 长期为 true → ensureConnected 每次都直接复用这条僵死连接，exec 一个个
+        /// 空手超时返回空、永不重连（「连接死掉 / 重连无响应」在第 69 批 Fix A/B 之后仍残留的
+        /// 真正根因）。连续「超时且零输出」累计到阈值即判定 transport 僵死，主动断开翻
+        /// connectedState=false，下一个 exec 经 ensureConnected 自动重连自愈。tail -f 等持续产出
+        /// 的长命令有输出（hadOutput=true）会清零，不误杀。
+        private var staleExecStrikes = 0
+        private static let staleExecStrikeLimit = 2
 
         var connected: Bool {
             get { stateLock.lock(); defer { stateLock.unlock() }; return connectedState }
@@ -145,6 +154,31 @@ final class HeadlessBridgeHost: BridgeHost {
             reconnectWaiters.removeAll(keepingCapacity: false)
             stateLock.unlock()
             for waiter in waiters { waiter(ok) }
+        }
+
+        /// 记录一次 exec 结果并在判定 SSH transport 僵死时强制断开触发重连。
+        /// 调用点：`bridgeExec` 的 exec completion（IO 线程）。
+        /// - timedOut：exec 走满命令级 / createChannel 超时才为 true（正常返回即使空也是 false）。
+        /// - hadOutput：本次 exec 收到过任何字节（tail -f 等持续产出会命中，用于清零不误杀）。
+        func noteExecResult(timedOut: Bool, hadOutput: Bool) {
+            stateLock.lock()
+            if timedOut && !hadOutput {
+                staleExecStrikes += 1
+            } else {
+                staleExecStrikes = 0
+            }
+            let shouldReset = staleExecStrikes >= Self.staleExecStrikeLimit
+            let victim: SSHSession? = shouldReset ? ssh : nil
+            if shouldReset {
+                staleExecStrikes = 0
+                connectedState = false   // 让下一个 exec 的 ensureConnected 触发重连
+            }
+            stateLock.unlock()
+            if let victim {
+                Log.warn("连续 \(Self.staleExecStrikeLimit) 次 exec 空手超时，判定 SSH transport 僵死，主动断开触发重连", "ssh")
+                // 锁外 close：本地 close 立即触发交互通道 inactive → didCloseWith（幂等，connected 已置 false）。
+                victim.close()
+            }
         }
     }
 
@@ -309,6 +343,7 @@ final class HeadlessBridgeHost: BridgeHost {
             self.ensureSessionReady(s) { ok in
                 guard ok else { completion("", false); next(); return }
                 s.currentSSH().exec(cmd, timeout: timeout, maxBytes: maxBytes) { out, timedOut in
+                    s.noteExecResult(timedOut: timedOut, hadOutput: !out.isEmpty)
                     completion(out, timedOut)
                     next()
                 }
