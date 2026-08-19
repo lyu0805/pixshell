@@ -269,7 +269,8 @@ enum BridgeRouter {
                 completion(.fail(400, "缺少 remote"))
                 return
             }
-            let local = stringField(req.body, ["local", "localPath"]) ?? defaultDownloadLocal(remote: remote)
+            let local = stringField(req.body, ["local", "localPath"]).flatMap { $0.isEmpty ? nil : $0 }
+                ?? defaultDownloadLocal(remote: remote)
             host.bridgeSFTPDownload(session: sid, remote: remote, local: local) { r in
                 switch r {
                 case .success(let path): completion(.ok(["ok": true, "localPath": path]))

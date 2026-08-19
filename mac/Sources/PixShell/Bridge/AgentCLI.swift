@@ -56,29 +56,64 @@ enum AgentCLI {
         }
     }
 
-    /// 拼给 agent 的说明。只给路径和用法，不给 token。
+    /// 从 App 内置资源读取唯一的 AI/MCP/CLI 使用说明。
+    /// 资源缺失时保留最小 fallback，避免裸二进制或异常安装让内置 agent 失去基本操作规则。
+    static func usageDocument() -> String {
+        guard let url = Bundle.module.url(forResource: "PixShell-AI-Bridge-CN", withExtension: "md") else {
+            return fallbackUsageDocument
+        }
+        do {
+            return try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            Log.warn("读取内置 AI/MCP 指南失败：\(error.localizedDescription)", "bridge")
+            return fallbackUsageDocument
+        }
+    }
+
+    /// 提取指南中的高优先级规则，供外部 MCP 客户端的 initialize.instructions 使用。
+    static func mcpInstructions() -> String {
+        let document = usageDocument()
+        let marker = "## 给 AI 的硬规则"
+        guard let start = document.range(of: marker) else {
+            return "先调用 list_sessions；判断状态先调用 read_screen；只读命令用 exec_command，交互操作用 type_text 后再 read_screen；断线提示出现后先确认 pwd/hostname/whoami，再重发输入；大输出用 grep/head/tail 或 artifact；破坏性操作先询问用户。"
+        }
+        let body = document[start.upperBound...]
+        let end = body.range(of: "\n## ")?.lowerBound ?? body.endIndex
+        return String(document[start.lowerBound..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 拼给 agent 的说明。包含运行时路径，但绝不包含 token。
     static func promptPreamble() -> String {
-        """
-        你可以直接操作我正在用的 SSH 客户端 PixShell —— 用这个命令：
+        let cli = shellQuoted(scriptPath.path)
+        let mcp = shellQuoted(AgentMCP.scriptPath.path)
+        return """
+        你可以直接操作正在使用的 PixShell SSH/SFTP 客户端。
 
-            \(scriptPath.path) <子命令>
+        推荐 CLI：\(cli)
+        MCP server：\(mcp)
+        默认会话：PIXSHELL_SESSION=0；使用前先列出并确认真实 session。
 
-        可用子命令：
-          sessions              列出当前会话（拿 session 序号，通常是 0）
-          screen [行数]          读终端当前画面（默认 200 行）——**先读它再判断**
-          exec  <命令>           在当前会话上执行一条命令并拿到 stdout
-          type  <文本>           往终端里"敲字"（会自动补回车，等同人手输入）
-          hosts                 列出已保存的主机
-          ssh <主机名|ID> [命令] 直连一台已保存主机（无头自动建会话），可带一条命令执行
-          sftp-ls [远端路径]     列远端目录
-          pwd / cd <目录> / ls [前缀]   远端路径 pwd/cd/ls（ls 支持前缀补全，目录尾带 /）
+        下面是 PixShell 的完整 AI/MCP/CLI 使用说明，请严格按其中的 session、exec/type_text、重连和大输出规则操作：
 
-        要点：
-        - 默认跑在 `ssh` 直连的会话上；不指定主机时用**已经连着的那条 SSH 会话**，不会为每条命令新建连接。
-        - 只读信息优先用 `exec`；需要交互（比如 vim、要确认的提示、top）时用 `type` + `screen` 轮流看。
-        - 破坏性操作（rm、覆盖写、重启服务等）**先问我**，不要自己执行。
+        \(usageDocument())
         """
     }
+
+    /// 路径展示用 shell 引号，避免 Application Support 中的空格造成误复制。
+    private static func shellQuoted(_ path: String) -> String {
+        "\"" + path.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
+    private static let fallbackUsageDocument = """
+    # PixShell AI/MCP 最小使用规则
+
+    先调用 list_sessions 确认 connected=true 的 session，再调用 read_screen 判断状态。
+    一次性只读命令使用 exec_command；vim、top、交互确认使用 type_text 后 read_screen。
+    SSH 断线恢复后第一次 type_text 可能只触发重连而不发送文本；先执行 pwd && hostname && whoami 确认新 shell，再重新发送。
+    大输出用 grep/head/tail 收窄，或 exec_command 的 write_artifact=true 配合 read_artifact 分块读取。
+    MCP 响应按 JSON-RPC id 配对；rm、覆盖写、重启服务等破坏性操作先询问用户。
+    """
 
     private static func script(port: Int) -> String {
         // 每行都保持同样缩进（Swift 多行字面量要求），python 助手一律写成单行，

@@ -46,6 +46,8 @@ PixShell 是面向运维场景的 SSH / SFTP 桌面客户端，以双端原生�
 - 本地自动化桥接，供 CLI 与 Agent 工作流使用
 - 五区布局在 macOS / Windows 双端对齐
 
+- 本地 AI / MCP / CLI 详细使用说明：[PixShell-AI-Bridge-CN.md](./PixShell-AI-Bridge-CN.md)
+
 ## 构建
 
 ### macOS

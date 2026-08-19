@@ -28,24 +28,36 @@ enum AgentMCP {
 
     /// Claude Code CLI 的一行注册命令。
     static func claudeCodeCommand() -> String {
-        "claude mcp add pixshell -- \(scriptPath.path)"
+        "claude mcp add pixshell -- \(shellQuotedPath(scriptPath.path))"
     }
 
     /// Claude Desktop 等「配置文件型」客户端的 JSON 片段。
     static func desktopConfigSnippet() -> String {
-        """
+        let command = jsonQuotedPath(scriptPath.path)
+        return """
         {
           "mcpServers": {
             "pixshell": {
-              "command": "\(scriptPath.path)"
+              "command": \(command)
             }
           }
         }
         """
     }
 
+    private static func shellQuotedPath(_ path: String) -> String {
+        "\"" + path.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
+    private static func jsonQuotedPath(_ path: String) -> String {
+        "\"" + path.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
     private static func script() -> String {
         let appPath = Bundle.main.bundlePath
+        let instructions = pythonQuoted(AgentCLI.mcpInstructions())
         let lines: [String] = [
             "#!/usr/bin/env python3",
             "# PixShell MCP server —— 由 App 自动生成，勿手改（下次启动会被覆盖）。",
@@ -139,46 +151,50 @@ enum AgentMCP {
             "    return (head + '\\n\\n…… [PixShell 截断：略去约 %d 字节，共 %d 字节] ……\\n' % (dropped, len(b))",
             "            + '提示：用 grep/head/tail/sed -n 收窄，或调大 max_bytes（上限 %d）。\\n\\n' % HARD_MAX + tail)",
             "",
+            "MCP_INSTRUCTIONS = \(instructions)",
+            "",
             "TOOLS = [",
-            "    {\"name\": \"list_sessions\", \"description\": \"列出 PixShell 当前打开的 SSH 会话（拿 session 序号）\",",
+            "    {\"name\": \"list_sessions\", \"description\": \"先调用此工具获取当前 SSH session 编号和 connected 状态；不要猜 session，也不要缓存跨 App 重启的编号。返回 session/title/host/username/connected/active，不含密码或私钥。\",",
             "     \"inputSchema\": {\"type\": \"object\", \"properties\": {}}},",
-            "    {\"name\": \"read_screen\", \"description\": \"读终端当前画面。判断状态前先调它\",",
+            "    {\"name\": \"read_screen\", \"description\": \"读取交互 PTY 最近画面；判断终端状态、确认提示符或执行 type_text 后必须优先调用。断线恢复时可能返回一次性上下文重置提示；无效或普通死 session 通常返回 404。\",",
             "     \"inputSchema\": {\"type\": \"object\", \"properties\": {",
-            "        \"lines\": {\"type\": \"integer\", \"description\": \"读多少行，默认 200\"},",
-            "        \"session\": {\"type\": \"integer\", \"description\": \"会话序号，默认 0\"}}}},",
-            "    {\"name\": \"exec_command\", \"description\": \"在已连接的会话上执行一条命令并返回 stdout（不会新建 SSH 连接）。\"",
-            "        \"输出有大小上限，超了会被截断；要看大文件请自己在命令里收窄（grep/head/tail/wc），\"",
-            "        \"或设 write_artifact=true 让完整输出落盘并只返回文件引用。\",",
+            "        \"lines\": {\"type\": \"integer\", \"default\": 200, \"minimum\": 1, \"maximum\": 2000, \"description\": \"读取行数，默认 200，最大 2000\"},",
+            "        \"session\": {\"type\": \"integer\", \"default\": 0, \"minimum\": 0, \"description\": \"session 编号；先使用 list_sessions 确认\"}}}},",
+            "    {\"name\": \"exec_command\", \"description\": \"通过独立 exec channel 执行一次性命令并返回 stdout；不会把命令输入交互画面，也不会每条命令重新建立 SSH 连接。只读查询优先用它；大输出请用 grep/head/tail 或 write_artifact。死 session 会尝试原地重连，越界通常返回 410。\",",
             "     \"inputSchema\": {\"type\": \"object\", \"properties\": {",
-            "        \"command\": {\"type\": \"string\"}, \"session\": {\"type\": \"integer\"},",
-            "        \"max_bytes\": {\"type\": \"integer\", \"description\": \"返回上限字节，默认 60000，最大 200000\"},",
-            "        \"timeout\": {\"type\": \"integer\", \"description\": \"命令超时毫秒，默认 30000；长任务（编译/脚本）可调大，如 300000\"},",
-            "        \"write_artifact\": {\"type\": \"boolean\", \"description\": \"true 时把完整 stdout 写到本地 artifacts 目录并返回引用\"},",
-            "        \"artifact_name\": {\"type\": \"string\", \"description\": \"write_artifact 时的文件名，默认按时间自动生成\"}},",
+            "        \"command\": {\"type\": \"string\", \"description\": \"要执行的远端命令，必填；不要直接 cat 大文件\"},",
+            "        \"session\": {\"type\": \"integer\", \"default\": 0, \"minimum\": 0, \"description\": \"session 编号；先使用 list_sessions 确认\"},",
+            "        \"max_bytes\": {\"type\": \"integer\", \"default\": 60000, \"minimum\": 1000, \"maximum\": 200000, \"description\": \"返回 stdout 上限，默认 60000，最大 200000；超限会保留头尾并提示截断\"},",
+            "        \"timeout\": {\"type\": \"integer\", \"minimum\": 1000, \"description\": \"命令超时，单位毫秒；默认约 30000，长任务可传 300000 等更大值\"},",
+            "        \"write_artifact\": {\"type\": \"boolean\", \"default\": False, \"description\": \"为 true 时把完整 stdout 写入本机 artifact，返回引用而不是大段文本\"},",
+            "        \"artifact_name\": {\"type\": \"string\", \"description\": \"artifact 文件名，可选；随后用 read_artifact 的 basename 读取\"}},",
             "        \"required\": [\"command\"]}},",
-            "    {\"name\": \"read_artifact\", \"description\": \"分块读取 pixshell 落盘的大输出 artifact。\",",
+            "    {\"name\": \"read_artifact\", \"description\": \"分块读取 exec_command(write_artifact=true) 生成的本机 artifact。用 offset 继续读取，不要一次性把大文件塞进上下文。\",",
             "     \"inputSchema\": {\"type\": \"object\", \"properties\": {",
-            "        \"name\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"},",
-            "        \"max_bytes\": {\"type\": \"integer\", \"description\": \"本次返回字节，默认 60000，最大 1MB\"}},",
+            "        \"name\": {\"type\": \"string\", \"description\": \"artifact basename，必填\"},",
+            "        \"offset\": {\"type\": \"integer\", \"default\": 0, \"minimum\": 0, \"description\": \"字节偏移，默认 0\"},",
+            "        \"max_bytes\": {\"type\": \"integer\", \"default\": 60000, \"minimum\": 1000, \"maximum\": 1048576, \"description\": \"本次读取字节数，默认 60000，最大 1MB\"}},",
             "        \"required\": [\"name\"]}},",
-            "    {\"name\": \"type_text\", \"description\": \"往终端里敲字（自动回车），用于 vim/top 等交互场景；返回敲完后的画面\",",
+            "    {\"name\": \"type_text\", \"description\": \"向交互 PTY 写入文本，自动追加换行并返回约 40 行画面；用于 vim/top/交互确认。不是 exec_command 的替代品，调用后应再 read_screen。断线恢复后的第一次调用可能只触发重连而不发送本次输入。\",",
             "     \"inputSchema\": {\"type\": \"object\", \"properties\": {",
-            "        \"text\": {\"type\": \"string\"}, \"session\": {\"type\": \"integer\"}},",
+            "        \"text\": {\"type\": \"string\", \"description\": \"要输入到交互 PTY 的文本，必填；可能被自动追加换行\"},",
+            "        \"session\": {\"type\": \"integer\", \"default\": 0, \"minimum\": 0, \"description\": \"session 编号；先使用 list_sessions 确认\"}},",
             "        \"required\": [\"text\"]}},",
-            "    {\"name\": \"list_hosts\", \"description\": \"列出 PixShell 里保存的主机\",",
+            "    {\"name\": \"list_hosts\", \"description\": \"列出 PixShell 已保存主机的 ID、名称、地址、端口、用户和分组；不返回密码或私钥。用于 ssh/connect 前查找目标。\",",
             "     \"inputSchema\": {\"type\": \"object\", \"properties\": {}}},",
-            "    {\"name\": \"sftp_list\", \"description\": \"列远端目录\",",
+            "    {\"name\": \"sftp_list\", \"description\": \"通过独立 SFTP 连接列远端目录；不改变交互 shell 的 cwd，也不代表交互 shell 健康。\",",
             "     \"inputSchema\": {\"type\": \"object\", \"properties\": {",
-            "        \"path\": {\"type\": \"string\"}, \"session\": {\"type\": \"integer\"}}}},",
-            "    {\"name\": \"sftp_upload\", \"description\": \"把本机文件通过 SFTP 上传到远端，适合大数据传输；返回远端路径。\",",
+            "        \"path\": {\"type\": \"string\", \"default\": \".\", \"description\": \"远端目录路径，默认 .\"},",
+            "        \"session\": {\"type\": \"integer\", \"default\": 0, \"minimum\": 0, \"description\": \"session 编号；先使用 list_sessions 确认\"}}}},",
+            "    {\"name\": \"sftp_upload\", \"description\": \"通过独立 SFTP 把本地文件上传到远端；local_path 是运行 AI 的本机路径，remote_path 是 SSH 主机路径。破坏性覆盖操作仍需用户确认。\",",
             "     \"inputSchema\": {\"type\": \"object\", \"properties\": {",
-            "        \"local_path\": {\"type\": \"string\"}, \"remote_path\": {\"type\": \"string\"},",
-            "        \"session\": {\"type\": \"integer\"}}, \"required\": [\"local_path\", \"remote_path\"]}},",
-            "    {\"name\": \"sftp_download\", \"description\": \"把远端文件通过 SFTP 下载到本机，适合大数据传输；返回本地路径。\",",
+            "        \"local_path\": {\"type\": \"string\", \"description\": \"本机文件路径，必填\"}, \"remote_path\": {\"type\": \"string\", \"description\": \"远端目标路径，必填\"},",
+            "        \"session\": {\"type\": \"integer\", \"default\": 0, \"minimum\": 0, \"description\": \"session 编号；先使用 list_sessions 确认\"}}, \"required\": [\"local_path\", \"remote_path\"]}},",
+            "    {\"name\": \"sftp_download\", \"description\": \"通过独立 SFTP 把远端文件下载到本机；remote_path 是远端路径，local_path 是本机目标路径。成功返回本地路径。\",",
             "     \"inputSchema\": {\"type\": \"object\", \"properties\": {",
-            "        \"remote_path\": {\"type\": \"string\"}, \"local_path\": {\"type\": \"string\"},",
-            "        \"session\": {\"type\": \"integer\"}}, \"required\": [\"remote_path\"]}},",
-            "    {\"name\": \"bridge_status\", \"description\": \"检查 PixShell 本地桥是否在线、返回端口和会话数。\",",
+            "        \"remote_path\": {\"type\": \"string\", \"description\": \"远端文件路径，必填\"}, \"local_path\": {\"type\": \"string\", \"description\": \"本机目标路径，可选；省略时由桥生成临时路径\"},",
+            "        \"session\": {\"type\": \"integer\", \"default\": 0, \"minimum\": 0, \"description\": \"session 编号；先使用 list_sessions 确认\"}}, \"required\": [\"remote_path\"]}},",
+            "    {\"name\": \"bridge_status\", \"description\": \"检查本地 PixShell bridge 是否在线、实际端口和 artifact 目录。桥只绑定 127.0.0.1，token 由脚本管理；不要读取或打印 token。\",",
             "     \"inputSchema\": {\"type\": \"object\", \"properties\": {}}},",
             "]",
             "",
@@ -370,7 +386,8 @@ enum AgentMCP {
             "    if method == 'initialize':",
             "        log('initialize 来自客户端')",
             "        reply(rid, {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}},",
-            "                    'serverInfo': {'name': 'pixshell', 'version': '0.1.8'}})",
+            "                    'serverInfo': {'name': 'pixshell', 'version': '0.1.8'},",
+            "                    'instructions': MCP_INSTRUCTIONS})",
             "    elif method == 'tools/list':",
             "        reply(rid, {'tools': TOOLS})",
             "    elif method == 'tools/call':",
@@ -423,6 +440,17 @@ enum AgentMCP {
             "",
         ]
         return lines.joined(separator: "\n")
+    }
+
+    /// Python 字符串字面量转义：指南包含换行、反引号和反斜杠，不能直接插入生成脚本。
+    private static func pythonQuoted(_ s: String) -> String {
+        let escaped = s
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\t", with: "\\t")
+        return "\"\(escaped)\""
     }
 
     /// 路径里可能有空格（Application Support），嵌进 python 前要加引号转义。

@@ -181,25 +181,28 @@ extension AppDelegate {
             return "本地桥：未开启（点「重新安装 CLI / MCP」可再拉起）"
         }()
         a.informativeText = """
-        PixShell 已经把自己开放给本机的 AI 工具了，两条路都在跑同一条**已连接的 SSH 会话**，不会每条指令都重连。
+        PixShell 已经把自己开放给本机的 AI 工具了，两条路都使用 PixShell 管理的 SSH 会话，不会每条指令都重新登录。
 
         \(bridgeLine)
 
-        ① MCP（推荐，桌面 AI 应用 / 支持 MCP 的客户端都吃这套）
+        ① MCP（推荐，桌面 AI 应用 / 支持 MCP 的客户端都能使用）
            Claude Code CLI 注册：
            \(AgentMCP.claudeCodeCommand())
 
-           Claude Desktop 等配置文件型客户端，把这段并进它的 MCP 配置：
+           Claude Desktop 等配置文件型客户端，把这段并进 MCP 配置：
         \(AgentMCP.desktopConfigSnippet())
 
-        ② 命令行（任何终端里的 agent / 脚本 / 定时任务）
+        ② 命令行（终端里的 agent / 脚本 / 定时任务）
            已软链到 ~/.local/bin，直接敲：
-           pixshell screen 50
-           pixshell exec "systemctl status nginx"
-           pixshell type "vim /etc/hosts"
+           pixshell sessions
+           pixshell screen 40
+           pixshell exec "pwd && hostname && whoami"
 
-        工具：list_sessions / read_screen / exec_command / type_text / list_hosts / sftp_list
-        大输出会自动截断并说明截了多少（避免 MCP 大负载失败），需要更多用 grep/head 收窄或调 max_bytes。
+        AI 操作顺序：先 list_sessions / sessions；判断状态先 read_screen / screen；一次性命令用 exec_command / exec；交互操作用 type_text / type 后再读屏。断线提示出现时，先确认 pwd && hostname && whoami，再重新发送输入。
+        大输出用 grep/head/tail 收窄，或 exec_command 的 write_artifact=true 配合 read_artifact 分块读取。删除、覆盖写、重启服务等破坏性操作先询问用户。
+
+        完整的 MCP / CLI 使用说明已内置在 App，并可通过“复制 CLI 用法”复制给 AI。仓库版本见 PixShell-AI-Bridge-CN.md。
+        MCP 工具：list_sessions / read_screen / exec_command / read_artifact / type_text / list_hosts / sftp_list / sftp_upload / sftp_download / bridge_status
         """
         a.addButton(withTitle: "复制 MCP 注册命令")
         a.addButton(withTitle: "复制 Desktop 配置")
@@ -221,7 +224,7 @@ extension AppDelegate {
         let text = AgentCLI.promptPreamble()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        setStatus("已复制 CLI 用法")
+        setStatus("已复制完整 AI / MCP / CLI 使用说明")
     }
 
     @objc func copyMCPRegister() {
