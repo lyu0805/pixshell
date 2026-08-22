@@ -64,6 +64,33 @@ struct Host: Codable, Identifiable, Equatable {
     /// Web 连接（应用内 WKWebView：外部 URL 或本地桥 /webssh）。
     var isWebSSH: Bool { connectionType == 400 }
 
+    /// 桥/CLI 共用的主机匹配：内部 id → 地址 → 名称/显示名 → 唯一包含。
+    /// agent 经常拿人可见的名字或 IP 来 connect，只认内部 id 会 404「找不到服务器」
+    /// （这是 MCP 无头连接「老是找不到对应服务器」的主因）。包含匹配仅在一个候选时
+    /// 生效——宁可让调用方看到候选列表，也不要错连到别的主机。
+    static func match(_ key: String, in hosts: [Host]) -> Host? {
+        let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !k.isEmpty else { return nil }
+        if let h = hosts.first(where: { $0.id == k }) { return h }
+        if let h = hosts.first(where: { $0.host.caseInsensitiveCompare(k) == .orderedSame }) { return h }
+        if let h = hosts.first(where: {
+            $0.name.caseInsensitiveCompare(k) == .orderedSame || $0.display.caseInsensitiveCompare(k) == .orderedSame
+        }) { return h }
+        let cands = hosts.filter {
+            $0.host.localizedCaseInsensitiveContains(k)
+                || $0.name.localizedCaseInsensitiveContains(k)
+                || $0.display.localizedCaseInsensitiveContains(k)
+        }
+        return cands.count == 1 ? cands[0] : nil
+    }
+
+    /// 供 404 错误信息列出候选（最多 10 个），让 agent 一次往返内自我纠正。
+    static func bridgeListing(_ hosts: [Host]) -> String {
+        hosts.prefix(10)
+            .map { "\($0.display) [id=\($0.id) addr=\($0.host)]" }
+            .joined(separator: "; ")
+    }
+
     /// 解析后的外部 Web URL（优先 webUrl，其次 host 字段里的 http(s)）。
     var resolvedWebURL: URL? {
         for raw in [webUrl, host] {

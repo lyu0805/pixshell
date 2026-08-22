@@ -33,12 +33,34 @@ public final class NIOSSHSession: SSHSession {
     private var tcpChannel: Channel?
     private var childChannel: Channel?
 
+    /// 这三个引用跨线程读写（event loop 写、调用线程/桥线程读），裸访问是 Swift 内存
+    /// 模型下的数据竞争 UB（arm64e 撕裂指针即崩溃）。所有读写经此锁的短临界区完成；
+    /// channel 的实际 IO 操作（write/close）留锁外，本来就 hop 回各自 eventLoop。
+    private let channelStateLock = NSLock()
+    private func setTCPChannel(_ c: Channel?) {
+        channelStateLock.lock(); tcpChannel = c; channelStateLock.unlock()
+    }
+    private func setChildChannel(_ c: Channel?) {
+        channelStateLock.lock(); childChannel = c; channelStateLock.unlock()
+    }
+    private func currentTCPChannel() -> Channel? {
+        channelStateLock.lock(); defer { channelStateLock.unlock() }; return tcpChannel
+    }
+    private func currentChildChannel() -> Channel? {
+        channelStateLock.lock(); defer { channelStateLock.unlock() }; return childChannel
+    }
+    private func takeGroupAndChannels() -> (EventLoopGroup?, Channel?, Channel?) {
+        channelStateLock.lock(); defer { channelStateLock.unlock() }
+        let g = group; group = nil
+        return (g, tcpChannel, childChannel)
+    }
+
     public init() {}
 
     public func connectAndOpenShell(_ creds: SSHCredentials, term: String, cols: Int, rows: Int) {
         Log.info("连接 \(creds.username)@\(creds.host):\(creds.port) term=\(term) \(cols)x\(rows)", "ssh")
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        self.group = group
+        channelStateLock.lock(); self.group = group; channelStateLock.unlock()
 
         let authDelegate = SSHUserAuthDelegate(username: creds.username, password: creds.password, keyPath: creds.keyPath)
         // 显式挂上库内全部 transport protection（当前仅 AES-GCM 两档）。
@@ -114,7 +136,7 @@ public final class NIOSSHSession: SSHSession {
                     Log.error("TCP 连接失败 \(creds.host):\(creds.port) → \(error)", "ssh")
                     self.emitClose(error)
                 case .success(let channel):
-                    self.tcpChannel = channel
+                    self.setTCPChannel(channel)
                     self.openShell(on: channel, term: term, cols: cols, rows: rows)
                 }
             }
@@ -137,7 +159,7 @@ public final class NIOSSHSession: SSHSession {
                 Log.error("代理 TCP 连接失败 \(proxy.host):\(proxy.port) → \(error)", "proxy")
                 self.emitClose(error)
             case .success(let channel):
-                self.tcpChannel = channel
+                self.setTCPChannel(channel)
                 self.performProxyHandshake(proxy, on: channel, creds: creds, clientConfig: clientConfig,
                                             term: term, cols: cols, rows: rows)
             }
@@ -227,13 +249,13 @@ public final class NIOSSHSession: SSHSession {
         promise.futureResult.whenComplete { [weak self] result in
             switch result {
             case .failure(let error): self?.emitClose(error)
-            case .success(let child): self?.childChannel = child
+            case .success(let child): self?.setChildChannel(child)
             }
         }
     }
 
     public func send(_ data: [UInt8]) {
-        guard let child = childChannel else { return }
+        guard let child = currentChildChannel() else { return }
         child.eventLoop.execute {
             var buffer = child.allocator.buffer(capacity: data.count)
             buffer.writeBytes(data)
@@ -243,7 +265,7 @@ public final class NIOSSHSession: SSHSession {
     }
 
     public func resize(cols: Int, rows: Int) {
-        guard let child = childChannel else { return }
+        guard let child = currentChildChannel() else { return }
         child.eventLoop.execute {
             let event = SSHChannelRequestEvent.WindowChangeRequest(
                 terminalCharacterWidth: cols, terminalRowHeight: rows,
@@ -270,7 +292,7 @@ public final class NIOSSHSession: SSHSession {
             // HTTP + 操作队列 next() 推进 → 「exec 无响应」。deliver 让无头会话直接在 IO 线程收口。
             deliver { completion(output, timedOut) }
         }
-        guard let channel = tcpChannel else { finish("", false); return }
+        guard let channel = currentTCPChannel() else { finish("", false); return }
         // 命令级总超时：远端命令不退出时兜底收口，避免 HTTP 永挂 → 后续工具调用排队超时。
         let handler = ExecCollectHandler(command: command, timeout: timeout, maxBytes: maxBytes) { out, timedOut in
             finish(out, timedOut)
@@ -311,13 +333,13 @@ public final class NIOSSHSession: SSHSession {
     }
 
     public func close() {
-        childChannel?.close(promise: nil)
-        tcpChannel?.close(promise: nil)
+        // 锁内一次性取走三个引用快照；close 留在锁外（channel close 本身 hop 回 eventLoop）。
+        let (g, tcp, child) = takeGroupAndChannels()
+        child?.close(promise: nil)
+        tcp?.close(promise: nil)
         // 异步关 EventLoopGroup：syncShutdownGracefully 会等所有 pending IO 收尾，
         // 在慢网络/挂起连接下阻塞主线程数百 ms 到数秒（关闭标签/切会话时 UI 卡顿 P0 根因）。
         // 改回调式：立即返回，event loop 在后台自然收口。
-        let g = group
-        group = nil
         if let g {
             DispatchQueue.global(qos: .utility).async {
                 g.shutdownGracefully { _ in }

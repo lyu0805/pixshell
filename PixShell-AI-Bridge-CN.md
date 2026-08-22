@@ -222,6 +222,16 @@ MCP 是 stdio 上的逐行 JSON-RPC。支持 `initialize`、`tools/list`、`tool
 {"name":"list_hosts","arguments":{}}
 ```
 
+### `connect`
+
+连接已保存的 SSH 主机并返回 session 编号，供 `exec_command`/`type_text`/`read_screen`/`sftp_*` 使用。`host` 可传 **主机ID、地址(IP/域名) 或 名称**，三者都接受；多个名称包含匹配时需用 list_hosts 查精确 ID。同一主机重复连接会复用现有会话并返回相同 session。
+
+```json
+{"name":"connect","arguments":{"host":"debian12"}}
+```
+
+当前没有任何会话时（`list_sessions` 返回空）必须先调用本工具建立会话，不要对 session 0 反复尝试。没有保存凭据的主机会返回明确错误（先在有头界面连接一次以保存密码/私钥）。
+
 ### `sftp_list`
 
 通过独立 SFTP 连接列远端目录。

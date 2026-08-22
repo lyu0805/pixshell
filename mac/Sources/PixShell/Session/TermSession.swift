@@ -86,6 +86,9 @@ final class TermSession {
     var pendingOutput: [UInt8] = []
     /// 已调度 flush（同一 runloop 周期内多次 append 合并成一次处理）。
     var flushScheduled = false
+    /// 会话控制器（SSHSessionDelegate + 输出管线的归属，见 TermSessionController）。
+    /// 会话拥有控制器；控制器强持会话，这里用弱引用避免环。
+    weak var controller: TermSessionController?
     /// 帧间隔：60fps 一帧，视觉无感且能聚合高频突发。
     static let flushInterval: TimeInterval = 1.0 / 60.0
     /// 单帧 feed 硬上限（字节）。输出洪水（seq/编译流）下不加封顶时，单帧会把

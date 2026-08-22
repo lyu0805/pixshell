@@ -8,7 +8,7 @@ import SwiftTerm
 //   App/AppDelegate+Hosts.swift     — 主机增改删 + 侧栏列表数据源
 //   App/AppDelegate+Sessions.swift  — 多会话开/切/关 + SSH/终端 delegate
 // 布局照搬 Electron 老仓库(docs/LAYOUT-PARITY.md)：顶栏 / 侧栏 | 工作区[终端+底部坞] / 状态栏。
-final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, SSHSessionDelegate,
+final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate,
                          NSTableViewDataSource, NSTableViewDelegate {
     // 顶层
     var window: NSWindow!
@@ -194,17 +194,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate, 
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
-    /// 无头进程收到 reopen（用户 Finder 双击 / `open -a`）：说明想打开界面。
-    /// 无头是 .accessory 不建窗，`open -a` 又只激活已运行实例（不会新启有头），
-    /// 所以这里必须自己退出并重新拉起**有头**，否则用户双击看起来"没反应"。
-    /// 注意：`open -a` 在无头还活着时只会发 reopen 死循环，必须先 terminate 等退出再 open。
+    /// reopen 语义分两种进程：
+    /// - **有头**：flag=false 且主窗已不在（主窗关闭但独立终端窗还挂着）→ 重建主窗，
+    ///   否则点图标"没反应"，用户只能去 Finder 双击，进而触发更多实例。
+    /// - **无头**（用户 Finder 双击 / `open -a` / Dock）：说明想打开界面。但**必须先查
+    ///   是否已有有头实例在跑**——之前无条件 `open -n`，GUI 与无头共存（第 60 批起的常态）
+    /// 时点一下图标就会**再开一个 UI 窗口**。有 → 直接 activate 已有 GUI（不经
+    ///   LaunchServices，绝无二次 -n）；没有 → 才 `open -n` 强制新实例（绕过 LS 复用本无头）。
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        guard isHeadless else { return true }
-        // 无头进程收到 reopen（用户 Finder 双击 / `open -a`）：说明想打开界面。
-        // 无头是 .accessory 不建窗，`open -a` 只激活已运行实例不会新启有头，双击会"没反应"。
-        // 解决：用 `open -n` 强制**新实例**启动有头（绕过 LaunchServices 实例复用，不依赖 terminate 时序）。
-        // 新有头启动后走 waitForHeadlessToYield → 让本无头退出（onPortBusy 让位）→ 接管主端口。
-        Log.info("无头收到 reopen（用户想开界面）→ open -n 拉起新有头实例", "ui")
+        guard isHeadless else {
+            if !flag, window == nil || !window.isVisible {
+                Log.info("有头收到 reopen 且无可见主窗 → 重建主窗", "ui")
+                buildWindow()
+            }
+            return true
+        }
+        let bid = Bundle.main.bundleIdentifier ?? ""
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: bid)
+        if let gui = others.first(where: { $0 != NSRunningApplication.current && $0.activationPolicy == .regular }) {
+            Log.info("无头收到 reopen：已有有头实例 pid=\(gui.processIdentifier)，激活之（不新开窗口）", "ui")
+            gui.activate(options: [.activateIgnoringOtherApps])
+            return false
+        }
+        Log.info("无头收到 reopen：无有头实例 → open -n 拉起新有头实例", "ui")
         let appPath = Bundle.main.bundlePath.hasSuffix(".app") ? Bundle.main.bundlePath : ""
         let args: [String] = appPath.isEmpty ? ["-n", "-a", "PixShell"] : ["-n", appPath]
         AgentBridge.spawnOpenApp(args)

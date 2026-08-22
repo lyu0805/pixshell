@@ -93,15 +93,18 @@ extension AppDelegate: BridgeHost {
     func bridgeSessions() -> [[String: Any]] {
         sessions.enumerated().map { (i, s) in
             ["session": i, "title": s.title, "host": s.host.host,
+             "host_id": s.host.id,
              "username": s.host.username, "connected": s.connected, "active": i == current]
         }
     }
 
     func bridgeConnect(hostId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
-        guard let h = store.hosts.first(where: { $0.id == hostId }) else {
+        // 与无头桥一致的主机解析：id → 地址 → 名称 → 唯一包含（agent 常传名字/IP）。
+        guard let h = Host.match(hostId, in: store.hosts) else {
             completion(.failure(NSError(domain: "PixShell", code: 404,
-                userInfo: [NSLocalizedDescriptionKey: "未找到主机 \(hostId)"]))); return
+                userInfo: [NSLocalizedDescriptionKey: "未找到主机「\(hostId)」。可按 id / 地址 / 名称 匹配；当前主机：\(Host.bridgeListing(store.hosts))"]))); return
         }
+        let hostId = h.id
         // 只用已保存的密码/私钥；桥不弹密码框（无人值守场景不该阻塞）
         let pw = Keychain.password(for: h.id) ?? ""
         guard !pw.isEmpty || !h.keyPath.isEmpty else {

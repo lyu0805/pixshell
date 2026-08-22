@@ -307,7 +307,7 @@ final class HeadlessBridgeHost: BridgeHost {
         withLock {
             sessions.enumerated().map { (i, s) in
                 ["session": i, "title": s.title, "host": s.host.host,
-                 "username": s.host.username, "connected": s.connected,
+                 "host_id": s.host.id, "username": s.host.username, "connected": s.connected,
                  // active 必须是「当前会话且仍连接」——死会话不得再报 active，
                  // 否则 agent 拿到 active:true disconnected:false 的误导状态反复重连。
                  "active": i == currentIndex && s.connected]
@@ -316,10 +316,13 @@ final class HeadlessBridgeHost: BridgeHost {
     }
 
     func bridgeConnect(hostId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
-        guard let h = HostStore().hosts.first(where: { $0.id == hostId }) else {
+        // 解析顺序：id → 地址 → 名称 → 唯一包含（agent 常传名字/IP，不只传内部 id）。
+        let allHosts = HostStore().hosts
+        guard let h = Host.match(hostId, in: allHosts) else {
             completion(.failure(NSError(domain: "PixShell", code: 404,
-                userInfo: [NSLocalizedDescriptionKey: "未找到主机 \(hostId)"]))); return
+                userInfo: [NSLocalizedDescriptionKey: "未找到主机「\(hostId)」。可按 id / 地址 / 名称 匹配；当前主机：\(Host.bridgeListing(allHosts))"]))); return
         }
+        let hostId = h.id
         guard !h.isRdp && !h.isLocal else {
             completion(.failure(NSError(domain: "PixShell", code: 400,
                 userInfo: [NSLocalizedDescriptionKey: "RDP/本机终端不能经桥连接"]))); return
@@ -488,11 +491,13 @@ final class HeadlessBridgeHost: BridgeHost {
             let creds = SSHCredentials(host: s.host.host, port: s.host.port, username: s.host.username,
                                        password: s.password, keyPath: s.host.keyPath.isEmpty ? nil : s.host.keyPath,
                                        proxy: proxy)
-            let svc: SFTPService = s.host.keyPath.isEmpty ? NIOSFTPSession() : OpenSSHSFTPSession()
-            svc.connect(creds) { r in
+            // 三层回落（NIO → 系统 ssh sftp → SCP+shell）：Dropbear 等无 sftp-server
+            // 的目标也能列目录/传文件（对齐 win 端与 GUI 面板）。
+            let keyIncompatible = !s.host.keyPath.isEmpty && SSHPrivateKeyLoader.load(path: s.host.keyPath) == nil
+            SFTPBackend.connect(creds: creds, skipNIO: keyIncompatible) { r in
                 switch r {
                 case .failure(let e): completion(.failure(e))
-                case .success: completion(.success((svc, s.password)))
+                case .success(let svc): completion(.success((svc, s.password)))
                 }
             }
         }
