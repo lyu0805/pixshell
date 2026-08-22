@@ -515,9 +515,19 @@ extension AppDelegate {
             clearSessionSidePanels()   // P1：关最后标签 → 清 SFTP + 系统信息
             window.title = "PixShell"; rebuildTabs(); showQuickConnect()   // 无会话 → 回到落地页
         } else {
-            // 关掉的是当前标签时，侧栏/SFTP 先清，再由 selectSession 按新活动会话重连
-            if wasActive { clearSessionSidePanels() }
-            selectSession(min(i, sessions.count - 1))
+            if wasActive {
+                // 关掉的是当前标签：侧栏/SFTP 先清，再由 selectSession 按新活动会话重连
+                clearSessionSidePanels()
+                selectSession(min(i, sessions.count - 1))
+            } else if i < current {
+                // 关掉的是当前标签之前的后台标签：原活动会话整体前移一位，
+                // 视图/标题/SFTP 都不该动（之前误走 selectSession 会切到无关会话）。
+                current -= 1
+                rebuildTabs()
+            } else {
+                // 关掉的是当前标签之后的后台标签：什么都不用切，只重建标签栏。
+                rebuildTabs()
+            }
         }
     }
 
@@ -692,7 +702,16 @@ extension AppDelegate {
             quickConnect?.isHidden = false      // 没会话了 → 回落地页
             collapseChrome()
         } else {
-            selectSession(min(current, sessions.count - 1))
+            if i == current {
+                // 拖走的是当前标签：termContainer 已空，选下一个（或末位）会话补上
+                selectSession(min(current, sessions.count - 1))
+            } else if i < current {
+                // 拖走的是当前标签之前的标签：原活动会话前移一位，视图不动。
+                current -= 1
+                rebuildTabs()
+            } else {
+                rebuildTabs()
+            }
         }
         rebuildTabs()
     }

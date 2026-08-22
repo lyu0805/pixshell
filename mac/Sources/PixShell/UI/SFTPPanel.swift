@@ -309,7 +309,7 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
         // 本地 | 远端
         let cols = NSStackView(views: [localCol, remoteBody]); cols.spacing = 10; cols.alignment = .top
         cols.translatesAutoresizingMaskIntoConstraints = false
-        localWidthC = localCol.widthAnchor.constraint(equalToConstant: 240)
+        localWidthC = localCol.widthAnchor.constraint(equalToConstant: Self.localColWidth)
         localWidthC.isActive = true
 
         statusLabel.font = Theme.ui(10); statusLabel.textColor = Theme.muted
@@ -330,6 +330,30 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
     }
 
     @objc func toggleLocal() { localHidden.toggle(); applyLocalHidden() }
+
+    /// 本地栏宽度（展开态）。
+    private static let localColWidth: CGFloat = 240
+
+    /// 左栏收起/展开：宽度 + alpha 过渡，不再瞬切。
+    /// 宽度约束保持常开（动画常量 0↔240）；收起完成后再 isHidden，
+    /// NSStackView 对隐藏视图连同 spacing 一起收掉，最终布局与旧实现一致。
+    private func applyLocalHidden() {
+        localWidthC.isActive = true
+        let target: CGFloat = localHidden ? 0 : Self.localColWidth
+        if localWidthC.constant == target && localCol.isHidden == localHidden { return }   // 状态没变（首帧）
+        localCol.wantsLayer = true
+        if !localHidden { localCol.isHidden = false }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.25
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            ctx.allowsImplicitAnimation = true
+            localWidthC.animator().constant = target
+            localCol.animator().alphaValue = localHidden ? 0.0 : 1.0
+        }, completionHandler: { [weak self] in
+            guard let self = self else { return }
+            if self.localHidden { self.localCol.isHidden = true }
+        })
+    }
 
     /// 进对话前左栏是不是收着的 —— 退出对话要**原样还回去**：
     /// 本来只有远端就回到只有远端，本来是远端+本地就回到远端+本地。
@@ -363,10 +387,6 @@ final class SFTPPanel: NSView, NSTableViewDataSource, NSTableViewDelegate,
         localFilesScroll.isHidden = chat
         localPathLabel.isHidden = chat          // 对话模式下路径由 agentChat 自己显示
         if chat { agentChat.workingDirectory = localPath }
-    }
-    private func applyLocalHidden() {
-        localCol.isHidden = localHidden
-        localWidthC.isActive = !localHidden
     }
 
     private func configFileTable(_ t: NSTableView) {

@@ -800,10 +800,27 @@ extension AppDelegate {
     func setBottomCollapsed(_ collapsed: Bool) {
         Log.debug("底栏折叠=\(collapsed)", "ui")
         dockCollapsed = collapsed
-        dockHeightC?.constant = collapsed ? 0 : dockHeight
-        dockView?.isHidden = collapsed
         dockToggleBtn?.image = NSImage(systemSymbolName: collapsed ? "chevron.up" : "chevron.down", accessibilityDescription: nil)
         dockToggleBtn?.toolTip = collapsed ? "显示文件/命令" : "隐藏文件/命令"
+        guard let dock = dockView, let c = dockHeightC else {
+            dockView?.isHidden = collapsed
+            dockHeightC?.constant = collapsed ? 0 : dockHeight
+            return
+        }
+        // 平滑折叠/展开：高度约束 + 透明度一起过渡，避免瞬间跳变。
+        // 展开先取消 isHidden（alpha 已是 1 时无感）；收起在动画完成后再藏，
+        // 避免半途隐藏导致截断。
+        if !collapsed { dock.isHidden = false }
+        dock.wantsLayer = true
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.25
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            ctx.allowsImplicitAnimation = true
+            c.animator().constant = collapsed ? 0 : dockHeight
+            dock.animator().alphaValue = collapsed ? 0.0 : 1.0
+        }, completionHandler: {
+            if collapsed { dock.isHidden = true }
+        })
     }
 
     /// CLI 状态三态（严格对齐老仓库口径，**别把「桥在监听」写成「已连接/已对接」**）：

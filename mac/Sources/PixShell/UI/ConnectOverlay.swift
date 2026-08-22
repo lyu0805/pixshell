@@ -120,14 +120,15 @@ final class ConnectOverlay: NSView {
         }
     }
 
-    /// 连上了：绿色对勾一闪即淡出。
+    /// 连上了：绿色对勾一闪即淡出（前置延迟从 0.28s 收到 0.10s——成功后尽快把终端
+    /// 交还给用户，绿色反馈仍可见但不再拖住半秒）。
     func succeed() {
         guard !isHidden else { return }
         stepTimer?.invalidate(); stepTimer = nil
         stepLabel.stringValue = "已连接"
         stepLabel.textColor = Theme.ok
         pulse.stop(ok: true); bar.stop()
-        fadeOut(after: 0.28)
+        fadeOut(after: 0.10, duration: 0.18)
     }
 
     /// 失败：红字提示后淡出（密码重试框由调用方弹）。
@@ -137,8 +138,8 @@ final class ConnectOverlay: NSView {
         stepLabel.stringValue = reason
         stepLabel.textColor = Theme.err
         pulse.stop(ok: false); bar.stop()
-        if autoHide { 
-            fadeOut(after: 0.9) 
+        if autoHide {
+            fadeOut(after: 0.9, duration: 0.25)
         } else {
             retryBtn.isHidden = false
         }
@@ -151,11 +152,11 @@ final class ConnectOverlay: NSView {
         removeFromSuperview()
     }
 
-    private func fadeOut(after delay: TimeInterval) {
+    private func fadeOut(after delay: TimeInterval, duration: TimeInterval = 0.25) {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self = self, !self.isHidden else { return }
             NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = 0.25
+                ctx.duration = duration
                 self.animator().alphaValue = 0
             }, completionHandler: { [weak self] in
                 self?.isHidden = true

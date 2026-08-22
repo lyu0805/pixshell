@@ -449,12 +449,28 @@ final class CommandPanel: NSView, NSTextViewDelegate {
 
     private func setEditorCollapsed(_ collapsed: Bool) {
         editorCollapsed = collapsed
-        rightWidthC.constant = collapsed ? Self.rightCollapsed : Self.rightExpanded
-        // 展开态的三块内容
-        for v in editorParts { v.isHidden = collapsed }
-        // 收起态的窄条按钮
-        expandStrip.isHidden = !collapsed
-        needsLayout = true
+        // 展开前先显示窄条/内容并恢复 alpha 起点，动画结束再切换显隐，避免中途截断。
+        if collapsed {
+            expandStrip.alphaValue = 0
+            expandStrip.isHidden = false
+        } else {
+            for v in editorParts { v.isHidden = false }
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.25
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            ctx.allowsImplicitAnimation = true
+            rightWidthC.animator().constant = collapsed ? Self.rightCollapsed : Self.rightExpanded
+            for v in editorParts { v.animator().alphaValue = collapsed ? 0.0 : 1.0 }
+            expandStrip.animator().alphaValue = collapsed ? 1.0 : 0.0
+        }, completionHandler: {
+            if collapsed {
+                for v in self.editorParts { v.isHidden = true }
+            } else {
+                self.expandStrip.isHidden = true
+            }
+            self.needsLayout = true
+        })
     }
 
     @objc private func newGroup() {

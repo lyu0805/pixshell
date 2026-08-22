@@ -57,7 +57,9 @@ extension AppDelegate: BridgeHost {
         headlessHost = host
         host.onShutdown = {
             self.agentBridge?.stop()
-            NSApp.terminate(nil)
+            // 桥请求在后台串行队列上路由；NSApp.terminate 必须 回主线程（AppKit 只允许
+            // 主线程终止应用，否则无头进程可能挂起不退/崩溃）。
+            DispatchQueue.main.async { NSApp.terminate(nil) }
         }
         let b = AgentBridge(host: host, port: AgentBridge.defaultPort)
         // 无头端口被占（已有桥在服务）→ 立即退出让位（去重）。
@@ -65,7 +67,8 @@ extension AppDelegate: BridgeHost {
         // 出现"旧桥死了但僵尸占位/僵尸永远不接管"的静默期 —— 通道死掉的隐藏来源。
         b.onPortBusy = {
             self.agentBridge?.stop()
-            NSApp.terminate(nil)
+            // onPortBusy 同样在桥队列上触发，terminate 回主线程。
+            DispatchQueue.main.async { NSApp.terminate(nil) }
         }
         agentBridge = b
         b.start()

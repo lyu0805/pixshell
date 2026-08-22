@@ -269,10 +269,19 @@ final class MonitorSidebar: NSView {
         guard let btn = copyBtn else { return }
         let origTitle = btn.title
         let origColor = btn.attributedTitle.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor ?? Theme.text
-        btn.attributedTitle = NSAttributedString(string: "✓", attributes: [.foregroundColor: Theme.c("#30d158"), .font: Theme.ui(12, .semibold)])
+        btn.wantsLayer = true
+        func setTitled(_ title: String, color: NSColor, weight: NSFont.Weight) {
+            // 标题切换加 0.15s 淡入淡出，避免 ✓ 瞬间硬切。
+            let t = CATransition()
+            t.type = .fade
+            t.duration = 0.15
+            btn.layer?.add(t, forKey: "copyFeedback")
+            btn.attributedTitle = NSAttributedString(string: title, attributes: [.foregroundColor: color, .font: Theme.ui(12, weight)])
+        }
+        setTitled("✓", color: Theme.c("#30d158"), weight: .semibold)
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            btn.attributedTitle = NSAttributedString(string: origTitle, attributes: [.foregroundColor: origColor, .font: Theme.ui(12, .regular)])
             _ = self
+            setTitled(origTitle, color: origColor, weight: .regular)
         }
     }
     @objc private func sysInfoTap() { onSysInfo?() }

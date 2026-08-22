@@ -85,6 +85,13 @@ public final class OpenSSHSession: SSHSession {
     private var askPassScriptPath: String?
     private var askPassSecretPath: String?
 
+    /// 这些字段被四类线程并发触碰：读泵（global userInitiated）、watchExit（global
+    /// utility）、close()/send()/resize()（任意调用线程）、callbackQueue（emitOpen）。
+    /// 无锁时 `finish` 可双重进入 → 同一 fd 被 close 两次（fd 号被新连接复用时会拆错连接），
+    /// 密码也可能在 fd 关闭与写回之间写进无关 fd。所有访问走短临界区；send/resize 在
+    /// 锁内只取 fd 快照、write/ioctl/kill 留在锁外（阻塞操作持锁会拖死 finish）。
+    private let stateLock = NSLock()
+
     public init() {}
 
     // MARK: - 连接
@@ -330,9 +337,13 @@ public final class OpenSSHSession: SSHSession {
     private func startReading() {
         let src = DispatchSource.makeReadSource(fileDescriptor: masterFD, queue: .global(qos: .userInitiated))
         src.setEventHandler { [weak self] in
-            guard let self = self, self.masterFD >= 0 else { return }
+            guard let self = self else { return }
+            self.stateLock.lock()
+            let fd = self.masterFD
+            self.stateLock.unlock()
+            guard fd >= 0 else { return }
             var buf = [UInt8](repeating: 0, count: 8192)
-            let n = read(self.masterFD, &buf, buf.count)
+            let n = read(fd, &buf, buf.count)
             if n > 0 {
                 let chunk = Array(buf[0..<n])
                 self.considerOpen(afterReceiving: chunk)
@@ -348,73 +359,100 @@ public final class OpenSSHSession: SSHSession {
     }
 
     /// 根据输出判断是否已越过认证、可以宣称 shell 打开。
+    /// 只在读泵线程串行进入，但读写的 `recentOutput/shellOpenedEmitted/...` 与
+    /// watchExit/finish/emitOpen 并发，状态访问全部锁内；密码投递在锁外 send。
     private func considerOpen(afterReceiving chunk: [UInt8]) {
+        var deliverPassword: [UInt8]?
+        var openWork: DispatchWorkItem?
+        var openDelay: TimeInterval = 0.12
+        stateLock.lock()
         if let raw = String(bytes: chunk, encoding: .utf8), !raw.isEmpty {
             recentOutput += raw
             if recentOutput.count > 4000 {
                 recentOutput = String(recentOutput.suffix(2000))
             }
         }
-        guard !shellOpenedEmitted, !closed else { return }
-        let text = String(bytes: chunk, encoding: .utf8)?.lowercased() ?? ""
-
-        // 自动探测系统 ssh / Dropbear 的密码提示框，自动将已有的密码投递进 pty 通道
-        if text.contains("password:") || text.contains("'s password") || text.contains("passphrase") {
-            sawAuthPrompt = true
-            if let pw = creds?.password, !pw.isEmpty {
-                Log.info("在 pty 捕获到密码提示符，自动投递密码至 OpenSSH 伪终端", "ssh")
-                let passData = Array((pw + "\n").utf8)
-                send(passData)
+        if !shellOpenedEmitted && !closed {
+            let text = String(bytes: chunk, encoding: .utf8)?.lowercased() ?? ""
+            if text.contains("password:") || text.contains("'s password") || text.contains("passphrase") {
+                sawAuthPrompt = true
+                if let pw = creds?.password, !pw.isEmpty {
+                    // 已有密码：自动投递，本轮不调度 open 确认（等答完后的真实输出）。
+                    deliverPassword = Array((pw + "\n").utf8)
+                    pendingOpenWorkItem?.cancel()
+                    pendingOpenWorkItem = nil
+                } else {
+                    // 没存密码：提示留给用户在终端里交互作答，维持原逻辑继续走 open 防抖。
+                    scheduleOpenConfirm(delay: sawAuthPrompt ? 0.35 : 0.12)
+                }
+            } else if text.contains("permission denied")
+                || text.contains("authentication failed")
+                || text.contains("auth failed")
+                || text.contains("connection refused")
+                || text.contains("could not resolve")
+                || text.contains("no route to host")
+                || text.contains("operation timed out")
+                || text.contains("connection timed out")
+                || text.contains("host key verification failed") {
+                // 明确失败输出：等 watchExit 带错误码，绝不假 open。
                 pendingOpenWorkItem?.cancel()
                 pendingOpenWorkItem = nil
-                return
+            } else {
+                // 其余输出（MOTD / 提示符 / 远端数据）→ 短防抖后确认 open。
+                // 刚答完密码时可能先有一小段噪声，防抖避免抢跑。
+                scheduleOpenConfirm(delay: sawAuthPrompt ? 0.35 : 0.12)
             }
+            openWork = pendingOpenWorkItem
+            if openWork != nil { openDelay = pendingOpenDelay }
         }
-
-        // 明确失败输出：等 watchExit 带错误码，绝不假 open。
-        if text.contains("permission denied")
-            || text.contains("authentication failed")
-            || text.contains("auth failed")
-            || text.contains("connection refused")
-            || text.contains("could not resolve")
-            || text.contains("no route to host")
-            || text.contains("operation timed out")
-            || text.contains("connection timed out")
-            || text.contains("host key verification failed") {
-            pendingOpenWorkItem?.cancel()
-            pendingOpenWorkItem = nil
-            return
+        stateLock.unlock()
+        if let deliverPassword {
+            Log.info("在 pty 捕获到密码提示符，自动投递密码至 OpenSSH 伪终端", "ssh")
+            send(deliverPassword)
         }
-        // 其余输出（MOTD / 提示符 / 远端数据）→ 短防抖后确认 open。
-        // 刚答完密码时可能先有一小段噪声，防抖避免抢跑。
-        pendingOpenWorkItem?.cancel()
-        let delay: TimeInterval = sawAuthPrompt ? 0.35 : 0.12
-        let work = DispatchWorkItem { [weak self] in
-            self?.emitOpenIfNeeded()
+        if let openWork {
+            callbackQueue.asyncAfter(deadline: .now() + openDelay, execute: openWork)
         }
-        pendingOpenWorkItem = work
-        callbackQueue.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
+    /// 锁内调用：安排一次「防抖后确认 open」。延迟存入 `pendingOpenDelay` 供锁外调度。
+    private func scheduleOpenConfirm(delay: TimeInterval) {
+        pendingOpenWorkItem?.cancel()
+        pendingOpenDelay = delay
+        pendingOpenWorkItem = DispatchWorkItem { [weak self] in
+            self?.emitOpenIfNeeded()
+        }
+    }
+    private var pendingOpenDelay: TimeInterval = 0.12
+
     private func emitOpenIfNeeded() {
-        guard !shellOpenedEmitted, !closed else { return }
+        stateLock.lock()
+        guard !shellOpenedEmitted, !closed else { stateLock.unlock(); return }
         shellOpenedEmitted = true
         pendingOpenWorkItem = nil
+        stateLock.unlock()
         Log.info("系统 ssh shell 已确认打开", "ssh")
         delegate?.sshSessionDidOpenShell(self)
     }
 
     public func send(_ data: [UInt8]) {
-        guard masterFD >= 0, !data.isEmpty else { return }
+        stateLock.lock()
+        let fd = masterFD
+        stateLock.unlock()
+        guard fd >= 0, !data.isEmpty else { return }
         var d = data
-        _ = write(masterFD, &d, d.count)
+        _ = write(fd, &d, d.count)
     }
 
     public func resize(cols: Int, rows: Int) {
-        guard masterFD >= 0 else { return }
+        stateLock.lock()
+        let fd = masterFD
+        let p = pid
+        stateLock.unlock()
+        guard fd >= 0 else { return }
         var w = winsize(ws_row: UInt16(max(rows, 1)), ws_col: UInt16(max(cols, 1)), ws_xpixel: 0, ws_ypixel: 0)
-        _ = ioctl(masterFD, TIOCSWINSZ, &w)
-        if pid > 0 { kill(pid, SIGWINCH) }
+        _ = ioctl(fd, TIOCSWINSZ, &w)
+        if p > 0 { kill(p, SIGWINCH) }
     }
 
     /// 一次性命令（监控采集用）：另起一个非交互 ssh 进程收 stdout。
@@ -462,10 +500,17 @@ public final class OpenSSHSession: SSHSession {
             var didFinish = false
             var timedOutFlag = false
             // 子进程被 timer 或正常退出后，收集剩余数据并收口（只收一次）。
+            // 完成门在 bufferLock 内 check-then-set：EOF / 输出上限 / waitUntilExit 三条
+            // 收口路径跑在不同 GCD 线程、可能并发到达，裸 bool 的 guard 挡不住双进入 →
+            // completion 双回调 → 桥侧 next() 多弹破坏 4 并发记账。
             func collectAndFinish(timedOut: Bool = false) {
-                guard !didFinish else { return }
+                bufferLock.lock()
+                guard !didFinish else { bufferLock.unlock(); return }
                 didFinish = true
-                timedOutFlag = timedOut
+                // 用 OR 合并：超时兜底线程已置 true 后，EOF/退出兜底以默认 false 进来
+                // 不能把它盖回去（否则强杀的命令会被上报成正常完成）。
+                timedOutFlag = timedOutFlag || timedOut
+                bufferLock.unlock()
                 // 读尽剩余数据（进程已退出/被 terminate，读不会无限阻塞）。
                 let rest = outFH.readDataToEndOfFile()
                 if let s = String(data: rest, encoding: .utf8) { bufferLock.lock(); text += s; bufferLock.unlock() }
@@ -475,7 +520,12 @@ public final class OpenSSHSession: SSHSession {
                     try? FileManager.default.removeItem(atPath: s)
                     try? FileManager.default.removeItem(atPath: dir)
                 }
-                self.callbackQueue.async { completion(text, timedOutFlag) }
+                // completion 需要的快照在锁内取：readabilityHandler 末次 append 可能仍在进行。
+                bufferLock.lock()
+                let outSnapshot = text
+                let timedSnapshot = timedOutFlag
+                bufferLock.unlock()
+                self.callbackQueue.async { completion(outSnapshot, timedSnapshot) }
             }
 
             do {
@@ -525,25 +575,36 @@ public final class OpenSSHSession: SSHSession {
     }
 
     public func close() {
-        guard !closed else { return }
-        if pid > 0 { kill(pid, SIGHUP) }
+        stateLock.lock()
+        let p = pid
+        stateLock.unlock()
+        if p > 0 { kill(p, SIGHUP) }
         // 用户主动关：error=nil，上层不得当认证失败清钥匙串。
         finish(nil)
+    }
+
+    /// watchExit 分类用的只读快照（锁内取，避免与读泵/finish 撕裂读）。
+    private func exitHintSnapshot() -> (hint: String, opened: Bool, sawPrompt: Bool) {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return (recentOutput, shellOpenedEmitted, sawAuthPrompt)
     }
 
     // MARK: - 收尾
 
     private func watchExit() {
-        guard pid > 0 else { return }
+        stateLock.lock()
         let p = pid
+        stateLock.unlock()
+        guard p > 0 else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var status: Int32 = 0
             waitpid(p, &status, 0)
             // 退出码是排查"连不上但没报错"的关键线索：255=ssh 自身失败，1=远端命令失败
             let code = (status & 0x7f) == 0 ? (status >> 8) & 0xff : -(status & 0x7f)
-            Log.info("系统 ssh 退出 pid=\(p) code=\(code) opened=\(self?.shellOpenedEmitted ?? false)", "ssh")
-            let hint = self?.recentOutput ?? ""
-            let sawPasswordPrompt = self?.sawAuthPrompt ?? false
+            let snap = self?.exitHintSnapshot() ?? (hint: "", opened: false, sawPrompt: false)
+            Log.info("系统 ssh 退出 pid=\(p) code=\(code) opened=\(snap.opened)", "ssh")
+            let hint = snap.hint
+            let sawPasswordPrompt = snap.sawPrompt
             let lowerHint = hint.lowercased()
             let explicitAuth = lowerHint.contains("permission denied")
                 || lowerHint.contains("authentication failed")
@@ -563,7 +624,7 @@ public final class OpenSSHSession: SSHSession {
             let authRejected = explicitAuth || (sawPasswordPrompt && !networkHint)
             if code == 0 {
                 self?.finish(nil)
-            } else if self?.shellOpenedEmitted == true {
+            } else if snap.opened {
                 // 曾经真的连上过再退：当正常/带码关闭，不再伪装成「认证阶段失败」。
                 self?.finish(OpenSSHExitError(code: Int(code), hint: hint))
             } else {
@@ -574,13 +635,23 @@ public final class OpenSSHSession: SSHSession {
     }
 
     private func finish(_ error: Error?) {
-        guard !closed else { return }
+        // closed 的 check-then-set 在锁内：close()（任意线程）与 watchExit（utility 队列）
+        // 同时到达时只有一方能进入，杜绝同一 masterFD 被 Darwin.close 两次（fd 号被
+        // 新连接复用时会拆错连接）和 delegate.didCloseWith 双投递。
+        stateLock.lock()
+        guard !closed else { stateLock.unlock(); return }
         closed = true
-        pendingOpenWorkItem?.cancel()
+        let fd = masterFD
+        masterFD = -1
+        let work = pendingOpenWorkItem
         pendingOpenWorkItem = nil
-        readSource?.cancel(); readSource = nil
-        if masterFD >= 0 { Darwin.close(masterFD); masterFD = -1 }
+        let src = readSource
+        readSource = nil
         pid = -1
+        stateLock.unlock()
+        work?.cancel()
+        src?.cancel()
+        if fd >= 0 { Darwin.close(fd) }
         cleanupAskPass()
         callbackQueue.async { [weak self] in
             guard let self = self else { return }

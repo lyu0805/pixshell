@@ -96,6 +96,24 @@ final class PillButton: NSButton {
     }
     override func mouseEntered(with event: NSEvent) { hovering = true; restyle() }
     override func mouseExited(with event: NSEvent) { hovering = false; restyle() }
+
+    /// 按压反馈：mouseDown 期间整钮轻微缩小（0.96），松开回弹。
+    /// 只动 layer transform、不动配色语义；super.mouseDown 会阻塞到松开，天然成对。
+    override func mouseDown(with event: NSEvent) {
+        setPressedTransform(true)
+        super.mouseDown(with: event)
+        setPressedTransform(false)
+    }
+    private func setPressedTransform(_ pressed: Bool) {
+        guard let layer = layer else { return }
+        let t = CATransform3DMakeScale(pressed ? 0.96 : 1.0, pressed ? 0.96 : 1.0, 1)
+        let anim = CABasicAnimation(keyPath: "transform")
+        anim.toValue = NSValue(caTransform3D: t)
+        anim.duration = 0.08
+        anim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(anim, forKey: "pressFeedback")
+        layer.transform = t
+    }
 }
 
 /// 药丸徽章：gray(端口/计数) / green(已记住密码) / accent。
@@ -263,6 +281,20 @@ final class HoverCardView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         if event.clickCount >= 2 { onDoubleClick?() } else { super.mouseDown(with: event) }
+    }
+
+    /// 双击触发的瞬时确认反馈：底色/边框一闪强调色，随后回到悬停态。
+    /// 没有它，双击到连接遮罩弹出之间卡片毫无反应，像是没点中。
+    func flash() {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.08
+            self.layer?.borderColor = Theme.accent.cgColor
+            self.layer?.borderWidth = 1.5
+            self.layer?.backgroundColor = Theme.accentSoft.cgColor
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { [weak self] in
+            self?.restyle()
+        }
     }
 }
 

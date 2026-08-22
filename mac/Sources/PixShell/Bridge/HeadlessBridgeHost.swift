@@ -229,31 +229,54 @@ final class HeadlessBridgeHost: BridgeHost {
             for waiter in waiters { waiter(ok) }
         }
 
-        /// 记录一次 exec 结果并在判定 SSH transport 僵死时强制断开触发重连。
+        /// 记录一次 exec 结果；连续「超时且零输出」达到阈值后**先复核再断开**。
         /// 调用点：`bridgeExec` 的 exec completion（IO 线程）。
         /// - timedOut：exec 走满命令级 / createChannel 超时才为 true（正常返回即使空也是 false）。
         /// - hadOutput：本次 exec 收到过任何字节（tail -f 等持续产出会命中，用于清零不误杀）。
+        /// 复核的原因：`timedOut && 空输出` 对「transport 僵死」和「活 transport 上的静默慢命令」
+        /// （如 sleep 超过 timeout、慢编译静默段）不可区分。直接断开会丢掉用户的嵌套上下文
+        /// （cd/sudo/tmux）。达阈值后用一条独立 6s `exec true` 探针复核：探针通过 → 只清
+        /// 计数不动连接；探针也无响应 → 才判定僵死，翻 connected 并锁外 close 触发重连。
         func noteExecResult(timedOut: Bool, hadOutput: Bool) {
+            var needsConfirm = false
             stateLock.lock()
             if timedOut && !hadOutput {
                 staleExecStrikes += 1
             } else {
                 staleExecStrikes = 0
             }
-            let shouldReset = staleExecStrikes >= Self.staleExecStrikeLimit
-            let victim: SSHSession? = shouldReset ? ssh : nil
-            if shouldReset {
+            if staleExecStrikes >= Self.staleExecStrikeLimit {
                 staleExecStrikes = 0
-                connectedState = false   // 让下一个 exec 的 ensureConnected 触发重连
-                if everOpenedShell && resetNotice == nil {
-                    resetNotice = Self.contextResetNotice
-                }
+                needsConfirm = true
             }
+            let target: SSHSession? = needsConfirm ? ssh : nil
             stateLock.unlock()
-            if let victim {
-                Log.warn("exec/探针：连续 \(Self.staleExecStrikeLimit) 次空手超时，判定 SSH transport 僵死，主动断开触发重连", "ssh")
-                // 锁外 close：本地 close 立即触发交互通道 inactive → didCloseWith（幂等，connected 已置 false）。
-                victim.close()
+            guard let target else { return }
+            target.exec("true", timeout: Self.interactiveProbeTimeout, maxBytes: 0) { [weak self, weak target] _, probeTimedOut in
+                guard let self else { return }
+                guard let target else { return }
+                var victim: SSHSession?
+                self.stateLock.lock()
+                guard target === self.ssh else {
+                    // 复核期间 transport 已被换掉（并发重连）：无需处理。
+                    self.stateLock.unlock()
+                    return
+                }
+                if probeTimedOut {
+                    self.connectedState = false   // 让下一个 exec 的 ensureConnected 触发重连
+                    if self.everOpenedShell && self.resetNotice == nil {
+                        self.resetNotice = Self.contextResetNotice
+                    }
+                    victim = target
+                }
+                self.stateLock.unlock()
+                if let victim {
+                    Log.warn("exec/探针：连续 \(Self.staleExecStrikeLimit) 次空手超时且复核探针无响应，判定 SSH transport 僵死，主动断开触发重连", "ssh")
+                    // 锁外 close：本地 close 立即触发交互通道 inactive → didCloseWith（幂等，connected 已置 false）。
+                    victim.close()
+                } else {
+                    Log.info("exec/探针：连续空手超时后复核通过，transport 存活（静默慢命令），不断开", "ssh")
+                }
             }
         }
     }

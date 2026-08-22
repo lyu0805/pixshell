@@ -140,7 +140,10 @@ final class QuickConnect: NSView {
     // 单张主机卡片。
     private func card(_ h: Host, index: Int) -> NSView {
         let box = HoverCardView(radius: Theme.radius, bg: Theme.bg2, border: Theme.border)
-        box.onDoubleClick = { [weak self] in self?.onConnect?(h) }   // 副标题承诺了"双击直接连接"
+        box.onDoubleClick = { [weak self, weak box] in
+            box?.flash()   // 双击先给一闪确认，再进连接流程
+            self?.onConnect?(h)
+        }   // 副标题承诺了"双击直接连接"
         box.toolTip = "\(h.display)\n\(h.subtitle)\n双击直接连接"
 
         // 图标框：底色与图标都跟随识别出的系统（osId 首次连接后自动写入）
