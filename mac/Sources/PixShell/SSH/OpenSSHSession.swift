@@ -194,10 +194,20 @@ public final class OpenSSHSession: SSHSession {
         a += ["-o", "StrictHostKeyChecking=accept-new"]
         a += ["-o", "NumberOfPasswordPrompts=1"]
         a += ["-o", "ServerAliveInterval=30"]
+        // 连接多路复用：同一条 user@host:port 只在**首个**进程做完整认证，之后 10 分钟内
+        // 所有 exec/SFTP/SCP/监控进程全部复用这条已认证连接（零重新认证）。防的是
+        // 「每条命令一个新 ssh 进程 + 每进程一次密码验证」被 fail2ban/防火墙当爆破封禁。
+        // %C = user+host+port 的哈希，路径短不会超 sun_path 上限；ControlPersist 让
+        // master 在最后一个客户端退出后仍存活 10 分钟，空闲自动收尾。
+        a += ["-o", "ControlMaster=auto"]
+        a += ["-o", "ControlPath=\(controlSocketDir)/cm-%C"]
+        a += ["-o", "ControlPersist=10m"]
         a += compatibilityOptions()
 
         if let kp = c.keyPath, !kp.isEmpty {
-            a += ["-i", (kp as NSString).expandingTildeInPath]
+            let expandedKey = (kp as NSString).expandingTildeInPath
+            tightenKeyPermissions(expandedKey)
+            a += ["-i", expandedKey]
             a += ["-o", "IdentitiesOnly=yes"]
             // FIDO2 硬件安全密钥（sk-*）：系统 OpenSSH 需要 SecurityKeyProvider
             // 才弹出 Touch ID / 安全密钥触摸提示（macOS 12.3+，默认未启用）。
@@ -265,6 +275,30 @@ public final class OpenSSHSession: SSHSession {
             "-o", "MACs=hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha2-256,hmac-sha2-512,hmac-sha1",
         ]
     }
+
+    /// 私钥权限收紧到 0600：权限过宽时系统 ssh 直接拒用（"Permissions ... are too open"），
+    /// 表现为这台主机的回落路径全体静默失败——SFTP 连不上、exec 全空、右键下载"不生效"
+    /// （真实案例：日志里 sftp-server 五种启动方式全败于 too open）。只收紧、绝不放宽。
+    static func tightenKeyPermissions(_ path: String) {
+        var st = stat()
+        guard stat(path, &st) == 0, st.st_mode & S_IFMT == S_IFREG else { return }
+        if st.st_mode & 0o077 != 0 {
+            chmod(path, 0o600)
+            Log.warn("私钥权限过宽，已收紧为 0600：\(path)", "ssh")
+        }
+    }
+
+    /// ControlMaster 复用 socket 的目录（懒创建，0700）。
+    /// 必须放在**无空格**路径：ssh 的 -o ControlPath 值按配置行解析，含空格会报
+    /// "extra arguments at end of line" 直接拒启（Application Support 就踩这个坑）。
+    /// 临时目录随系统清理无妨——master 本来就只活 ControlPersist 的 10 分钟。
+    static let controlSocketDir: String = {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("pixshell-cm", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        chmod(dir.path, 0o700)
+        return dir.path
+    }()
 
     /// 当前系统 OpenSSH 实际编译进二进制的 key 算法。只查询一次，避免按 macOS
     /// 版本硬编码，也让未来系统或用户替换的 ssh 实现自动采用正确能力集合。

@@ -53,6 +53,22 @@ final class HeadlessBridgeHost: BridgeHost {
         private static let interactiveProbeTimeout: TimeInterval = 6
         private static let contextResetNotice = "警告：SSH 交互连接曾中断（半死或掉线），当前已建立全新 shell；原有嵌套上下文全部丢失。断开后第一次 type_text 不会执行，只会触发重连并展示此提示。请先 read_screen，或执行 pwd && hostname && whoami 确认位置，再重新输入命令。"
 
+        // MARK: PTY-exec（真人模式）与连接冷却
+        /// OpenSSH 回落会话的 exec 一律通过**已认证的交互 PTY** 执行（敲命令→收输出直到
+        /// marker）——绝不另起 ssh 进程重新认证：连续快速认证会被 fail2ban/防火墙当爆破
+        /// 封禁；且命令跑在同一个 shell 里，cd/env/sudo 状态跨命令延续，与真人操作同构。
+        /// PTY 是单字节流，天然串行（`ptySerial` + `ptyBusy` 挡并发）。
+        private let ptySerial = DispatchQueue(label: "pixshell.bridge.ptyexec")
+        private var ptyBusy = false
+        private var ptyMarker: String?
+        private var ptyCapture = ""
+        private var ptyCaptureLimit = 512 * 1024
+        private var ptyEchoPrefix = ""
+        /// 最近一次连接失败时间：刚失败的主机在冷却窗内直接快速失败，防止 agent 疯狂
+        /// 重试把「每次都完整认证」变成爆破被封。
+        private var lastConnectFailAt = Date.distantPast
+        private static let connectCooldown: TimeInterval = 8
+
         var connected: Bool {
             get { stateLock.lock(); defer { stateLock.unlock() }; return connectedState }
             set { stateLock.lock(); defer { stateLock.unlock() }; connectedState = newValue }
@@ -101,6 +117,12 @@ final class HeadlessBridgeHost: BridgeHost {
             stateLock.lock(); defer { stateLock.unlock() }
             if let session, session !== ssh { return }
             lastInboundAt = Date()
+            if ptyMarker != nil {
+                ptyCapture += text
+                if ptyCapture.count > ptyCaptureLimit {
+                    ptyCapture = String(ptyCapture.suffix(ptyCaptureLimit))
+                }
+            }
             output += text
             // 防无限增长：只保留最近 512 KiB
             if output.count > 512 * 1024 {
@@ -112,7 +134,9 @@ final class HeadlessBridgeHost: BridgeHost {
             stateLock.lock(); defer { stateLock.unlock() }
             let n = lines > 0 ? lines : 200
             let rows = output.split(separator: "\n", omittingEmptySubsequences: false)
-            let recent = rows.suffix(n).joined(separator: "\n")
+            let recent = rows.suffix(n)
+                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("__PIX_DONE_") }
+                .joined(separator: "\n")
             guard let notice = resetNotice else { return recent }
             resetNotice = nil
             return recent.isEmpty ? notice : notice + "\n" + recent
@@ -128,6 +152,12 @@ final class HeadlessBridgeHost: BridgeHost {
         func hasPendingResetNotice() -> Bool {
             stateLock.lock(); defer { stateLock.unlock() }
             return resetNotice != nil
+        }
+
+        /// 记录一次连接失败（冷却计时用；防 agent 高频重试触发爆破封禁）。
+        func markConnectFailed() {
+            stateLock.lock(); defer { stateLock.unlock() }
+            lastConnectFailAt = Date()
         }
 
         /// 交互 shell 最近写入后长时间无输入时，用独立 exec 通道探测 transport 是否仍活着。
@@ -149,7 +179,7 @@ final class HeadlessBridgeHost: BridgeHost {
             stateLock.unlock()
 
             Log.info("exec/探针：交互 shell 写入后超过 \(Int(Self.interactiveStaleGrace))s 无输入，开始 liveness probe", "ssh")
-            probeSSH.exec("true", timeout: Self.interactiveProbeTimeout, maxBytes: 0) { [weak self, weak probeSSH] out, timedOut in
+            probeResponsive(probeSSH, timeout: Self.interactiveProbeTimeout) { [weak self, weak probeSSH] alive in
                 guard let self, let probeSSH else { return }
                 self.stateLock.lock()
                 guard self.interactiveProbeInFlight,
@@ -159,13 +189,105 @@ final class HeadlessBridgeHost: BridgeHost {
                 }
                 let isCurrent = probeSSH === self.ssh
                 self.interactiveProbeInFlight = false
-                if isCurrent && !timedOut {
+                if isCurrent && alive {
                     self.probeConfirmedSinceWrite = true
                 }
                 self.stateLock.unlock()
                 guard isCurrent else { return }
-                Log.info("exec/探针：liveness probe \(timedOut ? "超时" : "确认")，输出=\(out.count)字节", "ssh")
-                self.noteExecResult(timedOut: timedOut, hadOutput: !out.isEmpty)
+                Log.info("exec/探针：liveness probe \(alive ? "确认" : "超时")", "ssh")
+                // 探针超时按「空手超时」计 strike（hadOutput=false）；确认活着则清零。
+                self.noteExecResult(timedOut: !alive, hadOutput: false)
+            }
+        }
+
+        // MARK: PTY-exec（真人模式）
+
+        /// 通过**已认证的交互 PTY** 执行一次性命令：敲 `{ cmd; }; echo <marker>` 进同一个
+        /// shell，收集输出直到 marker。零新连接、零重新认证（防爆破封禁的关键路径），
+        /// cd/env/sudo 状态跨命令延续。PTY 单流天然串行：`ptyBusy` 挡住并发，等待者稍后重排。
+        func execViaPTY(_ s: SSHSession, _ command: String, timeout: TimeInterval,
+                        maxBytes: Int, completion: @escaping (String, Bool) -> Void) {
+            ptySerial.async { [weak self, weak s] in
+                guard let self, let s else { completion("", false); return }
+                self.stateLock.lock()
+                if self.ptyBusy {
+                    self.stateLock.unlock()
+                    // 前一条命令还在 PTY 里跑：稍后重排（串行语义，不并发交错）。
+                    self.ptySerial.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                        self?.execViaPTY(s, command, timeout: timeout, maxBytes: maxBytes, completion: completion)
+                    }
+                    return
+                }
+                guard self.connectedState, s === self.ssh else {
+                    self.stateLock.unlock(); completion("", false); return
+                }
+                let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+                let cmd = trimmed.isEmpty ? "true" : trimmed
+                let nonce = String(format: "%08x", UInt32.random(in: 1...UInt32.max))
+                let marker = "__PIX_DONE_\(nonce)__"
+                let line = "{ \(cmd); }; echo \(marker)\n"
+                self.ptyBusy = true
+                self.ptyMarker = marker
+                self.ptyCapture = ""
+                self.ptyCaptureLimit = maxBytes > 0 ? maxBytes : 512 * 1024
+                self.ptyEchoPrefix = String(cmd.prefix(40))
+                self.stateLock.unlock()
+                s.send(Array(line.utf8))
+                self.pollPty(s, deadline: Date().addingTimeInterval(timeout), completion: completion)
+            }
+        }
+
+        /// PTY 收口轮询（跑在 ptySerial 上）：marker 出现 → 截取输出并剥掉命令回显行；
+        /// 超时/断线 → 返回已收集的部分。轮询用 asyncAfter 让位，等待中的下一条
+        /// execViaPTY 由 ptyBusy 挡住不会交错。
+        private func pollPty(_ s: SSHSession, deadline: Date, completion: @escaping (String, Bool) -> Void) {
+            var done: (String, Bool)?
+            stateLock.lock()
+            if let marker = ptyMarker {
+                if let range = ptyCapture.range(of: marker) {
+                    var out = String(ptyCapture[..<range.lowerBound])
+                    let echoPrefix = ptyEchoPrefix
+                    if !echoPrefix.isEmpty, let nl = out.firstIndex(of: "\n") {
+                        let firstLine = String(out[..<nl])
+                        if firstLine.contains(echoPrefix) {
+                            out = String(out[out.index(after: nl)...])
+                        }
+                    }
+                    ptyMarker = nil; ptyCapture = ""; ptyBusy = false
+                    done = (out, false)
+                } else if Date() >= deadline || !connectedState || s !== ssh {
+                    let partial = ptyCapture
+                    let timedOut = Date() >= deadline
+                    ptyMarker = nil; ptyCapture = ""; ptyBusy = false
+                    done = (partial, timedOut)
+                }
+            } else {
+                done = ("", false)
+            }
+            stateLock.unlock()
+            if let d = done { completion(d.0, d.1); return }
+            ptySerial.asyncAfter(deadline: .now() + 0.06) { [weak self, weak s] in
+                guard let self, let s else { return }
+                self.pollPty(s, deadline: deadline, completion: completion)
+            }
+        }
+
+        /// 传输活性探测（**不新增认证**）：OpenSSH 会话有命令在 PTY 里跑 = 活（进程还在
+        /// 且 connected）；空闲则 PTY 快速跑一条 true。NIO 走 exec true——同一条连接上的
+        /// 子通道，零认证成本。
+        func probeResponsive(_ target: SSHSession, timeout: TimeInterval, completion: @escaping (Bool) -> Void) {
+            if target is OpenSSHSession {
+                stateLock.lock()
+                let busy = ptyBusy
+                stateLock.unlock()
+                if busy { completion(true); return }
+                execViaPTY(target, "true", timeout: timeout, maxBytes: 0) { _, timedOut in
+                    completion(!timedOut)
+                }
+            } else {
+                target.exec("true", timeout: timeout, maxBytes: 0) { _, timedOut in
+                    completion(!timedOut)
+                }
             }
         }
 
@@ -178,6 +300,13 @@ final class HeadlessBridgeHost: BridgeHost {
                 onReady(true)
                 return
             }
+            // 连接失败冷却：刚失败过的主机不立刻重新认证（防 agent 高频重试触发爆破封禁）。
+            if Date().timeIntervalSince(lastConnectFailAt) < Self.connectCooldown {
+                stateLock.unlock()
+                Log.warn("连接冷却中（距上次失败不足 \(Int(Self.connectCooldown))s），本次不重新认证", "ssh")
+                onReady(false)
+                return
+            }
             reconnectWaiters.append(onReady)
             if reconnectingState {
                 stateLock.unlock()
@@ -186,6 +315,7 @@ final class HeadlessBridgeHost: BridgeHost {
             reconnectingState = true
             let old = ssh
             connectedState = false
+            ptyMarker = nil; ptyCapture = ""; ptyBusy = false
             interactiveProbeInFlight = false
             interactiveProbeGeneration &+= 1
             lastInboundAt = .distantPast
@@ -223,6 +353,7 @@ final class HeadlessBridgeHost: BridgeHost {
         private func finishReconnect(_ ok: Bool) {
             stateLock.lock()
             reconnectingState = false
+            if !ok { lastConnectFailAt = Date() }
             let waiters = reconnectWaiters
             reconnectWaiters.removeAll(keepingCapacity: false)
             stateLock.unlock()
@@ -252,7 +383,7 @@ final class HeadlessBridgeHost: BridgeHost {
             let target: SSHSession? = needsConfirm ? ssh : nil
             stateLock.unlock()
             guard let target else { return }
-            target.exec("true", timeout: Self.interactiveProbeTimeout, maxBytes: 0) { [weak self, weak target] _, probeTimedOut in
+            probeResponsive(target, timeout: Self.interactiveProbeTimeout) { [weak self, weak target] probeTimedOut in
                 guard let self else { return }
                 guard let target else { return }
                 var victim: SSHSession?
@@ -379,6 +510,7 @@ final class HeadlessBridgeHost: BridgeHost {
             }
             waited += 0.25
             if waited > 20 {
+                sess.markConnectFailed()
                 sess.currentSSH().close()
                 // 保留数组槽位，绝不 remove：session 是外部句柄，删除前项会让所有后续
                 // session 编号整体漂移，造成 agent 复用旧号时命中另一台主机。
@@ -461,10 +593,21 @@ final class HeadlessBridgeHost: BridgeHost {
             guard let self, let s else { completion("", false); next(); return }
             self.ensureSessionReady(s) { ok in
                 guard ok else { completion("", false); next(); return }
-                s.currentSSH().exec(cmd, timeout: timeout, maxBytes: maxBytes) { out, timedOut in
-                    s.noteExecResult(timedOut: timedOut, hadOutput: !out.isEmpty)
-                    completion(out, timedOut)
-                    next()
+                let runner = s.currentSSH()
+                if runner is OpenSSHSession {
+                    // 真人模式：OpenSSH 回落会话的 exec 走交互 PTY——不另起 ssh 进程
+                    // 重新认证（防爆破封禁关键路径），cd/env 状态跨命令延续。
+                    s.execViaPTY(runner, cmd, timeout: timeout, maxBytes: maxBytes) { out, timedOut in
+                        s.noteExecResult(timedOut: timedOut, hadOutput: !out.isEmpty)
+                        completion(out, timedOut)
+                        next()
+                    }
+                } else {
+                    runner.exec(cmd, timeout: timeout, maxBytes: maxBytes) { out, timedOut in
+                        s.noteExecResult(timedOut: timedOut, hadOutput: !out.isEmpty)
+                        completion(out, timedOut)
+                        next()
+                    }
                 }
             }
         }
@@ -599,6 +742,7 @@ extension HeadlessBridgeHost.HeadlessSession: SSHSessionDelegate {
         lastInboundAt = .distantPast
         lastWriteAt = .distantPast
         probeConfirmedSinceWrite = true
+        ptyMarker = nil; ptyCapture = ""; ptyBusy = false
     }
     func sshSessionDidOpenShell(_ s: SSHSession) {
         stateLock.lock()

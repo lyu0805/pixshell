@@ -640,7 +640,9 @@ extension AppDelegate {
         sftpPanel.execRunner = { [weak self] cmd, done in                            // 智能打包传输要在远端跑 tar
             guard let self = self, self.sessions.indices.contains(self.current),
                   let ssh = self.sessions[self.current].ssh else { done(""); return }
-            ssh.exec(cmd) { done($0) }
+            // 打包/chmod 类命令要 600s：大目录（如 .cache 数 GB）的远端 tar 远超默认
+            // 30s，超时收口会让"远端无 __PIXSHELL_RC 回执"→ 打包下载永远失败。
+            ssh.exec(cmd, timeout: 600, maxBytes: 0) { out, _ in done(out) }
         }
         sftpPanel.onInsertToCommand = { [weak self] path in                          // 右键「插入命令框」→ 命令板
             guard let self = self, let panel = self.cmdPanel else { return }

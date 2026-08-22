@@ -6,14 +6,15 @@
 
 ## 给 AI 的硬规则
 
-1. **先确认会话，再执行命令。** MCP 先调用 `list_sessions`；CLI 先运行 `pixshell sessions`。不要默认假设 session 一定存在。只有确认目标主机和 `connected=true` 后，才使用返回的 session 编号。
+0. **像真人一样操作，绝不反复重新连接（防封禁铁律，最高优先级）。** 你的工作范式 = 一个真人运维坐在终端前：`connect` 建立会话后，这台主机在整个任务期间**只保持这一条已认证连接**。查询用 `exec_command`（同一条连接上的通道，不重新登录）；连续操作、依赖前文状态（cd/env/sudo）的操作用 `type_text` + `read_screen` 在同一个交互会话里完成。**严禁**：每条命令前重新 `connect`、失败后无间隔地连环重试、对同一主机并行发起多个连接——服务器把连续快速认证视为密码爆破，会直接把你的 IP 拉黑（fail2ban/防火墙），之后真人也连不上。连接失败后等冷却提示消失再重试，指数退避。
+1. **先确认会话，再执行命令。** MCP 先调用 `list_sessions`；CLI 先运行 `pixshell sessions`。不要默认假设 session 一定存在。只有确认目标主机和 `connected=true` 后，才使用返回的 session 编号。没有会话时用 `connect` 建立一次，之后复用。
 2. **判断交互终端状态先读屏。** MCP 使用 `read_screen`，CLI 使用 `pixshell screen 40`。空画面不等于连接正常，也不等于命令失败。
-3. **只读查询和一次性命令优先使用 exec。** MCP 使用 `exec_command`，CLI 使用 `pixshell exec`。它通过独立 exec channel 执行，不会把命令输入交互终端画面。
+3. **只读查询和一次性命令优先使用 exec。** MCP 使用 `exec_command`，CLI 使用 `pixshell exec`。它在**当前已认证的会话**上执行，不会重新建立连接、不会重新认证，也不会把命令输入交互终端画面。
 4. **需要 PTY 交互时才使用 type_text。** vim、top、交互式确认、需要观察提示符的操作使用 `type_text` 后紧接 `read_screen`；不要用 `type_text` 代替普通状态查询。
 5. **断线恢复后必须重新确认位置。** 如果画面出现“SSH 交互连接曾中断”或“上下文全部丢失”等提示，断开后的第一次 `type_text` 可能只触发重连，不发送原始输入。此时先 `read_screen`，再用 `exec_command` 执行 `pwd && hostname && whoami`，确认新 shell 的位置和身份后，重新发送原输入。
 6. **不要把 exec 和交互 shell 混为一谈。** `exec_command` 的工作目录、shell 状态和交互画面不是可靠的同一上下文；需要持续的交互状态就用 `type_text` + `read_screen`。
 7. **大输出必须主动收窄。** 优先远端执行 `grep`、`head`、`tail`、`sed -n`、`wc`；不要直接 `cat` 大文件。需要完整结果时，使用 `write_artifact=true`，再用 `read_artifact` 分块读取。
-8. **并发响应按 JSON-RPC id 配对。** 多个 MCP 调用可能并行执行，返回顺序不保证。不要把“先返回”当成“先发起”的结果。
+8. **并发响应按 JSON-RPC id 配对。** 多个 MCP 调用可能并行执行，返回顺序不保证。不要把“先返回”当成“先发起”的结果。但**同一主机的连接类操作必须串行**（见规则 0）。
 9. **破坏性操作先询问用户。** `rm`、覆盖写文件、批量改权限、重启服务、修改防火墙/网络/系统配置、停止进程和重启主机等操作，执行前必须得到明确确认。
 10. **不要索要或传播 token。** MCP token 由本机脚本从 `~/Library/Application Support/PixShell/agent_token` 读取；token 不需要出现在 prompt、命令参数、日志、回复或文档中。
 

@@ -160,7 +160,7 @@ enum AgentMCP {
             "     \"inputSchema\": {\"type\": \"object\", \"properties\": {",
             "        \"lines\": {\"type\": \"integer\", \"default\": 200, \"minimum\": 1, \"maximum\": 2000, \"description\": \"读取行数，默认 200，最大 2000\"},",
             "        \"session\": {\"type\": \"integer\", \"default\": 0, \"minimum\": 0, \"description\": \"session 编号；先使用 list_sessions 确认\"}}}},",
-            "    {\"name\": \"exec_command\", \"description\": \"通过独立 exec channel 执行一次性命令并返回 stdout；不会把命令输入交互画面，也不会每条命令重新建立 SSH 连接。只读查询优先用它；大输出请用 grep/head/tail 或 write_artifact。死 session 会尝试原地重连，越界通常返回 410。\",",
+            "    {\"name\": \"exec_command\", \"description\": \"通过已认证会话执行一次性命令并返回输出；绝不重新建立连接或重新认证（防封禁铁律）。不会把命令输入交互画面。只读查询优先用它；大输出请用 grep/head/tail 或 write_artifact。死 session 会尝试原地重连，越界通常返回 410。\",",
             "     \"inputSchema\": {\"type\": \"object\", \"properties\": {",
             "        \"command\": {\"type\": \"string\", \"description\": \"要执行的远端命令，必填；不要直接 cat 大文件\"},",
             "        \"session\": {\"type\": \"integer\", \"default\": 0, \"minimum\": 0, \"description\": \"session 编号；先使用 list_sessions 确认\"},",
