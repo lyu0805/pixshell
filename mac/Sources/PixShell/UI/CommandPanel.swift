@@ -448,6 +448,7 @@ final class CommandPanel: NSView, NSTextViewDelegate {
     @objc private func expandEditor() { setEditorCollapsed(false) }
 
     private func setEditorCollapsed(_ collapsed: Bool) {
+        guard collapsed != editorCollapsed else { return }   // 过期动画请求直接丢弃
         editorCollapsed = collapsed
         // 展开前先显示窄条/内容并恢复 alpha 起点，动画结束再切换显隐，避免中途截断。
         if collapsed {
@@ -463,12 +464,13 @@ final class CommandPanel: NSView, NSTextViewDelegate {
             rightWidthC.animator().constant = collapsed ? Self.rightCollapsed : Self.rightExpanded
             for v in editorParts { v.animator().alphaValue = collapsed ? 0.0 : 1.0 }
             expandStrip.animator().alphaValue = collapsed ? 1.0 : 0.0
-        }, completionHandler: {
-            if collapsed {
-                for v in self.editorParts { v.isHidden = true }
-            } else {
-                self.expandStrip.isHidden = true
-            }
+        }, completionHandler: { [weak self] in
+            // 读实时 editorCollapsed 并把两侧显隐都写全：旧动画 completion 晚到时
+            // 捕获值会把展开中的内容藏掉（右栏空白且不自愈）。
+            guard let self = self else { return }
+            let c = self.editorCollapsed
+            for v in self.editorParts { v.isHidden = c }
+            self.expandStrip.isHidden = !c
             self.needsLayout = true
         })
     }

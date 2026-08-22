@@ -37,7 +37,9 @@ final class TermSessionController: SSHSessionDelegate {
 
     func sshSessionDidOpenShell(_ s: SSHSession) {
         guard s === sess.ssh else { return }
-        guard let app = app else { return }
+        // 会话存活校验：closeSession 移除标签后不置 ssh=nil，迟到的 open 回调若只验
+        // transport 身份会对已删会话继续建连/探测（幽灵重连）。旧反查天然含此语义。
+        guard let app = app, app.sessions.contains(where: { $0 === sess }) else { return }
         sess.connected = true
         sess.shellOpened = true     // 认证确实过了；之后任何关闭都不再算"认证失败"
         app.connectOverlay?.succeed()   // 连接动画收尾（绿点 + 淡出）
@@ -81,6 +83,9 @@ final class TermSessionController: SSHSessionDelegate {
 
     func sshSession(_ s: SSHSession, didCloseWith error: Error?) {
         guard s === sess.ssh else { return }
+        // 同上：已从 sessions 移除的会话不再走分类/回落/提示（否则会对幽灵会话
+        // 自动重连 + 把覆盖层盖到当前活动会话上）。
+        guard app?.sessions.contains(where: { $0 === sess }) == true else { return }
         guard !sess.closeHandled else { return }
         sess.closeHandled = true
         // 清掉节流里还没 flush 的输出（会话已关，不再消化），同时清 ANSI 跨块状态。

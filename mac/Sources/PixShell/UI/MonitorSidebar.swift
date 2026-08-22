@@ -265,8 +265,8 @@ final class MonitorSidebar: NSView {
 	        return row
 	    }
     @objc private func copyIP() {
+        guard let btn = copyBtn, btn.title != "✓" else { return }   // ✓ 期间的连点忽略，防恢复闭包把 "✓" 当原文案
         onCopyIP?()
-        guard let btn = copyBtn else { return }
         let origTitle = btn.title
         let origColor = btn.attributedTitle.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor ?? Theme.text
         btn.wantsLayer = true

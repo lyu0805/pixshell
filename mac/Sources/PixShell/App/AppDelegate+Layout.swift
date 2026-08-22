@@ -384,6 +384,7 @@ extension AppDelegate {
 
     @objc func toggleSidebar() { setSidebarCollapsed(!sideCollapsed) }
     func setSidebarCollapsed(_ collapsed: Bool) {
+        guard collapsed != sideCollapsed else { return }   // 快速反向切换时丢弃过期动画请求
         Log.debug("侧栏折叠=\(collapsed)", "ui")
         sideCollapsed = collapsed
         
@@ -399,9 +400,13 @@ extension AppDelegate {
             self.sidebarEdge?.animator().alphaValue = collapsed ? 1.0 : 0.0
             
             // 当动画结束时，再将 isHidden 置位以停止响应事件
-        } completionHandler: {
-            self.sideWrap?.isHidden = collapsed
-            self.sidebarEdge?.isHidden = !collapsed
+        } completionHandler: { [weak self] in
+            // 读实时状态而非当次参数：快速反向切换时旧动画的 completion 晚到，
+            // 用捕获值会把新方向的视图又藏回去（闪没/卡死）。
+            guard let self = self else { return }
+            let c = self.sideCollapsed
+            self.sideWrap?.isHidden = c
+            self.sidebarEdge?.isHidden = !c
         }
         
         // 提前显示以保证 alpha 动画可见
@@ -800,6 +805,7 @@ extension AppDelegate {
     // 命令栏 ▾/▴：隐藏/显示整个 文件/命令 坞（tab 行 + 面板体一起消失），终端补满。
     @objc func toggleDock() { setBottomCollapsed(!dockCollapsed) }
     func setBottomCollapsed(_ collapsed: Bool) {
+        guard collapsed != dockCollapsed else { return }   // 过期动画请求直接丢弃
         Log.debug("底栏折叠=\(collapsed)", "ui")
         dockCollapsed = collapsed
         dockToggleBtn?.image = NSImage(systemSymbolName: collapsed ? "chevron.up" : "chevron.down", accessibilityDescription: nil)
@@ -820,8 +826,9 @@ extension AppDelegate {
             ctx.allowsImplicitAnimation = true
             c.animator().constant = collapsed ? 0 : dockHeight
             dock.animator().alphaValue = collapsed ? 0.0 : 1.0
-        }, completionHandler: {
-            if collapsed { dock.isHidden = true }
+        }, completionHandler: { [weak self] in
+            // 读实时 dockCollapsed：旧动画 completion 晚到时不能用捕获值把展开中的坞藏掉
+            if self?.dockCollapsed == true { dock.isHidden = true }
         })
     }
 

@@ -68,6 +68,8 @@ final class HeadlessBridgeHost: BridgeHost {
         /// 重试把「每次都完整认证」变成爆破被封。
         private var lastConnectFailAt = Date.distantPast
         private static let connectCooldown: TimeInterval = 8
+        /// 跨读块残缺 UTF-8 尾部（只在会话的回调队列上触碰，无需加锁）。
+        private var pendingTail: [UInt8] = []
 
         var connected: Bool {
             get { stateLock.lock(); defer { stateLock.unlock() }; return connectedState }
@@ -135,7 +137,10 @@ final class HeadlessBridgeHost: BridgeHost {
             let n = lines > 0 ? lines : 200
             let rows = output.split(separator: "\n", omittingEmptySubsequences: false)
             let recent = rows.suffix(n)
-                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("__PIX_DONE_") }
+                .filter {
+                    let t = $0.trimmingCharacters(in: .whitespaces)
+                    return !t.hasPrefix("__PIX_DONE_") && !t.hasPrefix("__PIX_FLUSH_")
+                }
                 .joined(separator: "\n")
             guard let notice = resetNotice else { return recent }
             resetNotice = nil
@@ -221,29 +226,78 @@ final class HeadlessBridgeHost: BridgeHost {
                 guard self.connectedState, s === self.ssh else {
                     self.stateLock.unlock(); completion("", false); return
                 }
-                let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-                let cmd = trimmed.isEmpty ? "true" : trimmed
-                let nonce = String(format: "%08x", UInt32.random(in: 1...UInt32.max))
-                let marker = "__PIX_DONE_\(nonce)__"
-                let line = "{ \(cmd); }; echo \(marker)\n"
                 self.ptyBusy = true
-                self.ptyMarker = marker
-                self.ptyCapture = ""
-                self.ptyCaptureLimit = maxBytes > 0 ? maxBytes : 512 * 1024
-                self.ptyEchoPrefix = String(cmd.prefix(40))
                 self.stateLock.unlock()
-                s.send(Array(line.utf8))
-                self.pollPty(s, deadline: Date().addingTimeInterval(timeout), completion: completion)
+                // 排空阶段：上一条超时命令可能仍在远端跑、残留输出还在流入。先发一条
+                // flush marker，丢弃到它为止的一切（残留输出/提示符），再开始正式捕获，
+                // 否则下一条命令的结果会混入上一条的尾巴。
+                self.drainPty(s) { [weak self] in
+                    guard let self = self else { completion("", false); return }
+                    let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let cmd = trimmed.isEmpty ? "true" : trimmed
+                    let nonce = String(format: "%08x", UInt32.random(in: 1...UInt32.max))
+                    let marker = "__PIX_DONE_\(nonce)__"
+                    let line = "{ \(cmd); }; echo \(marker)\n"
+                    self.stateLock.lock()
+                    guard self.ptyBusy, self.connectedState, s === self.ssh else {
+                        self.ptyBusy = false
+                        self.stateLock.unlock(); completion("", false); return
+                    }
+                    self.ptyMarker = marker
+                    self.ptyCapture = ""
+                    self.ptyCaptureLimit = maxBytes > 0 ? maxBytes : 512 * 1024
+                    self.ptyEchoPrefix = String(cmd.prefix(40))
+                    self.stateLock.unlock()
+                    s.send(Array(line.utf8))
+                    self.pollPty(s, myMarker: marker, deadline: Date().addingTimeInterval(timeout), completion: completion)
+                }
+            }
+        }
+
+        /// 排空交互 PTY：发一条 flush marker，丢弃到它为止的历史输出（最多 3s——
+        /// flush 排不上队说明远端仍被占，尽力而为继续）。
+        private func drainPty(_ s: SSHSession, done: @escaping () -> Void) {
+            let nonce = String(format: "%08x", UInt32.random(in: 1...UInt32.max))
+            let flush = "__PIX_FLUSH_\(nonce)__"
+            stateLock.lock()
+            guard ptyBusy, connectedState, s === ssh else {
+                stateLock.unlock(); done(); return
+            }
+            ptyMarker = flush
+            ptyCapture = ""
+            stateLock.unlock()
+            s.send(Array("echo \(flush)\n".utf8))
+            pollDrain(s, myFlush: flush, deadline: Date().addingTimeInterval(3), done: done)
+        }
+
+        private func pollDrain(_ s: SSHSession, myFlush: String, deadline: Date, done: @escaping () -> Void) {
+            var complete = false
+            stateLock.lock()
+            if ptyMarker == myFlush {
+                if ptyCapture.contains(myFlush) || Date() >= deadline || !connectedState || s !== ssh {
+                    ptyMarker = nil; ptyCapture = ""
+                    complete = true
+                }
+            } else {
+                complete = true   // 被外部清理（断线/重连）：直接进入下一步（会被入口 guard 拦）
+            }
+            stateLock.unlock()
+            if complete { done(); return }
+            ptySerial.asyncAfter(deadline: .now() + 0.05) { [weak self, weak s] in
+                guard let self, let s else { done(); return }
+                self.pollDrain(s, myFlush: myFlush, deadline: deadline, done: done)
             }
         }
 
         /// PTY 收口轮询（跑在 ptySerial 上）：marker 出现 → 截取输出并剥掉命令回显行；
-        /// 超时/断线 → 返回已收集的部分。轮询用 asyncAfter 让位，等待中的下一条
-        /// execViaPTY 由 ptyBusy 挡住不会交错。
-        private func pollPty(_ s: SSHSession, deadline: Date, completion: @escaping (String, Bool) -> Void) {
+        /// 超时/断线/被外部清理 → 返回已收集的部分 + timedOut=true（**绝不**伪报成功——
+        /// 把「命令被断线打断」报成正常完成会误导 agent，还会错误清零僵死 strike）。
+        /// 超时先发 Ctrl-C 终止远端命令，防止它继续产出污染下一条 exec。
+        private func pollPty(_ s: SSHSession, myMarker: String, deadline: Date, completion: @escaping (String, Bool) -> Void) {
             var done: (String, Bool)?
+            var interruptRemote = false
             stateLock.lock()
-            if let marker = ptyMarker {
+            if let marker = ptyMarker, marker == myMarker {
                 if let range = ptyCapture.range(of: marker) {
                     var out = String(ptyCapture[..<range.lowerBound])
                     let echoPrefix = ptyEchoPrefix
@@ -257,37 +311,35 @@ final class HeadlessBridgeHost: BridgeHost {
                     done = (out, false)
                 } else if Date() >= deadline || !connectedState || s !== ssh {
                     let partial = ptyCapture
-                    let timedOut = Date() >= deadline
                     ptyMarker = nil; ptyCapture = ""; ptyBusy = false
-                    done = (partial, timedOut)
+                    interruptRemote = Date() >= deadline
+                    done = (partial, true)
                 }
+            } else if ptyMarker == nil {
+                // 被外部清理（断线/重连）：命令被硬打断，按失败上报（含已收集部分）。
+                let partial = ptyCapture
+                ptyCapture = ""; ptyBusy = false
+                done = (partial, true)
             } else {
-                done = ("", false)
+                // ptyMarker 已换成别的（异常路径）：同样按中断处理。
+                done = ("", true)
             }
             stateLock.unlock()
+            if interruptRemote { s.send([0x03]) }   // Ctrl-C：终止远端仍在跑的命令
             if let d = done { completion(d.0, d.1); return }
             ptySerial.asyncAfter(deadline: .now() + 0.06) { [weak self, weak s] in
                 guard let self, let s else { return }
-                self.pollPty(s, deadline: deadline, completion: completion)
+                self.pollPty(s, myMarker: myMarker, deadline: deadline, completion: completion)
             }
         }
 
-        /// 传输活性探测（**不新增认证**）：OpenSSH 会话有命令在 PTY 里跑 = 活（进程还在
-        /// 且 connected）；空闲则 PTY 快速跑一条 true。NIO 走 exec true——同一条连接上的
-        /// 子通道，零认证成本。
+        /// 传输活性探测：**必须独立于交互 PTY**——PTY 可能正被慢命令占着（探针在
+        /// stdin 排队等不到 marker），会把活连接误判成僵死而误杀。OpenSSH 会话用
+        /// 进程 exec：经 ControlMaster 复用已认证连接（master 由交互会话常驻），
+        /// 零重新认证；NIO 走同连接子通道，本就零认证成本。
         func probeResponsive(_ target: SSHSession, timeout: TimeInterval, completion: @escaping (Bool) -> Void) {
-            if target is OpenSSHSession {
-                stateLock.lock()
-                let busy = ptyBusy
-                stateLock.unlock()
-                if busy { completion(true); return }
-                execViaPTY(target, "true", timeout: timeout, maxBytes: 0) { _, timedOut in
-                    completion(!timedOut)
-                }
-            } else {
-                target.exec("true", timeout: timeout, maxBytes: 0) { _, timedOut in
-                    completion(!timedOut)
-                }
+            target.exec("true", timeout: timeout, maxBytes: 0) { _, timedOut in
+                completion(!timedOut)
             }
         }
 
@@ -353,7 +405,7 @@ final class HeadlessBridgeHost: BridgeHost {
         private func finishReconnect(_ ok: Bool) {
             stateLock.lock()
             reconnectingState = false
-            if !ok { lastConnectFailAt = Date() }
+            if ok { lastConnectFailAt = .distantPast } else { lastConnectFailAt = Date() }
             let waiters = reconnectWaiters
             reconnectWaiters.removeAll(keepingCapacity: false)
             stateLock.unlock()
@@ -724,8 +776,28 @@ final class HeadlessBridgeHost: BridgeHost {
 /// 让 HeadlessSession 直接当自己的 SSHSessionDelegate：收字节进缓冲、记录打开/关闭。
 extension HeadlessBridgeHost.HeadlessSession: SSHSessionDelegate {
     func sshSession(_ s: SSHSession, didReceive data: [UInt8]) {
-        guard let text = String(bytes: data, encoding: .utf8) else { return }
-        appendOutput(text, from: s)
+        // 字节级拼接：8KB 读块边界常切在多字节 UTF-8 序列中间，整块 String(bytes:)
+        // 会直接丢 8KB（中文画面缺段、marker 落坏块则 PTY exec 假超时）。把残缺
+        // 尾部（≤4 字节）留给下一块拼接；整块都解不动（二进制流）才走有损解码。
+        var combined = pendingTail + data
+        pendingTail = []
+        var text = ""
+        if let decoded = String(bytes: combined, encoding: .utf8) {
+            text = decoded
+        } else {
+            for drop in 1...4 where combined.count - drop > 0 {
+                if let decoded = String(bytes: combined[0..<(combined.count - drop)], encoding: .utf8) {
+                    text = decoded
+                    pendingTail = Array(combined[(combined.count - drop)...])
+                    break
+                }
+            }
+            if text.isEmpty {
+                text = String(decoding: combined, as: UTF8.self)
+                pendingTail = []
+            }
+        }
+        if !text.isEmpty { appendOutput(text, from: s) }
     }
     func sshSession(_ s: SSHSession, didCloseWith error: Error?) {
         stateLock.lock()

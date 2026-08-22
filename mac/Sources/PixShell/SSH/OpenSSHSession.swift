@@ -416,8 +416,12 @@ public final class OpenSSHSession: SSHSession {
                     pendingOpenWorkItem?.cancel()
                     pendingOpenWorkItem = nil
                 } else {
-                    // 没存密码：提示留给用户在终端里交互作答，维持原逻辑继续走 open 防抖。
-                    scheduleOpenConfirm(delay: sawAuthPrompt ? 0.35 : 0.12)
+                    // 没存密码：GUI 里提示留给用户在终端交互作答，继续走 open 防抖；
+                    // 无头桥里无人应答——不 emitOpen，让 ensureConnected 的 poll 如实
+                    // 超时失败（否则假 ready 后 agent 会把命令喂给口令提示）。
+                    if deliversOnMainThread {
+                        scheduleOpenConfirm(delay: sawAuthPrompt ? 0.35 : 0.12)
+                    }
                 }
             } else if text.contains("permission denied")
                 || text.contains("authentication failed")

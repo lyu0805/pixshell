@@ -130,6 +130,7 @@ public sealed class SshNetTransport : ITerminalTransport
             if (_connected)
             {
                 _connected = false;
+                PixShell.Logging.Log.Info($"SSH 会话关闭 {_host}:{_port}", "ssh");
                 StatusChanged?.Invoke("连接已关闭");
                 ConnectedChanged?.Invoke(false);
             }
