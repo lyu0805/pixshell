@@ -197,11 +197,33 @@ public final class OpenSSHSession: SSHSession {
         // 连接多路复用：同一条 user@host:port 只在**首个**进程做完整认证，之后 10 分钟内
         // 所有 exec/SFTP/SCP/监控进程全部复用这条已认证连接（零重新认证）。防的是
         // 「每条命令一个新 ssh 进程 + 每进程一次密码验证」被 fail2ban/防火墙当爆破封禁。
-        // %C = user+host+port 的哈希，路径短不会超 sun_path 上限；ControlPersist 让
-        // master 在最后一个客户端退出后仍存活 10 分钟，空闲自动收尾。
-        a += ["-o", "ControlMaster=auto"]
-        a += ["-o", "ControlPath=\(controlSocketDir)/cm-%C"]
-        a += ["-o", "ControlPersist=10m"]
+        // ControlPersist 让 master 在最后一个客户端退出后仍存活 10 分钟，空闲自动收尾。
+        //
+        // **路径长度铁律**：OpenSSH 对 ControlPath 的 unix socket 有 `sun_path` 104 字节
+        // 硬上限。macOS 临时目录是 /var/folders/<xx>/<32hex>/T/（约 49 字节），加前缀目录、
+        // 加 `%C`(user+host+port 完整 SHA 哈希) 展开后**必超 104**——日志实锤：
+        // `ControlPath too long ('.../cm-392593213a4f...' >= 104 bytes)`，整条命令 exit 255、
+        // SFTP/exec 静默失败（今天事故直接根因）。因此这里：
+        //  1) 用 `%h-%p`(host:port,~30 字符) 代替 `%C`(完整哈希,~40 字符) 缩短；
+        //  2) 完整拼接后仍超上限 → **放弃 ControlMaster 复用**（退回每次独立认证，
+        //     仅极少数超长 host 路径才发生，避免整条命令因超限而 255。
+        // socket 文件名里的 host 成分必须净化：host 可能是 IPv6（含冒号、% 符号）、
+        // 或含 / 等路径分隔符——直接拼进 ControlPath 会破坏 socket 路径。统一替换成安全字符。
+        let hostPart = c.host
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+            .replacingOccurrences(of: "%", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "\\", with: "_")
+        let base = "\(controlSocketDir)/cm-\(hostPart)-\(c.port)"
+        if base.utf8.count <= 90 {
+            // 留 14 字节余量：`%h-%p` 已展开，但加上前缀/目录分隔符仍可能略涨。
+            a += ["-o", "ControlMaster=auto"]
+            a += ["-o", "ControlPath=\(base)"]
+            a += ["-o", "ControlPersist=10m"]
+        } else {
+            Log.warn("ControlPath 超长（\(base.utf8.count) 字节），已放弃 ControlMaster 复用：\(c.host)", "ssh")
+        }
         a += compatibilityOptions()
 
         if let kp = c.keyPath, !kp.isEmpty {
