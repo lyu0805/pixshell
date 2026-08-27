@@ -634,22 +634,23 @@ extension AppDelegate {
             ssh.exec(Self.monitorCommand) { [weak self] out in
                 guard let self = self, self.sessions.indices.contains(self.current), self.sessions[self.current] === sess else { return }
                 if out.contains("===mon===") { self.monitor?.update(self.parseMonitor(out)) }
-                // 本地 ping SSH 主机（本机→服务器延迟）
-                self.pingHost(sess.host.host)
+                // 本地 ping SSH 主机（本机→服务器延迟）；ICMP 常被云防火墙禁，回落测 SSH 端口 TCP RTT
+                self.pingHost(sess.host.host, port: sess.host.port)
             }
         }
         poll()
         monTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in poll() }
     }
     func stopMonitor() { monTimer?.invalidate(); monTimer = nil; monitor?.setConnected(false, ip: "") }
-    func pingHost(_ host: String) {
+    func pingHost(_ host: String, port: Int = 22) {
         let now = Date()
         if now.timeIntervalSince(lastPingAt) < 3 { return }
         lastPingAt = now
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            // 1) 先试 ICMP ping（-t 2 给远程 VPS 更宽容的超时）
             let task = Process()
             task.launchPath = "/sbin/ping"
-            task.arguments = ["-c", "1", "-t", "1", host]
+            task.arguments = ["-c", "1", "-t", "2", host]
             let pipe = Pipe()
             task.standardOutput = pipe
             task.standardError = FileHandle.nullDevice
@@ -662,9 +663,45 @@ extension AppDelegate {
                 let msStr = rest.prefix { $0.isNumber || $0 == "." }
                 if let ms = Double(msStr) {
                     DispatchQueue.main.async { self?.monitor?.pushPingMs(ms) }
+                    return
                 }
             }
+            // 2) ICMP 无回应（云服务器普遍禁 ping）→ 回落测到 SSH 端口的 TCP 握手 RTT。
+            //    SSH 已连上说明端口可达，这个值就是「到 SSH 服务的延迟」，比 ICMP 更贴合场景。
+            if let ms = Self.tcpConnectRTT(host: host, port: port, timeout: 2.0) {
+                DispatchQueue.main.async { self?.monitor?.pushPingMs(ms) }
+            }
         }
+    }
+
+    /// 建一次 TCP 连接测握手往返毫秒；失败返回 nil。用于 ICMP 被禁时的延迟兜底。
+    static func tcpConnectRTT(host: String, port: Int, timeout: TimeInterval) -> Double? {
+        var hints = addrinfo(ai_flags: 0, ai_family: AF_UNSPEC, ai_socktype: SOCK_STREAM,
+                             ai_protocol: IPPROTO_TCP, ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
+        var res: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, String(port), &hints, &res) == 0, let info = res else { return nil }
+        defer { freeaddrinfo(res) }
+        let fd = socket(info.pointee.ai_family, info.pointee.ai_socktype, info.pointee.ai_protocol)
+        if fd < 0 { return nil }
+        defer { close(fd) }
+        // 非阻塞 connect + select 等待可写，才能施加超时
+        let flags = fcntl(fd, F_GETFL, 0)
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        let start = CFAbsoluteTimeGetCurrent()
+        let rc = connect(fd, info.pointee.ai_addr, info.pointee.ai_addrlen)
+        if rc == 0 {
+            return (CFAbsoluteTimeGetCurrent() - start) * 1000
+        }
+        if errno != EINPROGRESS { return nil }
+        // 用 poll 等待可写（比 select 的 fd_set 位操作在 Swift 里更干净）
+        var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+        let ms = Int32(timeout * 1000)
+        let pr = poll(&pfd, 1, ms)
+        if pr <= 0 { return nil }   // 超时或错误
+        var soErr: Int32 = 0
+        var len = socklen_t(MemoryLayout<Int32>.size)
+        if getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &len) != 0 || soErr != 0 { return nil }
+        return (CFAbsoluteTimeGetCurrent() - start) * 1000
     }
 
     func parseMonitor(_ out: String) -> [String: String] {

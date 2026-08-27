@@ -86,6 +86,10 @@ final class MonitorSidebar: NSView {
         let ipHit = NSButton(title: "", target: self, action: #selector(copyIP))
         ipHit.isBordered = false; ipHit.bezelStyle = .regularSquare
         ipHit.setButtonType(.momentaryChange)
+        // 必须透明：darkAqua 下 momentaryChange 按钮首帧会绘制一块不透明内容区，
+        // 盖住其下方白色 IP 文本（暗色初次连接 IP 不显示、切主题整窗重建才复位的根因）。
+        // isTransparent=true → 仍然吃鼠标并触发 action，但完全不绘制外观。
+        ipHit.isTransparent = true
         ipHit.toolTip = "单击复制 IP"
         ipHit.translatesAutoresizingMaskIntoConstraints = false
         let ipWrap = NSView(); ipWrap.translatesAutoresizingMaskIntoConstraints = false
