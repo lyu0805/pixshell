@@ -861,7 +861,7 @@ extension AppDelegate {
         let gh = GitHubMarkButton()
         gh.target = self; gh.action = #selector(menuRepo)
         let brand = NSTextField(labelWithString: "PixShell"); brand.font = Theme.ui(12, .bold); brand.textColor = Theme.text
-        let ver = NSTextField(labelWithString: "v0.1.8"); ver.font = Theme.ui(11); ver.textColor = Theme.muted
+        let ver = NSTextField(labelWithString: "v0.1.9"); ver.font = Theme.ui(11); ver.textColor = Theme.muted
         statusDot = Dot(Theme.warn, size: 8)
         statusLabel = NSTextField(labelWithString: "CLI 未开启"); statusLabel.font = Theme.ui(11); statusLabel.textColor = Theme.muted
         let leftStack = NSStackView(views: [gh, brand, ver, statusDot, statusLabel])

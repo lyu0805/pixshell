@@ -1,9 +1,9 @@
 ;; PixShell Windows installer (Inno Setup 6)
 ; Build after self-contained publish:
-;   iscc /DMyAppVersion=0.1.8 /DPublishDir=..\publish\win-x64 win\installer\PixShell.iss
+;   iscc /DMyAppVersion=0.1.9 /DPublishDir=..\publish\win-x64 win\installer\PixShell.iss
 ;
 ; Defines (overridable via /D from CI env VERSION):
-;   MyAppVersion  - product version without leading v (default 0.1.8)
+;   MyAppVersion  - product version without leading v (default 0.1.9)
 ;   PublishDir    - published win-x64 folder (default ..\publish\win-x64)
 ;   OutputDir     - installer output directory (default ..\dist\artifacts)
 ;   ArchLabel     - architecture label in filename (default x64)
@@ -13,7 +13,7 @@
 #endif
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.8"
+  #define MyAppVersion "0.1.9"
 #endif
 
 #ifndef MyAppPublisher
@@ -57,7 +57,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir={#OutputDir}
-; Inno appends .exe → PixShell-0.1.8-win-x64-setup.exe
+; Inno appends .exe → PixShell-0.1.9-win-x64-setup.exe
 OutputBaseFilename=PixShell-{#MyAppVersion}-win-{#ArchLabel}-setup
 SetupIconFile=..\Resources\AppIcon.ico
 Compression=lzma2/max

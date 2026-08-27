@@ -1,0 +1,41 @@
+# PixShell 行尾规范
+# 目的：源码里嵌了 POSIX bash 采集脚本的文件（如 win/UI/SysInfoWindow.xaml.cs）一旦被 CRLF
+# 污染，远端 sh 会在 `case "$OS" in` 处语法错误，系统信息只剩前几行 echo。GitHub Windows CI
+# 的 autocrlf 默认会在 checkout 时把 LF 转 CRLF 编进 DLL —— 这里显式锁死行尾根治。
+
+# 默认自动识别文本/二进制
+* text=auto
+
+# 携带 POSIX shell 脚本 / 需严格 LF 的文件：强制 LF（含 checkout）
+*.sh              text eol=lf
+win/UI/SysInfoWindow.xaml.cs text eol=lf
+
+# 源码统一行尾，避免跨平台 checkout 抖动
+*.cs              text eol=lf
+*.swift           text eol=lf
+*.xaml            text eol=lf
+*.xml             text eol=lf
+*.json            text eol=lf
+*.md              text eol=lf
+*.yml             text eol=lf
+*.yaml            text eol=lf
+
+# Windows 批处理/PS1 保留 CRLF（这些在 Windows 上按 CRLF 执行更稳）
+*.bat             text eol=crlf
+*.cmd             text eol=crlf
+*.ps1             text eol=crlf
+
+# 二进制资源不做行尾转换
+*.png             binary
+*.jpg             binary
+*.jpeg            binary
+*.gif             binary
+*.ico             binary
+*.icns            binary
+*.pdf             binary
+*.zip             binary
+*.gz              binary
+*.woff            binary
+*.woff2           binary
+*.ttf             binary
+*.otf             binary

@@ -28,9 +28,9 @@
         <!-- 主体 -->
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>                     <!-- 竖分隔 -->
-                <ColumnDefinition x:Name="RightColDef" Width="213"/>  <!-- 右栏，可收起到 30 -->
+                <ColumnDefinition Width="*" MinWidth="200"/>
+                <ColumnDefinition Width="Auto"/>                     <!-- 竖分隔（可拖） -->
+                <ColumnDefinition x:Name="RightColDef" Width="213" MinWidth="30" MaxWidth="560"/>  <!-- 右栏，可收起到 30 / 可拖 -->
             </Grid.ColumnDefinitions>
 
             <!-- 左栏：命令列表 + 发送条 -->
@@ -43,8 +43,14 @@
                 </Border>
             </Grid>
 
-            <!-- 竖分隔 -->
-            <Border Grid.Column="1" Width="1" Background="{DynamicResource BrushBorder}" Margin="8,0"/>
+            <!-- 竖分隔：GridSplitter 拖动改右栏（命令编辑器）宽度。视觉细线靠中间 Border，命中区 6px。 -->
+            <GridSplitter Grid.Column="1" Width="6" Margin="5,0" HorizontalAlignment="Center"
+                          VerticalAlignment="Stretch" Background="Transparent"
+                          ResizeBehavior="PreviousAndNext" ResizeDirection="Columns"
+                          ShowsPreview="False" Cursor="SizeWE"
+                          DragStarted="Splitter_DragStarted"/>
+            <Border Grid.Column="1" Width="1" Background="{DynamicResource BrushBorder}"
+                    HorizontalAlignment="Center" IsHitTestVisible="False"/>
 
             <!-- 右栏：命令编辑器（可收起）-->
             <Grid Grid.Column="2" x:Name="RightCol">

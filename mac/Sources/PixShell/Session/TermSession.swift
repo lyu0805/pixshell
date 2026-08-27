@@ -87,8 +87,13 @@ final class TermSession {
     /// 已调度 flush（同一 runloop 周期内多次 append 合并成一次处理）。
     var flushScheduled = false
     /// 会话控制器（SSHSessionDelegate + 输出管线的归属，见 TermSessionController）。
-    /// 会话拥有控制器；控制器强持会话，这里用弱引用避免环。
-    weak var controller: TermSessionController?
+    /// **必须 strong**：控制器就是会话的 SSH delegate，而三个 SSHSession 实现的 `delegate`
+    /// 都是 weak。若这里也用 weak，`sess.controller = TermSessionController(...)` 创建的实例
+    /// 没有任何强引用者，ARC 会**当场释放**它 → `s.delegate = sess.controller` 拿到 nil →
+    /// didOpenShell / didReceive / didCloseWith 回调全部丢失 → 连接遮罩永不淡出、终端无输出，
+    /// 表现为"连所有服务器都卡在『打开会话…』连不上"。控制器内 `weak var app` 已断开反向环，
+    /// 会话与控制器同生命周期释放，无循环引用。
+    var controller: TermSessionController?
     /// 帧间隔：60fps 一帧，视觉无感且能聚合高频突发。
     static let flushInterval: TimeInterval = 1.0 / 60.0
     /// 单帧 feed 硬上限（字节）。输出洪水（seq/编译流）下不加封顶时，单帧会把

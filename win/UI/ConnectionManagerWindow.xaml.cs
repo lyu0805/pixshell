@@ -27,6 +27,8 @@ public partial class ConnectionManagerWindow : Window
     /// <summary>已折叠的分组名（对齐 mac ConnManager.collapsed）。</summary>
     private readonly HashSet<string> _collapsed = new(StringComparer.Ordinal);
     private bool _firstLoad = true;
+    /// <summary>搜索关键字（小写）；空 = 不过滤。对齐 mac ConnManager 的 searchField。</summary>
+    private string _query = "";
 
     public ConnectionManagerWindow()
     {
@@ -39,12 +41,25 @@ public partial class ConnectionManagerWindow : Window
     public void Reload()
     {
         ListPanel.Children.Clear();
-        var hosts = HostsProvider?.Invoke() ?? new List<HostEntry>();
-        if (hosts.Count == 0)
+        var all = HostsProvider?.Invoke() ?? new List<HostEntry>();
+        // 搜索过滤：名称/地址/用户/分组/系统/副标题任一命中（对齐 mac ConnManager.reload）
+        var hosts = _query.Length == 0
+            ? all
+            : all.Where(h => Matches(h, _query)).ToList();
+        if (all.Count == 0)
         {
             ListPanel.Children.Add(new TextBlock
             {
                 Text = "暂无主机 —— 点右上角「＋ 新建主机」添加一台",
+                Foreground = (Brush)Application.Current.Resources["BrushMuted"], Margin = new Thickness(4, 12, 0, 0)
+            });
+            return;
+        }
+        if (hosts.Count == 0)
+        {
+            ListPanel.Children.Add(new TextBlock
+            {
+                Text = "没有匹配的主机",
                 Foreground = (Brush)Application.Current.Resources["BrushMuted"], Margin = new Thickness(4, 12, 0, 0)
             });
             return;
@@ -80,7 +95,8 @@ public partial class ConnectionManagerWindow : Window
             var header = BuildGroupHeader(name, list.Count);
             groupStack.Children.Add(header);
 
-            if (!_collapsed.Contains(name))
+            // 搜索时命中分组强制展开（否则用户看不到过滤结果）；否则按折叠态
+            if (_query.Length > 0 || !_collapsed.Contains(name))
             {
                 var hostsPanel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 6, 0, 0) };
                 foreach (var h in list)
@@ -100,6 +116,28 @@ public partial class ConnectionManagerWindow : Window
             groupBorder.Child = groupStack;
             ListPanel.Children.Add(groupBorder);
         }
+    }
+
+    /// <summary>搜索框内容变化：更新关键字并重建列表；占位符随之显隐。</summary>
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        _query = (SearchBox.Text ?? "").Trim().ToLowerInvariant();
+        if (SearchHint != null)
+            SearchHint.Visibility = _query.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        Reload();
+    }
+
+    /// <summary>主机是否命中关键字：名称/地址/用户/分组/系统/副标题任一包含（大小写不敏感）。
+    /// 字段口径对齐 mac ConnManager.reload 的过滤条件。</summary>
+    private static bool Matches(HostEntry h, string query)
+    {
+        foreach (var field in new[] { h.Display, h.Name, h.Host, h.Username, h.Group, h.OsId, h.Subtitle })
+        {
+            if (!string.IsNullOrEmpty(field) &&
+                field.Contains(query, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>分组标题行：▶/▼ + 名称 + 数量 + 重命名/删除。点击标题折叠/展开（对齐 mac）。</summary>

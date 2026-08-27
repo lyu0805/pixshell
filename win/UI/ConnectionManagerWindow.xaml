@@ -14,6 +14,7 @@
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
@@ -30,8 +31,25 @@
                        TextTrimming="CharacterEllipsis"/>
         </DockPanel>
 
+        <!-- 搜索：机器多时按名称/地址/用户/分组/系统过滤（对齐 mac ConnManager） -->
+        <Border Grid.Row="1" Margin="0,0,0,10"
+                Background="{DynamicResource BrushBg2}" BorderBrush="{DynamicResource BrushBorder}"
+                BorderThickness="1" CornerRadius="{DynamicResource RadiusSm}">
+            <Grid>
+                <TextBox x:Name="SearchBox" BorderThickness="0" Background="Transparent"
+                         FontSize="12" Padding="10,5" VerticalContentAlignment="Center"
+                         Foreground="{DynamicResource BrushText}"
+                         TextChanged="SearchBox_TextChanged"/>
+                <!-- 占位符：SearchBox 为空时显示，输入即隐（默认 TextBox 样式无 watermark，故自绘） -->
+                <TextBlock x:Name="SearchHint" Text="搜索主机…（名称 / 地址 / 用户 / 分组）"
+                           IsHitTestVisible="False" FontSize="12" Margin="11,0,0,0"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource BrushMuted}"/>
+            </Grid>
+        </Border>
+
         <!-- ScrollViewer：内容溢出时显示垂直滑块 -->
-        <ScrollViewer Grid.Row="1"
+        <ScrollViewer Grid.Row="2"
                       VerticalScrollBarVisibility="Visible"
                       HorizontalScrollBarVisibility="Disabled">
             <StackPanel x:Name="ListPanel"/>

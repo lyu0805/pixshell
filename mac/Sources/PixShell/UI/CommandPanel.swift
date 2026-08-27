@@ -153,6 +153,8 @@ final class CommandPanel: NSView, NSTextViewDelegate {
         let divider = DividerView()
         divider.wantsLayer = true; divider.layer?.backgroundColor = Theme.border.cgColor
         divider.translatesAutoresizingMaskIntoConstraints = false
+        // 拖分隔条改右栏（命令编辑器）宽度。DividerView 自带 resize 光标与左右各 3pt grab 热区。
+        divider.addGestureRecognizer(NSPanGestureRecognizer(target: self, action: #selector(dragDivider(_:))))
 
         addSubview(groupFlow); addSubview(addBtn)
         addSubview(leftCol); addSubview(divider); addSubview(rightCol)
@@ -446,6 +448,30 @@ final class CommandPanel: NSView, NSTextViewDelegate {
         setEditorCollapsed(!editorCollapsed)
     }
     @objc private func expandEditor() { setEditorCollapsed(false) }
+
+    /// 拖动竖分隔条调命令编辑器（右栏）宽度。右栏在右侧，向左拖 → 变宽，故 `constant -= dx`。
+    /// 用增量位移（每帧读 translation 后清零）避免累计漂移；宽度不持久化（仅当次会话）。
+    /// 拖动即视为展开态：清收起标志、恢复内容/隐藏窄条，免得拖出来却还盖着 expandStrip。
+    @objc private func dragDivider(_ g: NSPanGestureRecognizer) {
+        switch g.state {
+        case .began:
+            if editorCollapsed {
+                editorCollapsed = false
+                for v in editorParts { v.isHidden = false; v.alphaValue = 1 }
+                expandStrip.isHidden = true
+            }
+        case .changed:
+            let dx = g.translation(in: self).x
+            g.setTranslation(.zero, in: self)
+            // 上限：父视图宽度扣掉左栏最小宽 + 两侧边距/分隔，再封一个硬顶，防拖到左栏没空间。
+            let maxW = max(Self.rightExpanded,
+                           min(560, bounds.width - 10 - 200 - 8 - 1 - 8 - 10))
+            let w = min(max(rightWidthC.constant - dx, Self.rightCollapsed), maxW)
+            rightWidthC.constant = w
+        default:
+            break
+        }
+    }
 
     private func setEditorCollapsed(_ collapsed: Bool) {
         guard collapsed != editorCollapsed else { return }   // 过期动画请求直接丢弃

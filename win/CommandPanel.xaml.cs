@@ -324,6 +324,13 @@ public partial class CommandPanel : UserControl
     private void OnToggleEditor(object sender, RoutedEventArgs e) => SetEditorCollapsed(!_editorCollapsed);
     private void OnExpandEditor(object sender, RoutedEventArgs e) => SetEditorCollapsed(false);
 
+    /// <summary>拖分隔条前：若右栏处于收起态，先展开再让 GridSplitter 接管宽度，
+    /// 否则拖的是 30px 窄条、内容仍藏着（对齐 mac dragDivider 的展开处理）。宽度不持久化。</summary>
+    private void Splitter_DragStarted(object sender, System.Windows.Controls.Primitives.DragStartedEventArgs e)
+    {
+        if (_editorCollapsed) SetEditorCollapsed(false);
+    }
+
     /// <summary>收起 = 右栏缩成窄条（左栏顺势占满）。**坑**：收起按钮本身在头部，栏宽只剩 30px 时
     /// 它会被挤出可见区再也打不开，所以收起态换成一个占满整条窄栏的展开按钮（对齐 mac expandStrip）。</summary>
     private void SetEditorCollapsed(bool collapsed)

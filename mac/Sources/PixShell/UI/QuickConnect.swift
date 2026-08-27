@@ -2,14 +2,16 @@ import AppKit
 
 /// 快速连接 / 历史 落地页（自绘复刻老仓库"快速连接（历史·N）"）。
 /// 打开 App 或新建 tab 且当前无活动会话时占据工作区中央：
-/// 顶部标题 + 清空历史；下方主机卡片网格（图标/名称/root@ip/系统徽章/端口·已记住密码·#序号 + 连接/编辑）。
-final class QuickConnect: NSView {
+/// 顶部标题 + 搜索 + 清空历史；下方主机卡片网格（图标/名称/root@ip/系统徽章/端口·已记住密码·#序号 + 连接/编辑）。
+final class QuickConnect: NSView, NSTextFieldDelegate {
     private let title = NSTextField(labelWithString: "快速连接")
     private let grid = FlowGrid()
     private let subtitle = NSTextField(labelWithString: "")
     private let empty = NSTextField(labelWithString: "暂无历史记录 —— 点右上角 ＋ 新建连接，或打开连接管理器")
     private let backBtn = IconButton(symbol: "chevron.left", tooltip: "返回当前会话",
                                      size: NSSize(width: 30, height: 30), target: nil, action: nil)
+    /// 主机搜索框（机器多时按名称/地址/用户/分组/系统过滤，对齐 ConnManager）。
+    private let searchField = NSTextField()
 
     var hostsProvider: (() -> [Host])?          // 卡片来源（历史顺序）
     var hasPassword: ((Host) -> Bool)?          // 是否已存密码（决定绿色徽章）
@@ -83,17 +85,36 @@ final class QuickConnect: NSView {
         rule.layer?.backgroundColor = Theme.border.cgColor
         rule.translatesAutoresizingMaskIntoConstraints = false
 
+        // 搜索框（复用 ConnManager 的圆角输入框写法）：卡片多时快速过滤。
+        searchField.placeholderString = "搜索主机…（名称 / 地址 / 用户 / 分组）"
+        searchField.font = Theme.ui(12)
+        searchField.isBordered = false
+        searchField.drawsBackground = false
+        searchField.textColor = Theme.text
+        searchField.focusRingType = .none
+        searchField.delegate = self
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+        let searchWrap = NSView(); searchWrap.rounded(Theme.radiusSm, bg: Theme.bg2, border: Theme.border)
+        searchWrap.translatesAutoresizingMaskIntoConstraints = false
+        searchWrap.addSubview(searchField)
+        NSLayoutConstraint.activate([
+            searchField.leadingAnchor.constraint(equalTo: searchWrap.leadingAnchor, constant: 10),
+            searchField.trailingAnchor.constraint(equalTo: searchWrap.trailingAnchor, constant: -10),
+            searchField.centerYAnchor.constraint(equalTo: searchWrap.centerYAnchor),
+            searchWrap.heightAnchor.constraint(equalToConstant: 30),
+        ])
+
         let scroll = OverlayScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
         scroll.verticalScroller = InvisibleScroller()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(grid); grid.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = doc
-        
+
         empty.font = Theme.ui(13); empty.textColor = Theme.muted
         empty.translatesAutoresizingMaskIntoConstraints = false; empty.isHidden = true
 
-        addSubview(head); addSubview(rule); addSubview(scroll); addSubview(empty)
+        addSubview(head); addSubview(rule); addSubview(searchWrap); addSubview(scroll); addSubview(empty)
         NSLayoutConstraint.activate([
             head.topAnchor.constraint(equalTo: topAnchor, constant: 20),
             head.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
@@ -102,7 +123,10 @@ final class QuickConnect: NSView {
             rule.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
             rule.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
             rule.heightAnchor.constraint(equalToConstant: 1),
-            scroll.topAnchor.constraint(equalTo: rule.bottomAnchor, constant: 14),
+            searchWrap.topAnchor.constraint(equalTo: rule.bottomAnchor, constant: 12),
+            searchWrap.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
+            searchWrap.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
+            scroll.topAnchor.constraint(equalTo: searchWrap.bottomAnchor, constant: 12),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
@@ -127,14 +151,42 @@ final class QuickConnect: NSView {
         onLocalTerminal?()
     }
 
+    /// 搜索框内容变化 → 重建卡片网格（对齐 ConnManager.controlTextDidChange）。
+    func controlTextDidChange(_ obj: Notification) { reload() }
+
     func reload() {
-        let hosts = hostsProvider?() ?? []
+        let all = hostsProvider?() ?? []
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // 先按完整历史顺序编号（#序号稳定，不随过滤跳动），再过滤。
+        let numbered = Array(all.enumerated())   // (originalIndex, Host)
+        let shown: [(offset: Int, element: Host)]
+        if query.isEmpty {
+            shown = numbered.map { (offset: $0.offset, element: $0.element) }
+        } else {
+            shown = numbered.filter { _, h in
+                [h.display, h.host, h.username, h.group, h.osId, h.subtitle]
+                    .contains { $0.lowercased().contains(query) }
+            }.map { (offset: $0.offset, element: $0.element) }
+        }
         title.stringValue = "快速连接"
-        subtitle.stringValue = hosts.isEmpty
-            ? "还没有主机 —— 点右上角「＋ 新建连接」添加第一台"
-            : "\(hosts.count) 台主机 · 双击卡片直接连接"
-        grid.setCards(hosts.enumerated().map { (i, h) in card(h, index: i + 1) })
-        empty.isHidden = !hosts.isEmpty
+        if all.isEmpty {
+            subtitle.stringValue = "还没有主机 —— 点右上角「＋ 新建连接」添加第一台"
+        } else if query.isEmpty {
+            subtitle.stringValue = "\(all.count) 台主机 · 双击卡片直接连接"
+        } else {
+            subtitle.stringValue = "\(shown.count)/\(all.count) 台匹配 · 双击卡片直接连接"
+        }
+        grid.setCards(shown.map { card($0.element, index: $0.offset + 1) })
+        // 空态：无历史 → 原提示；有历史但搜索无结果 → 提示换关键词
+        if all.isEmpty {
+            empty.stringValue = "暂无历史记录 —— 点右上角 ＋ 新建连接，或打开连接管理器"
+            empty.isHidden = false
+        } else if shown.isEmpty {
+            empty.stringValue = "没有匹配的主机 —— 换个关键词试试"
+            empty.isHidden = false
+        } else {
+            empty.isHidden = true
+        }
     }
 
     // 单张主机卡片。

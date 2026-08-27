@@ -20,11 +20,17 @@ public partial class ToolsPanel : UserControl
     public const string CmdNetwork = "ss -tulnpH 2>/dev/null || netstat -tulnp 2>/dev/null | tail -n +3";
     public static string CmdRoute(string host) =>
         $"echo '=== PING ==='; ping -c 4 -W 2 {host} 2>&1; echo; echo '=== TRACE ==='; traceroute -n -w 1 -q 1 -m 12 {host} 2>&1 || tracepath {host} 2>&1";
+    // 速度测试：curl 的 %{speed_download} 是「字节/秒」原始值，直接显示成 B/s 太不直观
+    // （GitHub #14）——用 awk 自动换算成 B/s·KB/s·MB/s·GB/s。
     public const string CmdSpeed =
         "echo '下载 10MB 测速中…'\n" +
-        "curl -o /dev/null -s -w '下载速度: %{speed_download} B/s\\n耗时: %{time_total} s\\n' https://speed.cloudflare.com/__down?bytes=10000000 2>&1 " +
-        "|| wget -O /dev/null https://speed.cloudflare.com/__down?bytes=10000000 2>&1 | tail -3 " +
-        "|| echo '未找到 curl/wget'";
+        "if command -v curl >/dev/null 2>&1; then\n" +
+        "  curl -o /dev/null -s -w '%{speed_download} %{time_total}' https://speed.cloudflare.com/__down?bytes=10000000 2>/dev/null | awk '{b=$1+0;t=$2;u=\"B/s\";if(b>=1024){b/=1024;u=\"KB/s\"}if(b>=1024){b/=1024;u=\"MB/s\"}if(b>=1024){b/=1024;u=\"GB/s\"}printf \"下载速度: %.2f %s\\n耗时: %s s\\n\",b,u,t}'\n" +
+        "elif command -v wget >/dev/null 2>&1; then\n" +
+        "  wget -O /dev/null https://speed.cloudflare.com/__down?bytes=10000000 2>&1 | tail -3\n" +
+        "else\n" +
+        "  echo '未找到 curl/wget'\n" +
+        "fi";
 
     public Func<List<(string title, bool active)>>? SessionsProvider { get; set; }
     public Action<int>? OnSelectSession { get; set; }

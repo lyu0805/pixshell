@@ -7,7 +7,15 @@ import SwiftTerm
 /// 用 `s === sess.ssh` 身份校验替代（重连换 transport 后旧连接的迟到回调直接丢弃）。
 /// UI 侧动作（覆盖层/标签/监控/SFTP/回落重连）通过弱引用 `app` 回调 AppDelegate。
 final class TermSessionController: SSHSessionDelegate {
-    let sess: TermSession
+    /// 反向引用会话。**必须 unowned（不能 strong）**：会话 strong 持有本控制器（见
+    /// TermSession.controller 的注释——它必须 strong，否则控制器建好即被 ARC 释放，SSH
+    /// delegate 全丢导致连不上）。若这里再 strong 持会话，session↔controller 形成强环，
+    /// 会话从 AppDelegate.sessions 移除后二者互持成孤岛泄漏（app 是 weak、SSH delegate 是
+    /// weak，都不构成外部强引用）。控制器是会话的从属对象、生命周期 ⊆ 会话：会话是控制器
+    /// 的唯一强引用者，所以"控制器存活 ⟹ 会话存活"，unowned 访问始终安全（SSH 回调经 weak
+    /// delegate、异步 flush 经 [weak self]、clearPending 经仍活跃的 sess 调用，无一会在会话
+    /// 释放后触达）。
+    unowned let sess: TermSession
     weak var app: AppDelegate?
 
     init(sess: TermSession, app: AppDelegate?) {

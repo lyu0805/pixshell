@@ -390,12 +390,21 @@ esac
     {
         if (isLocal) return WindowsCommand;
         var id = (osId ?? "").Trim().ToLowerInvariant();
-        if (id.Length == 0) return Command;
+        if (id.Length == 0) return Lf(Command);
         if (id is "windows" or "win" or "win32" or "win64" or "windows_nt") return WindowsCommand;
         if (id.StartsWith("win", StringComparison.Ordinal) || id.Contains("windows", StringComparison.Ordinal))
             return WindowsCommand;
-        return Command;
+        return Lf(Command);
     }
+
+    /// <summary>把多行 POSIX 采集脚本统一成 LF 行尾再下发。
+    /// <see cref="Command"/> 是含 <c>case "$OS" in … esac</c> 的 bash raw-string；若被 CRLF 污染，
+    /// 远端 sh 会在 <c>case … in</c> 处报 <c>syntax error near unexpected token `in'</c>，
+    /// 只剩 case 之前的 hostname/kernel/arch 三行 echo 能跑 → 系统信息卡片发行版/运行时长/负载/主 IP/
+    /// CPU/内存全部空白。仓库根 .gitattributes 已强制该文件 eol=lf，但 GitHub Windows CI 的
+    /// autocrlf 仍可能在旧 checkout / 未生效场景把字面量转成 CRLF 编进 DLL，故运行时再归一化一次兜底。
+    /// <see cref="WindowsCommand"/> 是单行 PowerShell（无多行 case），不需要也不走这里。</summary>
+    private static string Lf(string s) => s.Replace("\r\n", "\n").Replace("\r", "\n");
 
     /// <summary>拉取远端系统信息的回调（MainWindow 注入：ExecAsync(CommandFor(...))）。</summary>
     public Func<Task<string>>? OnRefresh;
