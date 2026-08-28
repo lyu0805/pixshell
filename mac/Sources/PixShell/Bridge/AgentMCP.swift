@@ -398,7 +398,7 @@ enum AgentMCP {
             "    if method == 'initialize':",
             "        log('initialize 来自客户端')",
             "        reply(rid, {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}},",
-            "                    'serverInfo': {'name': 'pixshell', 'version': '0.1.9'},",
+            "                    'serverInfo': {'name': 'pixshell', 'version': '0.2.0'},",
             "                    'instructions': MCP_INSTRUCTIONS})",
             "    elif method == 'tools/list':",
             "        reply(rid, {'tools': TOOLS})",

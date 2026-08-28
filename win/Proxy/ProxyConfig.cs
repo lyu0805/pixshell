@@ -38,7 +38,20 @@ public class ProxyConfig
     public string Password { get; set; } = "";
 
     /// <summary>对齐 JS `'px_' + Date.now().toString(36)`。</summary>
-    public static string NewId() => "px_" + Convert.ToString(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), 36);
+    public static string NewId() => "px_" + ToBase36(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+    private static string ToBase36(long value)
+    {
+        const string digits = "0123456789abcdefghijklmnopqrstuvwxyz";
+        var chars = new char[13];
+        var index = chars.Length;
+        do
+        {
+            chars[--index] = digits[(int)(value % 36)];
+            value /= 36;
+        } while (value > 0);
+        return new string(chars, index, chars.Length - index);
+    }
 
     /// <summary>对齐 JS defaultPort / mac ProxyConfig.defaultPort。</summary>
     public static int DefaultPort(ProxyType type) => type switch

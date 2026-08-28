@@ -33,22 +33,29 @@ public partial class MainWindow : IBridgeHost
     public List<Dictionary<string, object?>> BridgeSessions()
     {
         var list = new List<Dictionary<string, object?>>();
-        for (var i = 0; i < Sessions.Items.Count; i++)
+        foreach (var item in Sessions.Items.OfType<TabItem>())
         {
-            if (Sessions.Items[i] is not TabItem { Tag: TerminalSession s }) continue;
+            if (item.Tag is not TerminalSession s) continue;
             list.Add(new Dictionary<string, object?>
             {
-                ["session"] = i,
+                ["session"] = s.SessionId,
                 // 对外暴露用户命名（TabTitle），与标签栏一致；OSC 系统标题不进 bridge。
                 ["title"] = s.TabTitle,
                 ["oscTitle"] = s.Title,
                 ["host"] = s.SourceHost?.Host ?? s.HostName,
                 ["username"] = s.SourceHost?.Username ?? "",
                 ["connected"] = s.Connected,
-                ["active"] = ReferenceEquals(Sessions.SelectedItem, Sessions.Items[i]),
+                ["active"] = ReferenceEquals(Sessions.SelectedItem, item) && s.Connected,
             });
         }
         return list;
+    }
+
+    public bool BridgeSessionExists(string session, out bool connected)
+    {
+        var result = FindBridgeSession(session);
+        connected = result?.Connected == true;
+        return result != null;
     }
 
     public async Task<Dictionary<string, object?>> BridgeConnectAsync(string hostId)
@@ -83,49 +90,53 @@ public partial class MainWindow : IBridgeHost
         }
 
         await OpenSessionTab(connectHost, pw);
-        var idx = Sessions.Items.Count - 1;
+        var session = Sessions.Items.OfType<TabItem>()
+            .Select(item => item.Tag as TerminalSession)
+            .LastOrDefault(s => s != null && ReferenceEquals(s.SourceHost, connectHost));
+        if (session == null) throw new Exception("无法创建会话");
+        var sessionId = session.SessionId;
 
         // 等 shell 真正打开再回，最多 20s（对齐 mac bridgeConnect 的 poll()）。
         var waited = 0.0;
         while (waited <= 20.0)
         {
-            if (idx < Sessions.Items.Count && Sessions.Items[idx] is TabItem { Tag: TerminalSession s } && s.Connected)
-                return new Dictionary<string, object?> { ["session"] = idx, ["title"] = s.TabTitle };
+            if (BridgeSessionExists(sessionId, out var connected) && connected)
+                return new Dictionary<string, object?> { ["session"] = sessionId, ["title"] = session.TabTitle };
             await Task.Delay(250);
             waited += 0.25;
         }
         throw new Exception("连接超时");
     }
 
-    public bool BridgeWrite(int session, string text)
+    public bool BridgeWrite(string session, string text)
     {
-        if (session < 0 || session >= Sessions.Items.Count) return false;
-        if (Sessions.Items[session] is not TabItem { Tag: TerminalSession s } || !s.Connected) return false;
-        s.SendText(text);
-        return true;
+        return TryGetConnectedSession(session, out var target, out var transportGeneration)
+            && target.SendTextForTransportGeneration(text, transportGeneration);
     }
 
-    public async Task<string> BridgeExecAsync(int session, string cmd)
+    public async Task<string> BridgeExecAsync(string session, string cmd)
     {
-        if (session < 0 || session >= Sessions.Items.Count) return "";
-        if (Sessions.Items[session] is not TabItem { Tag: TerminalSession s }) return "";
-        return await s.ExecAsync(cmd);
+        if (!TryGetConnectedSession(session, out var target, out var transportGeneration))
+            throw new BridgeSessionUnavailableException($"会话 {session} 已断开，请重新连接后再试");
+        var output = await target.ExecAsync(cmd);
+        if (!target.IsCurrentConnectedTransportGeneration(transportGeneration))
+            throw new BridgeSessionUnavailableException($"会话 {session} 在执行期间已断开或重连");
+        return output;
     }
 
-    public string BridgeScreen(int session, int lines)
+    public string BridgeScreen(string session, int lines)
     {
-        if (session < 0 || session >= Sessions.Items.Count) return "";
-        if (Sessions.Items[session] is not TabItem { Tag: TerminalSession s }) return "";
-        return s.GetRecentOutput(lines);
+        return FindBridgeSession(session)?.GetRecentOutput(lines) ?? "";
     }
 
-    public Task<List<Dictionary<string, object?>>> BridgeSftpListAsync(int session, string path)
+    public Task<List<Dictionary<string, object?>>> BridgeSftpListAsync(string session, string path)
     {
-        if (!TryGetConnectedSession(session, out var s)) throw new Exception("会话不存在");
+        if (!TryGetConnectedSession(session, out var target, out var transportGeneration))
+            throw new BridgeSessionUnavailableException($"会话 {session} 已断开，请重新连接后再试");
         return Task.Run(() =>
         {
-            using var sftp = s.CreateSftpClient();
-            return sftp.ListDirectory(path)
+            using var sftp = target.CreateSftpClient();
+            var entries = sftp.ListDirectory(path)
                 .Where(f => f.Name != "." && f.Name != "..")
                 .Select(f => new Dictionary<string, object?>
                 {
@@ -135,23 +146,28 @@ public partial class MainWindow : IBridgeHost
                     ["mtime"] = f.LastWriteTime.ToUniversalTime().ToString("o"),
                 })
                 .ToList();
+            EnsureBridgeTransportCurrent(target, transportGeneration, session);
+            return entries;
         });
     }
 
-    public Task<string?> BridgeSftpDownloadAsync(int session, string remote, string local)
+    public Task<string?> BridgeSftpDownloadAsync(string session, string remote, string local)
     {
-        if (!TryGetConnectedSession(session, out var s)) throw new Exception("会话不存在");
+        if (!TryGetConnectedSession(session, out var target, out var transportGeneration))
+            throw new BridgeSessionUnavailableException($"会话 {session} 已断开，请重新连接后再试");
         return Task.Run<string?>(() =>
         {
             try
             {
-                using var sftp = s.CreateSftpClient();
+                using var sftp = target.CreateSftpClient();
                 var dir = Path.GetDirectoryName(local);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
                 using var fs = File.Create(local);
                 sftp.DownloadFile(remote, fs);
+                EnsureBridgeTransportCurrent(target, transportGeneration, session);
                 return local;
             }
+            catch (BridgeSessionUnavailableException) { throw; }
             catch (Exception ex)
             {
                 Log.Warn($"桥 SFTP 下载失败 {remote}: {ex.Message}", "bridge");
@@ -160,18 +176,21 @@ public partial class MainWindow : IBridgeHost
         });
     }
 
-    public Task<string?> BridgeSftpUploadAsync(int session, string local, string remote)
+    public Task<string?> BridgeSftpUploadAsync(string session, string local, string remote)
     {
-        if (!TryGetConnectedSession(session, out var s)) throw new Exception("会话不存在");
+        if (!TryGetConnectedSession(session, out var target, out var transportGeneration))
+            throw new BridgeSessionUnavailableException($"会话 {session} 已断开，请重新连接后再试");
         return Task.Run<string?>(() =>
         {
             try
             {
-                using var sftp = s.CreateSftpClient();
+                using var sftp = target.CreateSftpClient();
                 using var fs = File.OpenRead(local);
                 sftp.UploadFile(fs, remote, true);
+                EnsureBridgeTransportCurrent(target, transportGeneration, session);
                 return remote;
             }
+            catch (BridgeSessionUnavailableException) { throw; }
             catch (Exception ex)
             {
                 Log.Warn($"桥 SFTP 上传失败 {local} → {remote}: {ex.Message}", "bridge");
@@ -180,16 +199,22 @@ public partial class MainWindow : IBridgeHost
         });
     }
 
-    private bool TryGetConnectedSession(int session, out TerminalSession result)
+    private TerminalSession? FindBridgeSession(string session) =>
+        Sessions.Items.OfType<TabItem>()
+            .Select(item => item.Tag as TerminalSession)
+            .FirstOrDefault(candidate => candidate?.SessionId == session);
+
+    private bool TryGetConnectedSession(string session, out TerminalSession result, out long transportGeneration)
     {
-        if (session >= 0 && session < Sessions.Items.Count &&
-            Sessions.Items[session] is TabItem { Tag: TerminalSession s } && s.Connected)
-        {
-            result = s;
-            return true;
-        }
-        result = null!;
-        return false;
+        result = FindBridgeSession(session)!;
+        transportGeneration = -1;
+        return result != null && result.TryGetConnectedTransportGeneration(out transportGeneration);
+    }
+
+    private static void EnsureBridgeTransportCurrent(TerminalSession session, long transportGeneration, string sessionId)
+    {
+        if (!session.IsCurrentConnectedTransportGeneration(transportGeneration))
+            throw new BridgeSessionUnavailableException($"会话 {sessionId} 在传输期间已断开或重连");
     }
 
     /// <summary>有头模式不会真的被 shutdown（无头才需要退出让位）；实现为空。

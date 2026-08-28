@@ -121,6 +121,7 @@ public sealed class TerminalSession : IDisposable
     }
 
     public bool Connected => _connected;
+    public string SessionId { get; } = Guid.NewGuid().ToString("N");
 
     /// <summary>远端 OSC 标题变化。标签头**不**订阅此事件（用 TabTitle）。</summary>
     public event Action<TerminalSession>? TitleChanged;
@@ -134,6 +135,8 @@ public sealed class TerminalSession : IDisposable
     private readonly string _htmlPath;
 
     private ITerminalTransport? _transport;
+    private readonly object _transportLock = new();
+    private long _transportGeneration;
     private DispatcherTimer? _fitTimer;
     private uint _cols = 80;
     private uint _rows = 24;
@@ -455,35 +458,38 @@ public sealed class TerminalSession : IDisposable
     /// <summary>建立 SSH 交互式 shell。异常向上抛给 MainWindow 显示。</summary>
     public async Task ConnectAsync(string host, int port, string user, string pass, string? keyPath = null, ProxyConfig? proxy = null)
     {
-        if (_connected) Disconnect();
+        Disconnect();
         ClearScreen();
         _isLocal = false;
         _host = host; _port = port; _user = user; _pass = pass; _keyPath = keyPath; _proxy = proxy;
         Log.Info($"SSH 连接中 {user}@{host}:{port}", "ssh");
         SetStatus($"连接 {user}@{host}:{port} …");
+
+        ITerminalTransport? transport = null;
+        long generation = 0;
         try
         {
             var expandedKey = keyPath != null ? ExpandKeyPath(keyPath) : null;
-            if (expandedKey != null && IsFIDO2Key(expandedKey))
-            {
-                _isOpenSSH = true;
-                _transport = new OpenSshProcessTransport(host, port, user, expandedKey, _cols, _rows);
-            }
-            else
-            {
-                _isOpenSSH = false;
-                _transport = new SshNetTransport(host, port, user, pass, keyPath, proxy, _cols, _rows);
-            }
-            
-            WireTransportEvents(_transport);
-            await _transport.ConnectAsync();
+            transport = expandedKey != null && IsFIDO2Key(expandedKey)
+                ? new OpenSshProcessTransport(host, port, user, expandedKey, _cols, _rows)
+                : new SshNetTransport(host, port, user, pass, keyPath, proxy, _cols, _rows);
+            _isOpenSSH = transport is OpenSshProcessTransport;
+            generation = AttachTransport(transport);
+            WireTransportEvents(transport, generation);
+            await transport.ConnectAsync();
         }
         catch (Exception ex)
         {
+            if (transport != null) DisposeTransportIfCurrent(transport, generation);
             Log.Error($"SSH 认证/握手失败 {user}@{host}:{port}: {ex.Message}", "ssh");
             throw;
         }
-        _connected = true;
+
+        if (!SetCurrentTransportConnected(transport!, generation, true))
+        {
+            DisposeTransportIfCurrent(transport!, generation);
+            throw new IOException("SSH 会话在建立时关闭。");
+        }
         Log.Info($"SSH 握手完成，已连接 {user}@{host}:{port}", "ssh");
         SetStatus($"已连接 {user}@{host}");
         try { ConnectedChanged?.Invoke(this, true); } catch { }
@@ -493,7 +499,7 @@ public sealed class TerminalSession : IDisposable
     /// <summary>应用内本机终端：启动 cmd.exe / powershell 并把 stdout/stderr 接到 xterm。</summary>
     public async Task ConnectLocalAsync()
     {
-        if (_connected) Disconnect();
+        Disconnect();
         ClearScreen();
         _isLocal = true;
         _isOpenSSH = false;
@@ -505,45 +511,129 @@ public sealed class TerminalSession : IDisposable
         _proxy = null;
         Log.Info("启动本机 shell …", "local");
         SetStatus("启动本机终端 …");
+
+        ITerminalTransport? transport = null;
+        long generation = 0;
         try
         {
-            _transport = new LocalProcessTransport(_cols, _rows);
-            WireTransportEvents(_transport);
-            await _transport.ConnectAsync();
+            transport = new LocalProcessTransport(_cols, _rows);
+            generation = AttachTransport(transport);
+            WireTransportEvents(transport, generation);
+            await transport.ConnectAsync();
         }
         catch (Exception ex)
         {
+            if (transport != null) DisposeTransportIfCurrent(transport, generation);
             Log.Error($"本机 shell 启动失败: {ex.Message}", "local");
             throw;
         }
-        _connected = true;
+
+        if (!SetCurrentTransportConnected(transport!, generation, true))
+        {
+            DisposeTransportIfCurrent(transport!, generation);
+            throw new IOException("本机 shell 在启动时关闭。");
+        }
         Log.Info("本机 shell 已就绪", "local");
         SetStatus("本机终端");
         try { ConnectedChanged?.Invoke(this, true); } catch { }
         FocusWhenReady();
     }
 
-    private void WireTransportEvents(ITerminalTransport transport)
+    private long AttachTransport(ITerminalTransport transport)
+    {
+        lock (_transportLock)
+        {
+            _transportGeneration++;
+            _transport = transport;
+            return _transportGeneration;
+        }
+    }
+
+    private bool IsCurrentTransport(ITerminalTransport transport, long generation)
+    {
+        lock (_transportLock)
+            return _transportGeneration == generation && ReferenceEquals(_transport, transport);
+    }
+
+    public bool TryGetConnectedTransportGeneration(out long generation)
+    {
+        lock (_transportLock)
+        {
+            generation = _transportGeneration;
+            return _connected && _transport != null;
+        }
+    }
+
+    public bool IsCurrentConnectedTransportGeneration(long generation)
+    {
+        lock (_transportLock)
+            return _connected && _transport != null && _transportGeneration == generation;
+    }
+
+    private bool SetCurrentTransportConnected(ITerminalTransport transport, long generation, bool connected)
+    {
+        lock (_transportLock)
+        {
+            if (_transportGeneration != generation || !ReferenceEquals(_transport, transport)) return false;
+            if (connected && !transport.Connected) return false;
+            if (_connected == connected) return false;
+            _connected = connected;
+            return true;
+        }
+    }
+
+    private void DisposeTransportIfCurrent(ITerminalTransport transport, long generation)
+    {
+        lock (_transportLock)
+        {
+            if (_transportGeneration == generation && ReferenceEquals(_transport, transport))
+            {
+                _transportGeneration++;
+                _transport = null;
+                _connected = false;
+            }
+        }
+        try { transport.Disconnect(); } catch { }
+        try { transport.Dispose(); } catch { }
+    }
+
+    private void AppendOutputBufferForCurrentTransport(ITerminalTransport transport, long generation, string text)
+    {
+        lock (_transportLock)
+        {
+            if (_transportGeneration != generation || !ReferenceEquals(_transport, transport)) return;
+            AppendOutputBuffer(text);
+        }
+    }
+
+    private void WireTransportEvents(ITerminalTransport transport, long generation)
     {
         transport.Base64DataReceived += (b64) =>
         {
+            if (!IsCurrentTransport(transport, generation)) return;
             try
             {
-                View.Dispatcher.BeginInvoke(new Action(() => SendToTerm("out", b64)));
+                View.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (IsCurrentTransport(transport, generation)) SendToTerm("out", b64);
+                }));
             }
             catch { }
         };
 
         transport.TextReceived += (text) =>
         {
-            AppendOutputBuffer(text);
+            AppendOutputBufferForCurrentTransport(transport, generation, text);
         };
 
         transport.StatusChanged += (status) =>
         {
             try
             {
-                View.Dispatcher.BeginInvoke(new Action(() => SetStatus(status)));
+                View.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (IsCurrentTransport(transport, generation)) SetStatus(status);
+                }));
             }
             catch { }
         };
@@ -554,8 +644,8 @@ public sealed class TerminalSession : IDisposable
             {
                 View.Dispatcher.BeginInvoke(new Action(() =>
                 {
-                    _connected = connected;
-                    ConnectedChanged?.Invoke(this, connected);
+                    if (SetCurrentTransportConnected(transport, generation, connected))
+                        ConnectedChanged?.Invoke(this, connected);
                 }));
             }
             catch { }
@@ -630,16 +720,38 @@ public sealed class TerminalSession : IDisposable
     /// <summary>命令板用：把一段文本发送到当前 shell（外部调用）。</summary>
     public void SendText(string data) => WriteInput(data);
 
+    public bool SendTextForTransportGeneration(string data, long generation)
+    {
+        if (string.IsNullOrEmpty(data)) return false;
+        ITerminalTransport? transport;
+        lock (_transportLock)
+        {
+            if (!_connected || _transportGeneration != generation || _transport == null) return false;
+            transport = _transport;
+        }
+        try
+        {
+            transport.Write(Encoding.UTF8.GetBytes(data));
+            return true;
+        }
+        catch { return false; }
+    }
+
     /// <summary>
     /// 一次性远端命令执行（独立通道，不干扰交互式 PTY shell）：工具面板/监控侧栏/系统信息用。
     /// </summary>
     public async Task<string> ExecAsync(string command)
     {
-        if (_transport != null)
+        ITerminalTransport? transport;
+        long generation;
+        lock (_transportLock)
         {
-            return await _transport.ExecAsync(command);
+            if (!_connected || _transport == null) return "";
+            transport = _transport;
+            generation = _transportGeneration;
         }
-        return "";
+        var output = await transport.ExecAsync(command);
+        return IsCurrentTransport(transport, generation) && _connected ? output : "";
     }
 
     /// <summary>清屏（本地 xterm，不经过远端）：对齐 mac termClear 只清本地终端视图。</summary>
@@ -966,8 +1078,13 @@ public sealed class TerminalSession : IDisposable
         if (cols == 0 || rows == 0) return;
         _cols = cols;
         _rows = rows;
-        if (!_connected) return;
-        _transport?.Resize(cols, rows);
+        ITerminalTransport? transport;
+        lock (_transportLock)
+        {
+            if (!_connected) return;
+            transport = _transport;
+        }
+        transport?.Resize(cols, rows);
     }
 
     private void SendToTerm(string type, string data)
@@ -1061,19 +1178,26 @@ public sealed class TerminalSession : IDisposable
 
     public void Disconnect()
     {
-        var was = _connected;
+        ITerminalTransport? transport;
+        bool was;
+        lock (_transportLock)
+        {
+            was = _connected;
+            _connected = false;
+            _transportGeneration++;
+            transport = _transport;
+            _transport = null;
+        }
+
         if (was)
         {
             if (_isLocal) Log.Info("主动关闭本机终端", "local");
             else Log.Info($"主动断开 {_user}@{_host}:{_port}", "ssh");
         }
-        _connected = false;
-
-        if (_transport != null)
+        if (transport != null)
         {
-            _transport.Disconnect();
-            _transport.Dispose();
-            _transport = null;
+            try { transport.Disconnect(); } catch { }
+            try { transport.Dispose(); } catch { }
         }
 
         _isLocal = false;

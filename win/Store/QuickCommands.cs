@@ -248,21 +248,21 @@ public sealed class QuickCommandStore
     };
 }
 
-/// <summary>发送目标（对齐 mac SendTarget：当前会话 / 所有已连接会话 / 指定会话下标）。</summary>
+/// <summary>发送目标（对齐 mac SendTarget：当前会话 / 所有已连接会话 / 指定会话）。</summary>
 public enum SendTargetKind { Current, AllConnected, Session }
 
 public readonly struct SendTarget
 {
     public SendTargetKind Kind { get; }
-    public int SessionIndex { get; }
+    public string? SessionId { get; }
 
-    private SendTarget(SendTargetKind kind, int sessionIndex)
+    private SendTarget(SendTargetKind kind, string? sessionId)
     {
         Kind = kind;
-        SessionIndex = sessionIndex;
+        SessionId = sessionId;
     }
 
-    public static SendTarget Current { get; } = new(SendTargetKind.Current, -1);
-    public static SendTarget AllConnected { get; } = new(SendTargetKind.AllConnected, -1);
-    public static SendTarget Session(int index) => new(SendTargetKind.Session, index);
+    public static SendTarget Current { get; } = new(SendTargetKind.Current, null);
+    public static SendTarget AllConnected { get; } = new(SendTargetKind.AllConnected, null);
+    public static SendTarget Session(string sessionId) => new(SendTargetKind.Session, sessionId);
 }

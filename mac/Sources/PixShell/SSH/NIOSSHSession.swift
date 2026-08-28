@@ -99,7 +99,7 @@ public final class NIOSSHSession: SSHSession {
             // exec/type_text 全部静默失败（会话"active 但 disconnected"的 Phase-A 根因）。
             // 开 SO_KEEPALIVE + 30s 探测间隔 + 3 次重探（对齐 OpenSSH ServerAliveInterval=30）。
             .channelOption(ChannelOptions.socketOption(.so_keepalive), value: 1)
-            .channelOption(ChannelOptions.socket(IPPROTO_TCP, TCP_KEEPALIVE), value: 30_000)
+            .channelOption(ChannelOptions.socket(IPPROTO_TCP, TCP_KEEPALIVE), value: 30)
             .channelOption(ChannelOptions.socket(IPPROTO_TCP, TCP_KEEPINTVL), value: 10)
             .channelOption(ChannelOptions.socket(IPPROTO_TCP, TCP_KEEPCNT), value: 3)
             .channelInitializer { channel in
@@ -151,6 +151,12 @@ public final class NIOSSHSession: SSHSession {
         Log.info("经代理 \(proxy.type.rawValue) \(proxy.host):\(proxy.port) 连接 \(creds.host):\(creds.port)", "proxy")
         let bootstrap = ClientBootstrap(group: group)
             .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .channelOption(ChannelOptions.socket(IPPROTO_TCP, TCP_NODELAY), value: 1)
+            .channelOption(ChannelOptions.connectTimeout, value: .seconds(12))
+            .channelOption(ChannelOptions.socketOption(.so_keepalive), value: 1)
+            .channelOption(ChannelOptions.socket(IPPROTO_TCP, TCP_KEEPALIVE), value: 30)
+            .channelOption(ChannelOptions.socket(IPPROTO_TCP, TCP_KEEPINTVL), value: 10)
+            .channelOption(ChannelOptions.socket(IPPROTO_TCP, TCP_KEEPCNT), value: 3)
 
         bootstrap.connect(host: proxy.host, port: proxy.port).whenComplete { [weak self] result in
             guard let self = self else { return }
@@ -739,6 +745,13 @@ final class ShellChannelHandler: ChannelDuplexHandler {
     private let onOpen: () -> Void
     private let onClose: (Error?) -> Void
     private var openSignalled = false
+    private var closeSignalled = false
+
+    private func signalClose(_ error: Error?) {
+        guard !closeSignalled else { return }
+        closeSignalled = true
+        onClose(error)
+    }
 
     init(term: String, cols: Int, rows: Int,
          onData: @escaping ([UInt8]) -> Void,
@@ -775,7 +788,7 @@ final class ShellChannelHandler: ChannelDuplexHandler {
                     self.onOpen()
                 }
             case .failure(let error):
-                self?.onClose(error)
+                self?.signalClose(error)
             }
         }
         context.fireChannelActive()
@@ -788,13 +801,28 @@ final class ShellChannelHandler: ChannelDuplexHandler {
         if !bytes.isEmpty { onData(bytes) }
     }
 
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        if let channelEvent = event as? ChannelEvent, case .inputClosed = channelEvent {
+            if openSignalled {
+                signalClose(nil)
+            } else {
+                signalClose(NSError(
+                    domain: "PixShell.SSH",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "SSH 通道在 shell 打开前关闭"]
+                ))
+            }
+        }
+        context.fireUserInboundEventTriggered(event)
+    }
+
     func channelInactive(context: ChannelHandlerContext) {
-        onClose(nil)
+        signalClose(nil)
         context.fireChannelInactive()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        onClose(error)
+        signalClose(error)
         context.close(promise: nil)
     }
 }

@@ -10,10 +10,6 @@ namespace PixShell.Bridge;
 /// <summary>
 /// 应用侧需要实现的最小状态接口：桥只依赖这个接口，绝不依赖 MainWindow 的具体实现，保持桥接层
 /// 可独立测试/替换（对齐 mac Bridge/BridgeRoutes.swift 的 BridgeHost 协议）。
-///
-/// 约定：这里的 session 用整数下标表示当前打开的会话（对应 MainWindow 里 Sessions.Items 的下标），
-/// 不是老 JS 版里的 "ssh_xxxx" 字符串 id——外部 CLI 从 GET /v1/app/sessions 里看到的 session 字段
-/// 是什么，回传时原样带回来即可，这里负责把它解析成 int 再转交给宿主。
 /// </summary>
 public interface IBridgeHost
 {
@@ -21,22 +17,29 @@ public interface IBridgeHost
     List<Dictionary<string, object?>> BridgeHosts();
     /// <summary>当前打开的会话列表。</summary>
     List<Dictionary<string, object?>> BridgeSessions();
+    /// <summary>检查稳定会话 ID 是否存在，以及它当前是否仍连接。</summary>
+    bool BridgeSessionExists(string session, out bool connected);
     /// <summary>按 hostId 打开一个新会话；只用已保存凭据，绝不弹密码框。</summary>
     Task<Dictionary<string, object?>> BridgeConnectAsync(string hostId);
     /// <summary>把文本写进某会话的交互 shell（看得见，像手敲）。返回 false 表示会话不存在/写入失败。</summary>
-    bool BridgeWrite(int session, string text);
+    bool BridgeWrite(string session, string text);
     /// <summary>一次性执行命令并返回 stdout（独立通道，不进终端画面）。</summary>
-    Task<string> BridgeExecAsync(int session, string cmd);
+    Task<string> BridgeExecAsync(string session, string cmd);
     /// <summary>读取某会话最近的终端输出（最多 lines 行；&lt;=0 表示使用默认值）。</summary>
-    string BridgeScreen(int session, int lines);
+    string BridgeScreen(string session, int lines);
     /// <summary>SFTP 列目录。</summary>
-    Task<List<Dictionary<string, object?>>> BridgeSftpListAsync(int session, string path);
+    Task<List<Dictionary<string, object?>>> BridgeSftpListAsync(string session, string path);
     /// <summary>SFTP 下载；返回落地的本地路径，失败抛异常。</summary>
-    Task<string?> BridgeSftpDownloadAsync(int session, string remote, string local);
+    Task<string?> BridgeSftpDownloadAsync(string session, string remote, string local);
     /// <summary>SFTP 上传；返回远端路径，失败抛异常。</summary>
-    Task<string?> BridgeSftpUploadAsync(int session, string local, string remote);
+    Task<string?> BridgeSftpUploadAsync(string session, string local, string remote);
     /// <summary>关闭全部会话并释放桥（有头接管时让无头退出用）。</summary>
     void BridgeShutdown();
+}
+
+public sealed class BridgeSessionUnavailableException : Exception
+{
+    public BridgeSessionUnavailableException(string message) : base(message) { }
 }
 
 /// <summary>一次已解析的 HTTP 请求：AgentBridge 完成分帧、鉴权、Origin 校验之后，把纯业务部分交给
@@ -73,10 +76,14 @@ public static class BridgeRouter
     /// <summary>桥接协议自身的版本号（区别于 App 版本），供 CLI 诊断用。</summary>
     public const string BridgeVersion = "1.0.0-cs";
 
-    /// <summary>会话号是否真的存在。越界必须明确报错，不能返回 ok:true + 空输出 ——
-    /// 那样 agent 分不清"命令没有输出"和"会话号写错了"，只能瞎猜。</summary>
-    private static bool ValidSession(IBridgeHost host, int sid) =>
-        sid >= 0 && sid < host.BridgeSessions().Count;
+    private static BridgeResponse? ValidateSession(IBridgeHost host, string session, bool requireConnected)
+    {
+        if (!host.BridgeSessionExists(session, out var connected))
+            return BridgeResponse.Fail(404, $"会话 {session} 不存在（用 /v1/app/sessions 查）");
+        return requireConnected && !connected
+            ? BridgeResponse.Fail(410, $"会话 {session} 已断开，请重新连接后再试")
+            : null;
+    }
 
     public static async Task<BridgeResponse> RouteAsync(BridgeRequest req, IBridgeHost? host)
     {
@@ -184,7 +191,8 @@ public static class BridgeRouter
 
     private static BridgeResponse RouteShell(BridgeRequest req, IBridgeHost host)
     {
-        if (!TrySessionField(req, out var sid)) return BridgeResponse.Fail(400, "会话不存在或 id 不唯一");
+        if (!TrySessionField(req, out var sid)) return BridgeResponse.Fail(400, "缺少 session");
+        if (ValidateSession(host, sid, requireConnected: true) is { } error) return error;
 
         var cmd = StringField(req.Body, "cmd");
         var text = StringField(req.Body, "text") ?? cmd ?? "";
@@ -212,33 +220,33 @@ public static class BridgeRouter
 
         if (host.BridgeWrite(sid, text))
             return BridgeResponse.Ok(new { ok = true, sessionId = sid, bytes = System.Text.Encoding.UTF8.GetByteCount(text) });
+        if (ValidateSession(host, sid, requireConnected: true) is { } disconnected) return disconnected;
         return BridgeResponse.Fail(400, "write failed");
     }
 
     private static async Task<BridgeResponse> RouteExec(BridgeRequest req, IBridgeHost host)
     {
-        if (!TrySessionField(req, out var sid)) return BridgeResponse.Fail(400, "会话不存在或 id 不唯一");
+        if (!TrySessionField(req, out var sid)) return BridgeResponse.Fail(400, "缺少 session");
         var cmd = StringField(req.Body, "cmd", "command", "text");
         if (string.IsNullOrEmpty(cmd)) return BridgeResponse.Fail(400, "缺少 cmd");
-        if (!ValidSession(host, sid))
+        if (ValidateSession(host, sid, requireConnected: true) is { } error) return error;
+        try
         {
-            Logging.Log.Warn($"exec 指定的会话不存在 session={sid}（共 {host.BridgeSessions().Count} 个）", "bridge");
-            return BridgeResponse.Fail(404, $"会话 {sid} 不存在（当前共 {host.BridgeSessions().Count} 个，用 /v1/app/sessions 查）");
+            var stdout = await host.BridgeExecAsync(sid, cmd).ConfigureAwait(false);
+            return BridgeResponse.Ok(new { ok = true, sessionId = sid, stdout, stderr = "" });
         }
-        var stdout = await host.BridgeExecAsync(sid, cmd).ConfigureAwait(false);
-        return BridgeResponse.Ok(new { ok = true, sessionId = sid, stdout, stderr = "" });
+        catch (BridgeSessionUnavailableException ex)
+        {
+            return BridgeResponse.Fail(410, ex.Message);
+        }
     }
 
     private static BridgeResponse RouteScreen(BridgeRequest req, IBridgeHost host)
     {
-        if (!TrySessionField(req, out var sid)) return BridgeResponse.Fail(400, "会话不存在或 id 不唯一");
+        if (!TrySessionField(req, out var sid)) return BridgeResponse.Fail(400, "缺少 session");
         var linesRaw = req.Query.GetValueOrDefault("lines") ?? req.Query.GetValueOrDefault("n") ?? StringField(req.Body, "lines", "n");
         var n = int.TryParse(linesRaw, out var parsed) ? parsed : 200;
-        if (!ValidSession(host, sid))
-        {
-            Logging.Log.Warn($"screen 指定的会话不存在 session={sid}（共 {host.BridgeSessions().Count} 个）", "bridge");
-            return BridgeResponse.Fail(404, $"会话 {sid} 不存在（当前共 {host.BridgeSessions().Count} 个，用 /v1/app/sessions 查）");
-        }
+        if (ValidateSession(host, sid, requireConnected: false) is { } error) return error;
         var text = host.BridgeScreen(sid, n);
         var lines = text.Split('\n');
         return BridgeResponse.Ok(new { ok = true, sessionId = sid, text, lines, totalLines = lines.Length });
@@ -246,13 +254,18 @@ public static class BridgeRouter
 
     private static async Task<BridgeResponse> RouteSftpList(BridgeRequest req, IBridgeHost host)
     {
-        if (!TrySessionField(req, out var sid)) return BridgeResponse.Fail(400, "会话不存在");
+        if (!TrySessionField(req, out var sid)) return BridgeResponse.Fail(400, "缺少 session");
+        if (ValidateSession(host, sid, requireConnected: true) is { } error) return error;
         var path = StringField(req.Body, "path", "remote", "remotePath")
                    ?? req.Query.GetValueOrDefault("path") ?? req.Query.GetValueOrDefault("p") ?? "/";
         try
         {
             var entries = await host.BridgeSftpListAsync(sid, path).ConfigureAwait(false);
             return BridgeResponse.Ok(new { ok = true, path, entries });
+        }
+        catch (BridgeSessionUnavailableException ex)
+        {
+            return BridgeResponse.Fail(410, ex.Message);
         }
         catch (Exception ex)
         {
@@ -262,7 +275,8 @@ public static class BridgeRouter
 
     private static async Task<BridgeResponse> RouteSftpDownload(BridgeRequest req, IBridgeHost host)
     {
-        if (!TrySessionField(req, out var sid)) return BridgeResponse.Fail(400, "会话不存在");
+        if (!TrySessionField(req, out var sid)) return BridgeResponse.Fail(400, "缺少 session");
+        if (ValidateSession(host, sid, requireConnected: true) is { } error) return error;
         var remote = StringField(req.Body, "remote", "remotePath", "path");
         if (string.IsNullOrEmpty(remote)) return BridgeResponse.Fail(400, "缺少 remote");
         var local = StringField(req.Body, "local", "localPath") ?? DefaultDownloadLocal(remote);
@@ -272,6 +286,10 @@ public static class BridgeRouter
             var result = await host.BridgeSftpDownloadAsync(sid, remote, safeLocal).ConfigureAwait(false);
             return result != null ? BridgeResponse.Ok(new { ok = true, localPath = result }) : BridgeResponse.Fail(400, "download failed");
         }
+        catch (BridgeSessionUnavailableException ex)
+        {
+            return BridgeResponse.Fail(410, ex.Message);
+        }
         catch (Exception ex)
         {
             return BridgeResponse.Fail(400, ex.Message);
@@ -280,7 +298,8 @@ public static class BridgeRouter
 
     private static async Task<BridgeResponse> RouteSftpUpload(BridgeRequest req, IBridgeHost host)
     {
-        if (!TrySessionField(req, out var sid)) return BridgeResponse.Fail(400, "会话不存在");
+        if (!TrySessionField(req, out var sid)) return BridgeResponse.Fail(400, "缺少 session");
+        if (ValidateSession(host, sid, requireConnected: true) is { } error) return error;
         var local = StringField(req.Body, "local", "localPath");
         var remote = StringField(req.Body, "remote", "remotePath");
         if (string.IsNullOrEmpty(local) || string.IsNullOrEmpty(remote)) return BridgeResponse.Fail(400, "需要 local 与 remote");
@@ -289,6 +308,10 @@ public static class BridgeRouter
         {
             var result = await host.BridgeSftpUploadAsync(sid, safeLocal, remote).ConfigureAwait(false);
             return result != null ? BridgeResponse.Ok(new { ok = true, remotePath = result }) : BridgeResponse.Fail(400, "upload failed");
+        }
+        catch (BridgeSessionUnavailableException ex)
+        {
+            return BridgeResponse.Fail(410, ex.Message);
         }
         catch (Exception ex)
         {
@@ -356,23 +379,29 @@ public static class BridgeRouter
         };
     }
 
-    /// <summary>session 在本机以数组下标（int）表示；接受 JSON number 或数字字符串，兼容 body 字段与
-    /// query 字段两种来源（GET /v1/app/screen 等走 query）。</summary>
-    private static bool TrySessionField(BridgeRequest req, out int session)
+    /// <summary>会话 ID 为 /v1/app/sessions 返回的稳定不透明字符串；兼容数字 JSON，但不再把它解释为 tab 下标。</summary>
+    private static bool TrySessionField(BridgeRequest req, out string session)
     {
-        session = -1;
+        session = "";
         if (req.Body is { ValueKind: JsonValueKind.Object } b)
         {
             foreach (var k in new[] { "session", "session_id", "sessionId" })
             {
                 if (!b.TryGetProperty(k, out var v)) continue;
-                if (v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n)) { session = n; return true; }
-                if (v.ValueKind == JsonValueKind.String && int.TryParse(v.GetString()?.Trim(), out var ns)) { session = ns; return true; }
+                if (v.ValueKind is JsonValueKind.String or JsonValueKind.Number)
+                {
+                    session = v.ToString().Trim();
+                    return session.Length > 0;
+                }
             }
         }
         foreach (var k in new[] { "session", "session_id", "s" })
         {
-            if (req.Query.TryGetValue(k, out var qs) && int.TryParse(qs.Trim(), out var qn)) { session = qn; return true; }
+            if (req.Query.TryGetValue(k, out var value))
+            {
+                session = value.Trim();
+                return session.Length > 0;
+            }
         }
         return false;
     }

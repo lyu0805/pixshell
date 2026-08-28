@@ -24,6 +24,7 @@ public sealed class OpenSshProcessTransport : ITerminalTransport
     private Stream? _ossStdin;
     private Thread? _readThread;
     private volatile bool _connected;
+    private int _closeReported;
 
     public bool Connected => _connected;
 
@@ -93,18 +94,11 @@ public sealed class OpenSshProcessTransport : ITerminalTransport
 
         _ossProc = proc;
         _ossStdin = proc.StandardInput.BaseStream;
+        Interlocked.Exchange(ref _closeReported, 0);
         _connected = true;
 
-        proc.Exited += (_, _) =>
-        {
-            if (_connected)
-            {
-                _connected = false;
-                Log.Info($"FIDO2 SSH 会话退出 {user}@{host}:{port}", "ssh");
-                StatusChanged?.Invoke("连接已关闭");
-                ConnectedChanged?.Invoke(false);
-            }
-        };
+        proc.Exited += (_, _) => ReportProcessClosed();
+        if (proc.HasExited) ReportProcessClosed();
 
         _readThread = new Thread(() => OpenSSHReadPump(proc))
         {
@@ -112,6 +106,15 @@ public sealed class OpenSshProcessTransport : ITerminalTransport
             Name = "openssh-read-pump"
         };
         _readThread.Start();
+    }
+
+    private void ReportProcessClosed()
+    {
+        if (Interlocked.Exchange(ref _closeReported, 1) != 0 || !_connected) return;
+        _connected = false;
+        Log.Info($"FIDO2 SSH 会话退出 {_user}@{_host}:{_port}", "ssh");
+        StatusChanged?.Invoke("连接已关闭");
+        ConnectedChanged?.Invoke(false);
     }
 
     private void OpenSSHReadPump(Process proc)
@@ -187,8 +190,13 @@ public sealed class OpenSshProcessTransport : ITerminalTransport
         errThread.Start();
         try { outThread.Join(); } catch { }
         try { errThread.Join(); } catch { }
-        try { proc.WaitForExit(500); } catch { }
-        
+        try
+        {
+            proc.WaitForExit(500);
+            if (proc.HasExited) ReportProcessClosed();
+        }
+        catch { }
+
         if (!hadOutput)
         {
             string errText;

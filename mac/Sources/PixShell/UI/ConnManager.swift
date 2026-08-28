@@ -223,37 +223,28 @@ final class ConnManager: NSWindowController, NSTextFieldDelegate {
         head.translatesAutoresizingMaskIntoConstraints = false
         let inner = NSStackView(views: [head]); inner.orientation = .vertical; inner.alignment = .leading; inner.spacing = 6
         inner.translatesAutoresizingMaskIntoConstraints = false
+        let displayHosts = hosts.enumerated().sorted { lhs, rhs in
+            let displayOrder = lhs.element.display.localizedStandardCompare(rhs.element.display)
+            if displayOrder != .orderedSame {
+                return displayOrder == .orderedAscending
+            }
+            let idOrder = lhs.element.id.localizedStandardCompare(rhs.element.id)
+            if idOrder != .orderedSame {
+                return idOrder == .orderedAscending
+            }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
         if !collapsed.contains(name) {
-            if hosts.count > 3 {
-                // ≥4 台就出分组内滚动条（常显 legacy），外层列表仍可滚
+            if displayHosts.count > 3 {
+                // 分组内容只由外层列表滚动，展开后自然撑高整份列表。
                 let hostsStack = NSStackView(); hostsStack.orientation = .vertical
                 hostsStack.alignment = .leading; hostsStack.spacing = 4
                 hostsStack.translatesAutoresizingMaskIntoConstraints = false
-                for h in hosts { hostsStack.addArrangedSubview(hostRow(h)) }
-                let hostScroll = OverlayScrollView()
-                hostScroll.drawsBackground = false
-                hostScroll.hasVerticalScroller = true
-                hostScroll.scrollerStyle = .overlay
-                hostScroll.verticalScroller = InvisibleScroller()
-                hostScroll.translatesAutoresizingMaskIntoConstraints = false
-                let hostDoc = FlippedView(); hostDoc.translatesAutoresizingMaskIntoConstraints = false
-                hostDoc.addSubview(hostsStack)
-                hostScroll.documentView = hostDoc
-                NSLayoutConstraint.activate([
-                    hostScroll.heightAnchor.constraint(equalToConstant: 140),
-                    hostDoc.topAnchor.constraint(equalTo: hostScroll.contentView.topAnchor),
-                    hostDoc.leadingAnchor.constraint(equalTo: hostScroll.contentView.leadingAnchor),
-                    hostDoc.widthAnchor.constraint(equalTo: hostScroll.widthAnchor),
-                    hostsStack.topAnchor.constraint(equalTo: hostDoc.topAnchor),
-                    hostsStack.leadingAnchor.constraint(equalTo: hostDoc.leadingAnchor),
-                    hostsStack.trailingAnchor.constraint(equalTo: hostDoc.trailingAnchor),
-                    hostsStack.bottomAnchor.constraint(equalTo: hostDoc.bottomAnchor),
-                    hostsStack.widthAnchor.constraint(equalTo: hostDoc.widthAnchor)
-                ])
-                inner.addArrangedSubview(hostScroll)
-                hostScroll.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
+                for h in displayHosts { hostsStack.addArrangedSubview(hostRow(h)) }
+                inner.addArrangedSubview(hostsStack)
+                hostsStack.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
             } else {
-                for h in hosts { inner.addArrangedSubview(hostRow(h)) }
+                for h in displayHosts { inner.addArrangedSubview(hostRow(h)) }
             }
         }
         box.addSubview(inner)

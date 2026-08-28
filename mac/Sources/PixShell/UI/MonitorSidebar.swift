@@ -297,7 +297,14 @@ final class MonitorSidebar: NSView {
         connText.stringValue = on ? "已连接" : "已断开"
         connBtn.title = on ? "断开" : "连接"
         connBtn.style = on ? .danger : .primary          // 触发重绘配色
-        ipValue.stringValue = ip.isEmpty ? "-" : ip
+        let displayedIP = ip.isEmpty ? "-" : ip
+        let ipChanged = ipValue.stringValue != displayedIP
+        ipValue.stringValue = displayedIP
+        if !on || ipChanged {
+            _lastPingMs = 0
+            pingTitle.stringValue = "-"
+            pingChart.clear()
+        }
         if !on {
             lastRx = nil
             lastTx = nil
@@ -600,7 +607,12 @@ final class LatencyChart: NSView {
         if values.count > maxCount { values.removeFirst() }
         needsDisplay = true
     }
-    
+
+    func clear() {
+        values.removeAll(keepingCapacity: true)
+        needsDisplay = true
+    }
+
     private func formatLabel(_ v: Double) -> String {
         return String(format: "%.0f", v)
     }

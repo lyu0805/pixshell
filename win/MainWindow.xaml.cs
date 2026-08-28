@@ -37,14 +37,17 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<HostEntry> _hosts = new();
     private string _htmlPath = "";
     /// <summary>与 csproj / mac CFBundleShortVersionString 对齐的展示与更新比较版本。</summary>
-    public const string AppVersion = "0.1.9";
+    public const string AppVersion = "0.2.0";
 
     private bool _sideCollapsed;
-    private double _sidebarWidth = UiStore.Load().SidebarWidth;
+    private double _sidebarWidth;
     private bool _dockCollapsed;
     private bool _showingQuickConnect;
+    private bool _hasQuickConnectLayoutSnapshot;
+    private bool _quickConnectSideCollapsed;
+    private bool _quickConnectDockCollapsed;
     // 底部坞高度：对齐 mac pixshell.bottomHeight（默认 230，下限 200）
-    private double _dockHeight = Math.Max(200, UiStore.Load().BottomHeight > 0 ? UiStore.Load().BottomHeight : 230);
+    private double _dockHeight;
     /// <summary>GitHub #2：GridSplitter 夹在 Auto 命令栏与坞之间，PreviousAndNext 拖不动终端↔坞。
     /// 改 Mac 式：在分隔条上自管拖高，直接改 DockRow 高度。</summary>
     private bool _dockDragging;
@@ -77,6 +80,9 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        var prefs = UiStore.Load();
+        _sidebarWidth = prefs.SidebarWidth > 26 ? prefs.SidebarWidth : 240;
+        _dockHeight = Math.Max(200, prefs.BottomHeight > 0 ? prefs.BottomHeight : 230);
         InitializeComponent();
         SidebarColumn.Width = new GridLength(_sidebarWidth);
         Loaded += OnLoaded;
@@ -94,6 +100,7 @@ public partial class MainWindow : Window
         // 恢复上次坞高度（GridLength 默认 230，这里覆盖成 prefs；下限 200 对齐 mac）
         if (_dockHeight >= 200)
             DockRow.Height = new GridLength(_dockHeight);
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(RestoreWindowPlacement));
         SourceInitialized += MainWindow_SourceInitialized;
 
         Terminal.TermSchemeStore.Load();
@@ -174,8 +181,7 @@ public partial class MainWindow : Window
         Sftp.OnInsertToCommand += InsertToCommandBox;
         // P0：SFTP 与终端完全独立，禁止 OnUserNavigate → 终端 cd 联动
         // Sftp.OnUserNavigate += SyncTerminalCd;
-        // 智能打包传输需要远端执行命令能力（tar 打包/解包/清理），复用当前活动会话的 ExecAsync。
-        Sftp.ExecRunner = cmd => ActiveSession != null ? ActiveSession.ExecAsync(cmd) : Task.FromResult("");
+        // 智能打包传输始终绑定 SFTP 启动时捕获的 TerminalSession，禁止从当前标签重新取会话。
 
         // 命令板：目标下拉数据源(全部会话+连接状态) + 发送回调(解析 当前/所有已连接/指定会话)，
         // 对齐 mac cmdPanel.sessionsProvider / cmdPanel.onSendTo（AppDelegate+Layout.swift）。
@@ -197,6 +203,94 @@ public partial class MainWindow : Window
         SizeChanged += (s, ev) => CloseToolsFlyout();
         StateChanged += (s, ev) => CloseToolsFlyout();
     }
+
+    private void RestoreWindowPlacement()
+    {
+        var prefs = UiStore.Load();
+        var restoredBounds = false;
+        if (prefs.WindowLeft.HasValue && prefs.WindowTop.HasValue
+            && prefs.WindowWidth.HasValue && prefs.WindowHeight.HasValue)
+        {
+            var left = prefs.WindowLeft.Value;
+            var top = prefs.WindowTop.Value;
+            var width = prefs.WindowWidth.Value;
+            var height = prefs.WindowHeight.Value;
+            var virtualLeft = SystemParameters.VirtualScreenLeft;
+            var virtualTop = SystemParameters.VirtualScreenTop;
+            var virtualWidth = SystemParameters.VirtualScreenWidth;
+            var virtualHeight = SystemParameters.VirtualScreenHeight;
+            if (IsFinite(left) && IsFinite(top) && IsFinite(width) && IsFinite(height)
+                && IsFinite(virtualLeft) && IsFinite(virtualTop)
+                && IsFinite(virtualWidth) && IsFinite(virtualHeight)
+                && width >= MinWidth && height >= MinHeight
+                && virtualWidth >= MinWidth && virtualHeight >= MinHeight)
+            {
+                var desktop = new Rect(virtualLeft, virtualTop, virtualWidth, virtualHeight);
+                var saved = new Rect(left, top, width, height);
+                var visible = Rect.Intersect(desktop, saved);
+                if (!visible.IsEmpty
+                    && visible.Width >= Math.Min(96, width)
+                    && visible.Height >= Math.Min(96, height))
+                {
+                    width = Math.Min(width, desktop.Width);
+                    height = Math.Min(height, desktop.Height);
+                    var minVisibleWidth = Math.Min(96, width);
+                    var minVisibleHeight = Math.Min(96, height);
+                    WindowStartupLocation = WindowStartupLocation.Manual;
+                    Width = width;
+                    Height = height;
+                    Left = Math.Min(Math.Max(left, desktop.Left - width + minVisibleWidth), desktop.Right - minVisibleWidth);
+                    Top = Math.Min(Math.Max(top, desktop.Top - height + minVisibleHeight), desktop.Bottom - minVisibleHeight);
+                    restoredBounds = true;
+                }
+            }
+        }
+
+        if (prefs.WindowMaximized)
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() =>
+            {
+                if (IsVisible) WindowState = WindowState.Maximized;
+            }));
+        }
+        else if (!restoredBounds)
+        {
+            WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        }
+    }
+
+    private void SaveUiPrefs()
+    {
+        try
+        {
+            var prefs = UiStore.Load();
+            prefs.SidebarWidth = _sidebarWidth;
+            prefs.BottomHeight = _dockHeight;
+            if (WindowState != WindowState.Minimized)
+            {
+                var bounds = WindowState == WindowState.Maximized
+                    ? RestoreBounds
+                    : new Rect(Left, Top, Width, Height);
+                if (IsFinite(bounds.Left) && IsFinite(bounds.Top)
+                    && IsFinite(bounds.Width) && IsFinite(bounds.Height)
+                    && bounds.Width >= MinWidth && bounds.Height >= MinHeight)
+                {
+                    prefs.WindowLeft = bounds.Left;
+                    prefs.WindowTop = bounds.Top;
+                    prefs.WindowWidth = bounds.Width;
+                    prefs.WindowHeight = bounds.Height;
+                    prefs.WindowMaximized = WindowState == WindowState.Maximized;
+                }
+            }
+            UiStore.Save(prefs);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"保存窗口状态失败: {ex.Message}", "ui");
+        }
+    }
+
+    private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
 
     private void MainWindow_SourceInitialized(object? sender, EventArgs e)
     {
@@ -256,6 +350,7 @@ public partial class MainWindow : Window
 
     private ConnectionManagerWindow? _connMgrWin;
     private UI.SysInfoWindow? _sysInfoWin;
+    private TerminalSession? _sysInfoSession;
     private void ShowConnectionManager()
     {
         if (_connMgrWin != null && _connMgrWin.IsLoaded)
@@ -512,8 +607,7 @@ public partial class MainWindow : Window
         BuildTabHeader(item, session);
         Sessions.Items.Add(item);
         Sessions.SelectedItem = item;
-        _showingQuickConnect = false;
-        UpdateWorkCenterVisibility();
+        LeaveQuickConnect();
         ConnectAnim.Begin("本机终端");
 
         try
@@ -564,7 +658,7 @@ public partial class MainWindow : Window
 
         Sessions.Items.Add(item);
         Sessions.SelectedItem = item;
-        UpdateWorkCenterVisibility();
+        LeaveQuickConnect();
 
         ConnectAnim.Begin($"{host.Username}@{host.Host}:{host.Port}");   // 连接动画（终端里不写"连接中"）
 
@@ -664,14 +758,16 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task DetectRemoteOsAsync(TerminalSession session, HostEntry host)
     {
-        if (host.IsLocal) return;
-        if (!string.IsNullOrWhiteSpace(host.OsId)) return;
+        if (host.IsLocal || !string.IsNullOrWhiteSpace(host.OsId)
+            || !session.TryGetConnectedTransportGeneration(out var transportGeneration)) return;
         try
         {
             // /etc/os-release 的 ID 最准（ubuntu/debian/centos/alpine/openwrt…），退回 uname。
             // Windows OpenSSH 默认 shell 可能是 cmd/powershell：POSIX 探测失败后再探。
             var raw = await session.ExecAsync(
                 ". /etc/os-release 2>/dev/null && printf '%s\\n' \"$ID\" || uname -s 2>/dev/null || true");
+            if (!session.IsCurrentConnectedTransportGeneration(transportGeneration)) return;
+
             var id = (raw ?? "").Trim().Split('\n', StringSplitOptions.RemoveEmptyEntries)
                 .Select(s => s.Trim().TrimEnd('\r').ToLowerInvariant())
                 .LastOrDefault(s => s.Length > 0) ?? "";
@@ -681,6 +777,8 @@ public partial class MainWindow : Window
                 // Windows 回落：PowerShell / cmd
                 var winProbe = await session.ExecAsync(
                     "powershell -NoProfile -Command \"if ($env:OS -eq 'Windows_NT') { 'windows' }\" 2>nul & cmd /c \"if defined OS if %OS%==Windows_NT echo windows\"");
+                if (!session.IsCurrentConnectedTransportGeneration(transportGeneration)) return;
+
                 var wp = (winProbe ?? "").Trim().Split('\n', StringSplitOptions.RemoveEmptyEntries)
                     .Select(s => s.Trim().TrimEnd('\r').ToLowerInvariant())
                     .FirstOrDefault(s => s is "windows" or "windows_nt") ?? "";
@@ -688,7 +786,8 @@ public partial class MainWindow : Window
                 else return;
             }
             if (id is "windows_nt" or "win32" or "win64") id = "windows";
-            if (id.Length == 0 || id.Length > 32 || id.Contains(' ')) return;
+            if (id.Length == 0 || id.Length > 32 || id.Contains(' ')
+                || !session.IsCurrentConnectedTransportGeneration(transportGeneration)) return;
 
             var entry = _hosts.FirstOrDefault(h => h.Id == host.Id);
             if (entry == null || !string.IsNullOrWhiteSpace(entry.OsId)) return;
@@ -711,16 +810,24 @@ public partial class MainWindow : Window
         // 延后一拍：此刻还在 ConnectAsync 的异常处理里，直接弹模态框会和正在收尾的会话打架。
         _ = Dispatcher.InvokeAsync(async () =>
         {
+            var session = item.Tag as TerminalSession;
             try
             {
+                if (session == null || !IsSessionTabAlive(item, session)) return;
                 var (entered, remember) = PromptPassword(host);
-                if (string.IsNullOrEmpty(entered)) return;
+                if (string.IsNullOrEmpty(entered) || !IsSessionTabAlive(item, session)) return;
                 if (remember) CredentialStore.SetPassword(host.Id, entered);
-                if (item.Tag is TerminalSession s)
+
+                session.Disconnect();
+                var proxy = ProxyStore.Find(host.ProxyId);
+                await session.ConnectAsync(host.Host, host.Port, host.Username, entered, host.KeyPath, proxy);
+                if (!IsSessionTabAlive(item, session))
                 {
-                    s.Disconnect();
-                    var proxy = ProxyStore.Find(host.ProxyId);
-                    await s.ConnectAsync(host.Host, host.Port, host.Username, entered, host.KeyPath, proxy);
+                    session.Disconnect();
+                    return;
+                }
+                if (IsActiveSession(session))
+                {
                     LeaveQuickConnect(); // 重试成功：先收 QC 再亮 HWND
                     SyncDockSession();
                     Monitor.SetConnected(true, host.Host);
@@ -730,7 +837,8 @@ public partial class MainWindow : Window
             catch (Exception ex2)
             {
                 Log.Error($"重试连接仍失败 {host.Username}@{host.Host}: {ex2.Message}", "session");
-                SetStatus("连接失败: " + ex2.Message);
+                if (session != null && IsSessionTabAlive(item, session) && IsActiveSession(session))
+                    SetStatus("连接失败: " + ex2.Message);
             }
             finally { _retryPrompting = false; }
         }, System.Windows.Threading.DispatcherPriority.Background);
@@ -802,6 +910,7 @@ public partial class MainWindow : Window
             try
             {
                 await session.ReloadWebSshAsync().ConfigureAwait(true);
+                LeaveQuickConnect(); // Web 重连成功：先收 QC 再亮 HWND
                 SetStatus("Web 终端已刷新");
                 RefreshConnState();
             }
@@ -879,7 +988,8 @@ public partial class MainWindow : Window
     private void CloseTab(TabItem item)
     {
         var wasActive = ReferenceEquals(Sessions.SelectedItem, item);
-        if (item.Tag is TerminalSession session)
+        var session = item.Tag as TerminalSession;
+        if (session != null)
         {
             session.StatusChanged -= OnSessionStatusChanged;
             session.ConnectedChanged -= OnSessionConnectedChanged;
@@ -887,8 +997,7 @@ public partial class MainWindow : Window
             try { session.Dispose(); } catch { }
         }
         Sessions.Items.Remove(item);
-        // P1：关标签就清侧栏；空会话或关掉的是当前活动标签都要
-        if (Sessions.Items.Count == 0 || wasActive) ClearSessionSidePanels();
+        if (Sessions.Items.Count == 0 || wasActive) ClearSessionSidePanels(session);
         UpdateWorkCenterVisibility();
         SyncDockSession();
     }
@@ -905,15 +1014,15 @@ public partial class MainWindow : Window
     private void OnTabSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!ReferenceEquals(e.Source, Sessions)) return;
-        // 旧 Tab WebView2 → 藏；新 Tab → 亮。只操作两个，不遍历全部。
+        // 旧 Tab WebView2 → 藏；若 QC 正显示，先完整收 QC（含快照恢复），再亮新 Tab HWND。
         if (e.RemovedItems.Count > 0 && e.RemovedItems[0] is TabItem { Tag: TerminalSession oldS })
             oldS.View.Visibility = Visibility.Collapsed;
-        if (e.AddedItems.Count > 0 && e.AddedItems[0] is TabItem { Tag: TerminalSession newS })
-            newS.View.Visibility = Visibility.Visible;
         // GitHub #1：旧 PlayRippleTransition 对 MainArea 做 RenderTargetBitmap。
         // WebView2 是 HwndHost，RTB 拍不到 HWND → 全黑遮罩 0.6–0.85s 闪黑/抖动。
         // 终端会话一律 WebView2，切 tab 禁止再走 RTB 涟漪（TransitionImage 保留给非 HWND 场景）。
         if (_showingQuickConnect) LeaveQuickConnect();
+        if (e.AddedItems.Count > 0 && e.AddedItems[0] is TabItem { Tag: TerminalSession newS })
+            newS.View.Visibility = Visibility.Visible;
         RefreshConnState();
         SyncDockSession();
         KickPollMonitorDebounced();
@@ -931,18 +1040,28 @@ public partial class MainWindow : Window
 
     private TerminalSession? ActiveSession => (Sessions.SelectedItem as TabItem)?.Tag as TerminalSession;
     private bool IsActiveSession(TerminalSession s) => ReferenceEquals(ActiveSession, s);
+    private bool IsSessionTabAlive(TabItem item, TerminalSession session) =>
+        Sessions.Items.Contains(item) && ReferenceEquals(item.Tag, session);
 
     private void OnSessionStatusChanged(TerminalSession s, string msg) { if (IsActiveSession(s)) SetStatus(msg); }
     private void OnSessionConnectedChanged(TerminalSession s, bool on)
     {
-        if (!on && IsActiveSession(s))
+        Dispatcher.BeginInvoke(new Action(() =>
         {
-            Dispatcher.BeginInvoke(new Action(() =>
+            if (s.Connected != on) return;
+            Cmds.ReloadTargets();
+            if (!IsActiveSession(s)) return;
+            if (!on)
             {
-                ClearSessionSidePanels();
-                RefreshConnState();
-            }));
-        }
+                ClearSessionSidePanels(s);
+            }
+            else
+            {
+                Sftp.SetSession(s);
+                if (_filesTabActive) Sftp.ConnectIfNeeded();
+            }
+            RefreshConnState();
+        }));
     }
     private void OnSessionTitleChanged(TerminalSession s)
     {
@@ -973,17 +1092,17 @@ public partial class MainWindow : Window
         return list;
     }
 
-    /// <summary>命令板目标下拉数据源：全部会话标题 + 是否已连接。</summary>
-    private List<(string title, bool connected)> BuildSessionConnStates()
+    /// <summary>命令板目标下拉数据源：全部会话的稳定 ID、标题与连接状态。</summary>
+    private List<(string id, string title, bool connected)> BuildSessionConnStates()
     {
-        var list = new List<(string, bool)>();
+        var list = new List<(string id, string title, bool connected)>();
         foreach (var obj in Sessions.Items)
             if (obj is TabItem { Tag: TerminalSession s })
-                list.Add((s.TabTitle, s.Connected));
+                list.Add((s.SessionId, s.TabTitle, s.Connected));
         return list;
     }
 
-    /// <summary>命令板发送：解析 当前会话/所有已连接会话/指定会话下标 三种目标（对齐 mac cmdPanel.onSendTo）。</summary>
+    /// <summary>命令板发送：解析当前会话、所有已连接会话和指定稳定会话 ID。</summary>
     private void SendToCommandTarget(string text, Store.SendTarget target)
     {
         var bytes = text; // TerminalSession.SendText 内部按 UTF-8 编码发送
@@ -997,9 +1116,15 @@ public partial class MainWindow : Window
                     if (obj is TabItem { Tag: TerminalSession s } && s.Connected) s.SendText(bytes);
                 break;
             case Store.SendTargetKind.Session:
-                if (target.SessionIndex >= 0 && target.SessionIndex < Sessions.Items.Count &&
-                    Sessions.Items[target.SessionIndex] is TabItem { Tag: TerminalSession si } && si.Connected)
-                    si.SendText(bytes);
+                foreach (var obj in Sessions.Items)
+                {
+                    if (obj is TabItem { Tag: TerminalSession s }
+                        && s.SessionId == target.SessionId && s.Connected)
+                    {
+                        s.SendText(bytes);
+                        break;
+                    }
+                }
                 break;
         }
     }
@@ -1019,17 +1144,34 @@ public partial class MainWindow : Window
         }
     }
 
+    private void CaptureQuickConnectLayoutSnapshot()
+    {
+        if (_hasQuickConnectLayoutSnapshot || Sessions.Items.Count == 0) return;
+        _quickConnectSideCollapsed = _sideCollapsed;
+        _quickConnectDockCollapsed = _dockCollapsed;
+        _hasQuickConnectLayoutSnapshot = true;
+    }
+
     /// <summary>
     /// 离开快速连接落地页的唯一出口。
-    /// 顺序硬约束：先清 flag → UpdateWorkCenterVisibility 内先 Collapsed QC 再亮 HWND。
+    /// 顺序硬约束：先清 flag → UpdateWorkCenterVisibility 内先 Collapsed QC 再亮 HWND，之后恢复进入前 chrome。
     /// 禁止在重连/重试/OnBack/SelectionChanged 里单独 SetSessionViewsVisible(true) 不收 QC
     /// （否则 flag=false 但 QC 仍 Visible + WebView2 Visible → HWND 从落地页底下打穿）。
     /// </summary>
     private void LeaveQuickConnect()
     {
+        var restore = _hasQuickConnectLayoutSnapshot && Sessions.Items.Count > 0;
+        var side = _quickConnectSideCollapsed;
+        var dock = _quickConnectDockCollapsed;
+        _hasQuickConnectLayoutSnapshot = false;
         _showingQuickConnect = false;
         QuickConnectPanel.SetShowsBack(false);
         UpdateWorkCenterVisibility();
+        if (restore)
+        {
+            SetSidebarCollapsed(side);
+            SetDockCollapsed(dock);
+        }
     }
 
     // 背景一律走主题令牌：空态 BrushBg，有会话 BrushTerm。禁止 Transparent/White 硬编码，
@@ -1047,6 +1189,7 @@ public partial class MainWindow : Window
             if (empty)
             {
                 _showingQuickConnect = false;
+                _hasQuickConnectLayoutSnapshot = false;
                 QuickConnectPanel.Reload();
             }
             // QC 模式有会话时：必须藏 SessionContent/WebView2，否则空气空间挡点击
@@ -1090,20 +1233,26 @@ public partial class MainWindow : Window
     private void OpenConnMgr_Click(object sender, RoutedEventArgs e) => ShowConnectionManager();
     private void NewHost_Click(object sender, RoutedEventArgs e) => NewHostFlow();
 
-    // ＋快速连接：始终显示落地页（覆盖当前终端），并收起侧栏+坞，对齐 mac showQuickConnect/collapseChrome。
+    // ＋快速连接：始终显示落地页（覆盖当前终端）。已有会话时保存并收起 chrome；无会话启动落地页保留当前布局。
     private void QuickConnect_Click(object sender, RoutedEventArgs e)
     {
         // 连接中/失败淡出未完时 ConnectAnim Z=20 会盖死落地页 → 先强制收
         try { ConnectAnim.HideNow(); } catch { /* ignore */ }
+        var hasSessions = Sessions.Items.Count > 0;
+        if (hasSessions && !_showingQuickConnect)
+            CaptureQuickConnectLayoutSnapshot();
         _showingQuickConnect = true;
         QuickConnectPanel.Visibility = Visible;
         QuickConnectPanel.SetResourceReference(BackgroundProperty, "BrushBg");
         WorkCenter.SetResourceReference(BackgroundProperty, "BrushBg");
         // 有会话才出返回箭头
-        QuickConnectPanel.SetShowsBack(Sessions.Items.Count > 0);
+        QuickConnectPanel.SetShowsBack(hasSessions);
         QuickConnectPanel.Reload();
-        SetSidebarCollapsed(true);
-        SetDockCollapsed(true);
+        if (hasSessions)
+        {
+            SetSidebarCollapsed(true);
+            SetDockCollapsed(true);
+        }
         // 必须藏 WebView2 HWND，否则空气空间挡落地页点击
         SetSessionViewsVisible(false);
     }
@@ -1575,7 +1724,8 @@ public partial class MainWindow : Window
     /// <summary>Tab 补全：把最后一个 token 当远端路径前缀，用 ls 列同级候选，补到公共前缀。</summary>
     private void CompleteRemotePath()
     {
-        if (ActiveSession is not { Connected: true } session) return;
+        if (ActiveSession is not { Connected: true } session
+            || !session.TryGetConnectedTransportGeneration(out var transportGeneration)) return;
         var text = CmdInput.Text;
         var lastSpace = text.LastIndexOf(' ');
         if (lastSpace < 0) return; // 第一个 token 是命令名，不补路径
@@ -1595,13 +1745,15 @@ public partial class MainWindow : Window
             stub = token;
         }
         var quoted = dir.Replace("'", "'\\''");
-        _ = CompleteRemotePathAsync(session, prefixPart, token, dir, stub, quoted);
+        _ = CompleteRemotePathAsync(session, transportGeneration, text, prefixPart, token, dir, stub, quoted);
     }
 
-    private async Task CompleteRemotePathAsync(TerminalSession session, string prefixPart, string token, string dir, string stub, string quoted)
+    private async Task CompleteRemotePathAsync(TerminalSession session, long transportGeneration, string originalInput, string prefixPart, string token, string dir, string stub, string quoted)
     {
         var outp = await session.ExecAsync($"ls -1ap '{quoted}' 2>/dev/null");
-        if (!IsActiveSession(session)) return;
+        if (!IsActiveSession(session)
+            || !session.IsCurrentConnectedTransportGeneration(transportGeneration)
+            || CmdInput.Text != originalInput) return;
         var names = outp.Split('\n')
             .Select(s => s.TrimEnd('\r'))
             .Where(s => s.Length > 0 && s != "./" && s != "../" && (stub.Length == 0 || s.StartsWith(stub)))
@@ -1634,20 +1786,23 @@ public partial class MainWindow : Window
         return p;
     }
 
-    /// <summary>P1：SSH 断开/关标签 → 清 SFTP + 关系统信息窗口。</summary>
-    private void ClearSessionSidePanels()
+    private void ClearSessionSidePanels(TerminalSession? session = null)
     {
-        try { Sftp.Cleanup(); } catch { }
-        try { DockPathText.Text = "远端未连接"; } catch { }
-        try
+        if (session == null || Sftp.IsSession(session))
         {
-            if (_sysInfoWin is { IsVisible: true })
-            {
-                _sysInfoWin.Close();
-            }
+            try { Sftp.Cleanup(); } catch { }
+            try { DockPathText.Text = "远端未连接"; } catch { }
         }
-        catch { }
-        _sysInfoWin = null;
+        if (session == null || ReferenceEquals(_sysInfoSession, session))
+        {
+            try
+            {
+                if (_sysInfoWin is { IsVisible: true }) _sysInfoWin.Close();
+            }
+            catch { }
+            _sysInfoWin = null;
+            _sysInfoSession = null;
+        }
         try { ConnectAnim.HideNow(); } catch { }
     }
 
@@ -1753,14 +1908,18 @@ public partial class MainWindow : Window
                 Monitor.SetConnected(session is { Connected: true }, session?.SourceHost?.Host ?? session?.HostName ?? "");
                 return;
             }
+            if (!session.TryGetConnectedTransportGeneration(out var transportGeneration)) return;
+
             var host = session.SourceHost?.Host ?? session.HostName;
+            var port = session.SourceHost?.Port ?? 22;
             Monitor.SetConnected(true, host);
             _lastPollKick = DateTime.UtcNow;
             // 跑监控脚本；输出里要有 ===mon=== 标记才解析，避免把普通命令输出当监控数据。
             var outp = await session.ExecAsync(UI.MonitorSidebar.MonitorCommand);
-            if (!IsActiveSession(session)) return; // 轮询期间用户切走了
+            if (!IsActiveSession(session)
+                || !session.IsCurrentConnectedTransportGeneration(transportGeneration)) return;
             if (outp != null && outp.Contains("===mon===")) Monitor.Update(UI.MonitorSidebar.ParseMonitor(outp));
-            // 本地→SSH 延迟：TCP 22 端口测时，3s 节流
+            // 本地→SSH 延迟：TCP SSH 端口测时，3s 节流
             if ((DateTime.UtcNow - _lastPingAt).TotalSeconds >= 3)
             {
                 _lastPingAt = DateTime.UtcNow;
@@ -1770,9 +1929,14 @@ public partial class MainWindow : Window
                     {
                         var sw = System.Diagnostics.Stopwatch.StartNew();
                         using var tcp = new System.Net.Sockets.TcpClient();
-                        await tcp.ConnectAsync(host, 22).WaitAsync(TimeSpan.FromSeconds(2));
+                        await tcp.ConnectAsync(host, port).WaitAsync(TimeSpan.FromSeconds(2));
                         sw.Stop();
-                        Monitor.PushPing(sw.Elapsed.TotalMilliseconds);
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            if (IsActiveSession(session)
+                                && session.IsCurrentConnectedTransportGeneration(transportGeneration))
+                                Monitor.PushPing(sw.Elapsed.TotalMilliseconds);
+                        }));
                     }
                     catch { /* 超时/不通 — 跳过，下次重试 */ }
                 });
@@ -1790,30 +1954,40 @@ public partial class MainWindow : Window
     private async Task ShowSysInfo()
     {
         Log.Info("打开系统信息面板", "ui");
-        if (ActiveSession is not { Connected: true } session) { MessageBox.Show(this, "请先连接一个会话。", "系统信息"); return; }
+        if (ActiveSession is not { Connected: true } session || !session.TryGetConnectedTransportGeneration(out var transportGeneration))
+        {
+            MessageBox.Show(this, "请先连接一个会话。", "系统信息");
+            return;
+        }
         try { _sysInfoWin?.Close(); } catch { }
         var win = new UI.SysInfoWindow { Owner = this, Title = "系统信息 · " + (session.SourceHost?.Display ?? session.HostName) };
-        // 本机 / Windows 远端走 PowerShell；Linux/macOS 走多 OS POSIX 脚本（uname 分支）。
-        // OsId 未知时：先试 POSIX，若无 hostname= 关键行再回落 WindowsCommand（覆盖 Windows OpenSSH 默认 shell 非 sh 的情况）。
         var isLocal = session.SourceHost?.IsLocal == true;
         var osId = session.SourceHost?.OsId;
         win.OnRefresh = async () =>
         {
-            if (!IsActiveSession(session)) return "";
+            if (!IsActiveSession(session) || !session.IsCurrentConnectedTransportGeneration(transportGeneration)) return "";
             var cmd = UI.SysInfoWindow.CommandFor(isLocal, osId);
             var text = await session.ExecAsync(cmd);
+            if (!IsActiveSession(session) || !session.IsCurrentConnectedTransportGeneration(transportGeneration)) return "";
             if (!isLocal
-                && !ReferenceEquals(cmd, UI.SysInfoWindow.WindowsCommand)
-                && cmd != UI.SysInfoWindow.WindowsCommand
+                && !ReferenceEquals(cmd, UI.SysInfoWindow.WindowsCommandForDefaultRoute)
+                && cmd != UI.SysInfoWindow.WindowsCommandForDefaultRoute
                 && !LooksLikeSysInfoOutput(text))
             {
-                var retry = await session.ExecAsync(UI.SysInfoWindow.WindowsCommand);
+                var retry = await session.ExecAsync(UI.SysInfoWindow.WindowsCommandForDefaultRoute);
+                if (!IsActiveSession(session) || !session.IsCurrentConnectedTransportGeneration(transportGeneration)) return "";
                 if (LooksLikeSysInfoOutput(retry)) text = retry;
             }
             return text ?? "";
         };
-        win.Closed += (_, _) => { if (ReferenceEquals(_sysInfoWin, win)) _sysInfoWin = null; };
+        win.Closed += (_, _) =>
+        {
+            if (!ReferenceEquals(_sysInfoWin, win)) return;
+            _sysInfoWin = null;
+            _sysInfoSession = null;
+        };
         _sysInfoWin = win;
+        _sysInfoSession = session;
         win.Show();
         await win.Reload();
     }
@@ -2025,8 +2199,7 @@ public partial class MainWindow : Window
         BuildTabHeader(item, session);
         Sessions.Items.Add(item);
         Sessions.SelectedItem = item;
-        _showingQuickConnect = false;
-        UpdateWorkCenterVisibility();
+        LeaveQuickConnect();
 
         try
         {
@@ -2094,8 +2267,7 @@ public partial class MainWindow : Window
         BuildTabHeader(item, session);
         Sessions.Items.Add(item);
         Sessions.SelectedItem = item;
-        _showingQuickConnect = false;
-        UpdateWorkCenterVisibility();
+        LeaveQuickConnect();
 
         try
         {
@@ -2155,8 +2327,9 @@ public partial class MainWindow : Window
     }
     private void MenuDisconnect()
     {
-        ActiveSession?.Disconnect();
-        ClearSessionSidePanels();   // P1：断开即清 SFTP + 系统信息
+        var session = ActiveSession;
+        session?.Disconnect();
+        ClearSessionSidePanels(session);
         RefreshConnState();   // 侧栏红绿灯 + 断开/连接按钮跟着切
         SetStatus("已断开");
     }
@@ -2780,6 +2953,7 @@ public partial class MainWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        SaveUiPrefs();
         if (_sysInfoWin != null) { try { _sysInfoWin.Close(); } catch { } }
         if (_connMgrWin != null) { try { _connMgrWin.Close(); } catch { } }
         _monitorTimer.Stop();

@@ -48,12 +48,13 @@ final class TermSessionController: SSHSessionDelegate {
         // 会话存活校验：closeSession 移除标签后不置 ssh=nil，迟到的 open 回调若只验
         // transport 身份会对已删会话继续建连/探测（幽灵重连）。旧反查天然含此语义。
         guard let app = app, app.sessions.contains(where: { $0 === sess }) else { return }
+        let isCurrent = app.sessions.indices.contains(app.current) && app.sessions[app.current] === sess
         sess.connected = true
         sess.shellOpened = true     // 认证确实过了；之后任何关闭都不再算"认证失败"
-        app.connectOverlay?.succeed()   // 连接动画收尾（绿点 + 淡出）
+        if isCurrent { app.connectOverlay?.succeed() }
         app.detectRemoteOS(for: sess)   // 首次连上 → 认出发行版，主机图标换成对应系统标志
         app.rebuildTabs()
-        if app.sessions.indices.contains(app.current), app.sessions[app.current] === sess {
+        if isCurrent {
             app.setStatus("已连接 \(sess.host.display)")
             app.expandChrome()   // 连上 → 展开侧栏 + 文件/命令坞（对齐老仓库）
             app.startMonitor(for: sess)
@@ -93,7 +94,8 @@ final class TermSessionController: SSHSessionDelegate {
         guard s === sess.ssh else { return }
         // 同上：已从 sessions 移除的会话不再走分类/回落/提示（否则会对幽灵会话
         // 自动重连 + 把覆盖层盖到当前活动会话上）。
-        guard app?.sessions.contains(where: { $0 === sess }) == true else { return }
+        guard let app = app, app.sessions.contains(where: { $0 === sess }) else { return }
+        let isCurrent = app.sessions.indices.contains(app.current) && app.sessions[app.current] === sess
         guard !sess.closeHandled else { return }
         sess.closeHandled = true
         // 清掉节流里还没 flush 的输出（会话已关，不再消化），同时清 ANSI 跨块状态。
@@ -126,8 +128,8 @@ final class TermSessionController: SSHSessionDelegate {
                 if Self.looksLikeAuthFailure(error) {
                     Log.warn("系统 ssh 回落后认证失败 \(sess.host.subtitle): \(error?.localizedDescription ?? "未知")（保留已保存密码）", "ssh")
                     t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：认证被拒。\u{1b}[0m\r\n")
-                    app?.connectOverlay?.fail("认证失败")
-                    if sess.host.keyPath.isEmpty { app?.promptRetryPassword(for: sess.host) }
+                    if isCurrent { app.connectOverlay?.fail("认证失败") }
+                    if isCurrent && sess.host.keyPath.isEmpty { app.promptRetryPassword(for: sess) }
                 } else if Self.looksLikeNetworkFailure(error) || LocalNetworkAuth.looksLikeLocalNetworkBlock(error) {
                     // 绝不自动弹本地网络 sheet：主机离线/断网也会 errno 65，弹窗会挡屏。
                     // 用户需要授权时走「帮助 → 授权本地网络…」。
@@ -141,11 +143,11 @@ final class TermSessionController: SSHSessionDelegate {
                         detail = error?.localizedDescription ?? "网络不可达 (\(endpoint))"
                     }
                     Log.warn("系统 ssh 回落后网络失败 \(sess.host.subtitle): \(detail)（保留钥匙串）", "session")
-                    app?.connectOverlay?.fail("连接失败\n\(detail)", autoHide: false)
+                    if isCurrent { app.connectOverlay?.fail("连接失败\n\(detail)", autoHide: false) }
                     statusDetail = "✗ 连接失败：\(detail)"
                 } else {
                     Log.warn("系统 ssh 回落后仍失败 \(sess.host.subtitle): \(error?.localizedDescription ?? "未知")", "ssh")
-                    app?.connectOverlay?.fail("连接失败\n算法/协议不兼容", autoHide: false)
+                    if isCurrent { app.connectOverlay?.fail("连接失败\n算法/协议不兼容", autoHide: false) }
                 }
             case .network:
                 // P0：网络/超时/DNS/代理失败 —— 保留 Keychain，禁止当认证失败清密码。
@@ -176,7 +178,7 @@ final class TermSessionController: SSHSessionDelegate {
                     detail = error?.localizedDescription ?? "网络不可达 (\(endpoint))"
                 }
                 Log.warn("网络/连接失败 \(sess.host.subtitle): \(detail)（保留钥匙串）", "session")
-                app?.connectOverlay?.fail("连接失败\n\(detail)", autoHide: false)
+                if isCurrent { app.connectOverlay?.fail("连接失败\n\(detail)", autoHide: false) }
                 statusDetail = "✗ 连接失败：\(detail)"
             case .auth:
                 // 认证失败只提示并（无 keyPath 时）弹密码重试，不删除 Keychain。
@@ -197,21 +199,21 @@ final class TermSessionController: SSHSessionDelegate {
                 }
                 Log.warn("认证失败 \(sess.host.subtitle)（保留已保存密码）", "session")
                 t.feed(text: "\r\n\u{1b}[1;31m✗ 连接失败：认证被拒。\u{1b}[0m\r\n")
-                app?.connectOverlay?.fail("认证失败")
+                if isCurrent { app.connectOverlay?.fail("认证失败") }
                 let host = sess.host
                 // 私钥登录失败不该弹密码框（那是 key 的问题）；仅密码登录路径重试。
-                if host.keyPath.isEmpty { app?.promptRetryPassword(for: host) }
+                if isCurrent && host.keyPath.isEmpty { app.promptRetryPassword(for: sess) }
             case .clean:
                 // 用户取消/主动断开且从未 open：不动钥匙串。
                 Log.info("连接在认证前结束 \(sess.host.subtitle)（干净关闭，保留钥匙串）", "session")
-                app?.connectOverlay?.fail("已取消")
+                if isCurrent { app.connectOverlay?.fail("已取消") }
             }
         } else {
             let msg = error.map { "\r\n\u{1b}[1;31m连接关闭: \($0.localizedDescription)\u{1b}[0m\r\n" } ?? "\r\n\u{1b}[90m连接已关闭。\u{1b}[0m\r\n"
             t.feed(text: msg)
         }
-        app?.rebuildTabs()
-        if let app = app, app.sessions.indices.contains(app.current), app.sessions[app.current] === sess {
+        app.rebuildTabs()
+        if app.sessions.indices.contains(app.current), app.sessions[app.current] === sess {
             // P1：活动会话掉线 → 文件系统/系统信息跟着关，别留"连接关闭"后的僵尸面板
             app.clearSessionSidePanels()
             if wasUp {

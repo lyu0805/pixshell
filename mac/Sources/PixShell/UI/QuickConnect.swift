@@ -172,9 +172,9 @@ final class QuickConnect: NSView, NSTextFieldDelegate {
         if all.isEmpty {
             subtitle.stringValue = "还没有主机 —— 点右上角「＋ 新建连接」添加第一台"
         } else if query.isEmpty {
-            subtitle.stringValue = "\(all.count) 台主机 · 双击卡片直接连接"
+            subtitle.stringValue = "\(all.count) 台主机 · 双击卡片编辑"
         } else {
-            subtitle.stringValue = "\(shown.count)/\(all.count) 台匹配 · 双击卡片直接连接"
+            subtitle.stringValue = "\(shown.count)/\(all.count) 台匹配 · 双击卡片编辑"
         }
         grid.setCards(shown.map { card($0.element, index: $0.offset + 1) })
         // 空态：无历史 → 原提示；有历史但搜索无结果 → 提示换关键词
@@ -193,10 +193,10 @@ final class QuickConnect: NSView, NSTextFieldDelegate {
     private func card(_ h: Host, index: Int) -> NSView {
         let box = HoverCardView(radius: Theme.radius, bg: Theme.bg2, border: Theme.border)
         box.onDoubleClick = { [weak self, weak box] in
-            box?.flash()   // 双击先给一闪确认，再进连接流程
-            self?.onConnect?(h)
-        }   // 副标题承诺了"双击直接连接"
-        box.toolTip = "\(h.display)\n\(h.subtitle)\n双击直接连接"
+            box?.flash()   // 双击先给一闪确认，再进编辑流程
+            self?.onEdit?(h)
+        }   // 副标题承诺了"双击卡片编辑"
+        box.toolTip = "\(h.display)\n\(h.subtitle)\n双击卡片编辑"
 
         // 图标框：底色与图标都跟随识别出的系统（osId 首次连接后自动写入）
         let tint = osTint(h.osId)

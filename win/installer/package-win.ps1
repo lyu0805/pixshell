@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.1.9',
+    [string]$Version = '0.2.0',
     [string]$Runtime = 'win-x64',
     [string]$PublishDir = '',
     [string]$OutputDir = '',

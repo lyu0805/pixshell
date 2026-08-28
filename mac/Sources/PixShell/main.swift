@@ -113,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate,
     func applicationDidFinishLaunching(_ note: Notification) {
         if isHeadless {
             // 无头模式：不建 UI，仅启动本地桥。GPU/主题/窗口/菜单全部跳过。
-            Log.banner("0.1.9 [headless]")
+            Log.banner("0.2.0 [headless]")
             // 无头也刷新 AI SSH 桥接注册：保证 `ssh` 包装脚本内容是最新的（随 CLI 一起变）。
             // 有头时在设置页手动注册/取消；无头静默幂等刷新，已注册过就重写 wrapper 不弹窗。
             AiSshBridge.register(bridgePort: nil)
@@ -126,7 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate,
         // 2) 上次崩溃标记 → 本轮关掉默认 Core Animation
         // 3) 正常路径 register NSViewDefaultUsesCoreAnimation=true（可被 1/2 覆盖）
         configureGpuAcceleration()
-        Log.banner("0.1.9")
+        Log.banner("0.2.0")
         Log.info("主题=\(Theme.dark ? "深色" : "浅色")（来源：env/持久化/默认）", "ui")
         NSApp.appearance = NSAppearance(named: darkTheme ? .darkAqua : .aqua)
         AppIcon.install()    // 没有 .app bundle 就没有图标资源，所有系统弹窗会退化成"蓝色文件夹"占位图

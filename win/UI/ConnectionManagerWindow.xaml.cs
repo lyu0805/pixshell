@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -29,6 +30,87 @@ public partial class ConnectionManagerWindow : Window
     private bool _firstLoad = true;
     /// <summary>搜索关键字（小写）；空 = 不过滤。对齐 mac ConnManager 的 searchField。</summary>
     private string _query = "";
+
+    private static readonly IComparer<string> ZhCnNaturalComparer =
+        Comparer<string>.Create(CompareZhCnNatural);
+
+    private static readonly CompareInfo ZhCnCompareInfo =
+        CultureInfo.GetCultureInfo("zh-CN").CompareInfo;
+
+    private static int CompareZhCnNatural(string left, string right)
+    {
+        if (ReferenceEquals(left, right)) return 0;
+        if (left.Length == 0) return right.Length == 0 ? 0 : -1;
+        if (right.Length == 0) return 1;
+
+        var leftIndex = 0;
+        var rightIndex = 0;
+        var textOptions = CompareOptions.StringSort | CompareOptions.IgnoreCase;
+        while (leftIndex < left.Length && rightIndex < right.Length)
+        {
+            var leftIsDigit = IsNaturalDigit(left[leftIndex]);
+            var rightIsDigit = IsNaturalDigit(right[rightIndex]);
+            if (leftIsDigit && rightIsDigit)
+            {
+                var leftEnd = NextDigitBoundary(left, leftIndex);
+                var rightEnd = NextDigitBoundary(right, rightIndex);
+                var numberResult = CompareNumericRuns(left, leftIndex, leftEnd, right, rightIndex, rightEnd);
+                if (numberResult != 0) return numberResult;
+                leftIndex = leftEnd;
+                rightIndex = rightEnd;
+                continue;
+            }
+
+            var leftEndText = NextNonDigitBoundary(left, leftIndex);
+            var rightEndText = NextNonDigitBoundary(right, rightIndex);
+            var textResult = ZhCnCompareInfo.Compare(
+                left[leftIndex..leftEndText], right[rightIndex..rightEndText], textOptions);
+            if (textResult != 0) return textResult;
+            leftIndex = leftEndText;
+            rightIndex = rightEndText;
+        }
+
+        return (left.Length - leftIndex).CompareTo(right.Length - rightIndex);
+    }
+
+    private static bool IsNaturalDigit(char value) => value is >= '0' and <= '9';
+
+    private static int NextDigitBoundary(string value, int start)
+    {
+        var index = start;
+        while (index < value.Length && IsNaturalDigit(value[index])) index++;
+        return index;
+    }
+
+    private static int NextNonDigitBoundary(string value, int start)
+    {
+        var index = start;
+        while (index < value.Length && !IsNaturalDigit(value[index])) index++;
+        return index;
+    }
+
+    private static int CompareNumericRuns(string left, int leftStart, int leftEnd,
+                                          string right, int rightStart, int rightEnd)
+    {
+        var leftSignificant = leftStart;
+        while (leftSignificant < leftEnd && left[leftSignificant] == '0') leftSignificant++;
+        var rightSignificant = rightStart;
+        while (rightSignificant < rightEnd && right[rightSignificant] == '0') rightSignificant++;
+
+        var leftSignificantLength = leftEnd - leftSignificant;
+        var rightSignificantLength = rightEnd - rightSignificant;
+        var result = leftSignificantLength.CompareTo(rightSignificantLength);
+        if (result != 0) return result;
+
+        for (var offset = 0; offset < leftSignificantLength; offset++)
+        {
+            result = left[leftSignificant + offset].CompareTo(right[rightSignificant + offset]);
+            if (result != 0) return result;
+        }
+
+        // Equal numeric values sort with the shorter zero-padded spelling first.
+        return (leftEnd - leftStart).CompareTo(rightEnd - rightStart);
+    }
 
     public ConnectionManagerWindow()
     {
@@ -76,7 +158,13 @@ public partial class ConnectionManagerWindow : Window
                                    .ThenBy(g => g.Key, StringComparer.Ordinal))
         {
             var name = group.Key;
-            var list = group.ToList();
+            // 仅排序当前显示副本，不改变 HostsProvider 返回值或 RecentsStore 的历史顺序。
+            var list = group.Select((host, index) => new { host, index })
+                            .OrderBy(item => item.host.Display, ZhCnNaturalComparer)
+                            .ThenBy(item => item.host.Id, StringComparer.Ordinal)
+                            .ThenBy(item => item.index)
+                            .Select(item => item.host)
+                            .ToList();
 
             // Create a Border representing the group card, styled matching Theme.bg2 / Theme.border
             var groupBorder = new Border
@@ -101,17 +189,8 @@ public partial class ConnectionManagerWindow : Window
                 var hostsPanel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 6, 0, 0) };
                 foreach (var h in list)
                     hostsPanel.Children.Add(BuildRow(h));
-                
-                var sv = new ScrollViewer
-                {
-                    Content = hostsPanel,
-                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                    HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                    MaxHeight = 250,
-                    Margin = new Thickness(0, 0, -6, 0),
-                    Padding = new Thickness(0, 0, 6, 0)
-                };
-                groupStack.Children.Add(sv);
+                // 分组内容直接参与外层列表高度，避免嵌套滚动条抢占滚动空间。
+                groupStack.Children.Add(hostsPanel);
             }
             groupBorder.Child = groupStack;
             ListPanel.Children.Add(groupBorder);

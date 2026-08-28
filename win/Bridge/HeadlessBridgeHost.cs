@@ -27,6 +27,8 @@ public sealed class HeadlessBridgeHost : IBridgeHost
     /// <summary>无头会话：SshClient + ShellStream + 自管输出缓冲。</summary>
     private sealed class HeadlessSession
     {
+        public string Id = Guid.NewGuid().ToString("N");
+        public long Generation = 1;
         public string Title = "";
         public HostEntry Host = null!;
         public SshClient Ssh = null!;
@@ -75,10 +77,6 @@ public sealed class HeadlessBridgeHost : IBridgeHost
     /// <summary>无头进程退出回调：全部会话 close 后调用（App 退出）。由 App 入口设置。</summary>
     public Action? OnShutdown;
 
-    /// <summary>主线程互斥：桥请求在主线程路由，会话操作也在主线程完成；仅输出缓冲跨线程（读线程写）。
-    /// 这里统一锁 _lock 保护 sessions 列表的增删改查。</summary>
-    private T WithLock<T>(Func<T> body) { lock (_lock) return body(); }
-
     // =====================================================================
     // IBridgeHost
     // =====================================================================
@@ -101,17 +99,31 @@ public sealed class HeadlessBridgeHost : IBridgeHost
     {
         lock (_lock)
         {
-            return _sessions.Select((s, i) => new Dictionary<string, object?>
+            return _sessions.Select((s, i) =>
             {
-                ["session"] = i,
-                ["title"] = s.Title,
-                ["host"] = s.Host.Host,
-                ["username"] = s.Host.Username,
-                ["connected"] = s.Connected,
-                // active 必须是「当前会话且仍连接」——死会话不得再报 active，
-                // 否则 agent 拿到 active:true disconnected:false 的误导状态反复重连（对齐 mac）。
-                ["active"] = i == _sessions.Count - 1 && s.Connected,
+                var connected = IsTransportConnected(s);
+                if (!connected) s.Connected = false;
+                return new Dictionary<string, object?>
+                {
+                    ["session"] = s.Id,
+                    ["title"] = s.Title,
+                    ["host"] = s.Host.Host,
+                    ["username"] = s.Host.Username,
+                    ["connected"] = connected,
+                    ["active"] = i == _sessions.Count - 1 && connected,
+                };
             }).ToList();
+        }
+    }
+
+    public bool BridgeSessionExists(string session, out bool connected)
+    {
+        lock (_lock)
+        {
+            var target = FindSession(session);
+            connected = target != null && IsTransportConnected(target);
+            if (target != null && !connected) target.Connected = false;
+            return target != null;
         }
     }
 
@@ -132,26 +144,23 @@ public sealed class HeadlessBridgeHost : IBridgeHost
         // 复用：同主机已有活跃会话 → 直接返回，不重复建连/不重认证（持久化交互关键）。
         lock (_lock)
         {
-            var existing = _sessions.FindIndex(x => x.Host.Id == hostId && x.Connected);
-            if (existing >= 0)
-                return new Dictionary<string, object?> { ["session"] = existing, ["title"] = _sessions[existing].Title, ["ok"] = true };
+            var existing = _sessions.FirstOrDefault(x => x.Host.Id == hostId && IsTransportConnected(x));
+            if (existing != null)
+                return new Dictionary<string, object?> { ["session"] = existing.Id, ["title"] = existing.Title, ["ok"] = true };
         }
-        // 同主机已有**死**会话 → 原地重连（复用下标，不新增堆积——对齐 mac）。
-        lock (_lock)
+        // 同主机已有死会话 → 原地重连，复用稳定 ID，不新增堆积。
+        HeadlessSession? deadSession;
+        lock (_lock) deadSession = _sessions.FirstOrDefault(x => x.Host.Id == hostId);
+        if (deadSession != null)
         {
-            var dead = _sessions.FindIndex(x => x.Host.Id == hostId);
-            if (dead >= 0)
+            ReconnectSessionAsync(deadSession).GetAwaiter().GetResult();
+            lock (_lock)
             {
-                var ds = _sessions[dead];
-                ReconnectSessionAsync(dead, ds).Wait();
-                lock (_lock)
-                {
-                    if (ds.Connected)
-                        return new Dictionary<string, object?> { ["session"] = dead, ["title"] = ds.Title, ["ok"] = true };
-                    _sessions.Remove(ds);   // 重连失败：移除死会话，避免堆积
-                }
-                throw new Exception($"会话 {dead} 重连失败");
+                if (_sessions.Contains(deadSession) && IsTransportConnected(deadSession))
+                    return new Dictionary<string, object?> { ["session"] = deadSession.Id, ["title"] = deadSession.Title, ["ok"] = true };
+                _sessions.Remove(deadSession);
             }
+            throw new Exception($"主机 {hostId} 重连失败");
         }
 
         // 只用已保存的密码/私钥；桥不弹密码框（无人值守场景不该阻塞）。
@@ -196,22 +205,31 @@ public sealed class HeadlessBridgeHost : IBridgeHost
             Password = pw,
         };
 
-        int idx;
         lock (_lock)
         {
             _sessions.Add(sess);
-            idx = _sessions.Count - 1;
         }
 
         try
         {
             ssh.Connect();
             var shell = ssh.CreateShellStream("xterm-256color", 100, 30, 0, 0, 4096);
-            sess.Shell = shell;
-            sess.Connected = true;
+            long generation;
+            lock (_lock)
+            {
+                if (!_sessions.Contains(sess))
+                {
+                    shell.Dispose();
+                    ssh.Dispose();
+                    throw new BridgeSessionUnavailableException("会话已关闭");
+                }
+                sess.Shell = shell;
+                sess.Connected = true;
+                generation = sess.Generation;
+            }
 
             // 后台读线程：ShellStream.Read 阻塞直到有数据；返回 0 表示通道关闭。
-            var readThread = new Thread(() => ReadPump(sess))
+            var readThread = new Thread(() => ReadPump(sess, shell, generation))
             {
                 IsBackground = true,
                 Name = "headless-ssh-read",
@@ -226,14 +244,12 @@ public sealed class HeadlessBridgeHost : IBridgeHost
             throw new Exception("连接失败: " + ex.Message);
         }
 
-        return new Dictionary<string, object?> { ["session"] = idx, ["title"] = sess.Title };
+        return new Dictionary<string, object?> { ["session"] = sess.Id, ["title"] = sess.Title };
     }
 
     /// <summary>后台读线程主体（对齐 TerminalSession.ReadPump，去掉 WebView2/SendToTerm，只进缓冲）。</summary>
-    private static void ReadPump(HeadlessSession sess)
+    private void ReadPump(HeadlessSession sess, ShellStream shell, long generation)
     {
-        var shell = sess.Shell;
-        if (shell == null) return;
         var buf = new byte[4096];
         var decoder = Encoding.UTF8.GetDecoder();
         var chars = new char[Encoding.UTF8.GetMaxCharCount(buf.Length)];
@@ -253,40 +269,75 @@ public sealed class HeadlessBridgeHost : IBridgeHost
         }
         finally
         {
-            sess.Connected = false;
+            lock (_lock)
+            {
+                if (_sessions.Contains(sess)
+                    && sess.Generation == generation
+                    && ReferenceEquals(sess.Shell, shell))
+                    sess.Connected = false;
+            }
         }
     }
 
-    public bool BridgeWrite(int session, string text)
+    public bool BridgeWrite(string session, string text)
     {
-        return WithLock(() =>
+        HeadlessSession? target;
+        ShellStream? shell;
+        long generation;
+        lock (_lock)
         {
-            if (!Valid(session, out var s)) return false;
-            try { s.Shell.Write(text); return true; }
-            catch { return false; }
-        });
+            target = FindSession(session);
+            if (target is not { Shell: not null } || !IsTransportConnected(target)) return false;
+            shell = target.Shell;
+            generation = target.Generation;
+        }
+        try
+        {
+            shell.Write(text);
+            lock (_lock)
+            {
+                return _sessions.Contains(target)
+                    && target.Connected
+                    && target.Generation == generation
+                    && ReferenceEquals(target.Shell, shell);
+            }
+        }
+        catch
+        {
+            lock (_lock)
+            {
+                if (_sessions.Contains(target)
+                    && target.Generation == generation
+                    && ReferenceEquals(target.Shell, shell))
+                    target.Connected = false;
+            }
+            return false;
+        }
     }
 
-    public async Task<string> BridgeExecAsync(int session, string cmd)
+    public async Task<string> BridgeExecAsync(string session, string cmd)
     {
-        var s = WithLock(() => Valid(session, out var v) ? v : null);
-        if (s == null) return "";
-        if (s.Ssh is { IsConnected: true })
-            return await Task.Run(() => ExecOnSession(s, cmd)).ConfigureAwait(false);
-        // 死会话：原地自动重连后再执行（对齐 mac——agent 反复 410 的根治）。
-        var ok = await ReconnectSessionAsync(session, s).ConfigureAwait(false);
-        if (!ok) return "";   // 重连失败 → 明确空（路由层会报错）
-        var s2 = WithLock(() => Valid(session, out var v) ? v : null);
-        if (s2?.Ssh is { IsConnected: true })
-            return await Task.Run(() => ExecOnSession(s2, cmd)).ConfigureAwait(false);
-        return "";
+        HeadlessSession? target;
+        SshClient? ssh;
+        long generation;
+        lock (_lock)
+        {
+            target = FindSession(session);
+            if (target is not { Connected: true } || target.Ssh is not { IsConnected: true })
+                throw new BridgeSessionUnavailableException($"会话 {session} 已断开，请重新连接后再试");
+            ssh = target.Ssh;
+            generation = target.Generation;
+        }
+        var output = await Task.Run(() => ExecOnSession(ssh, cmd)).ConfigureAwait(false);
+        EnsureCurrent(target, ssh, generation, session, "执行");
+        return output;
     }
 
-    private string ExecOnSession(HeadlessSession s, string cmd)
+    private static string ExecOnSession(SshClient ssh, string cmd)
     {
         try
         {
-            using var c = s.Ssh.CreateCommand(cmd);
+            using var c = ssh.CreateCommand(cmd);
             c.CommandTimeout = TimeSpan.FromSeconds(20);
             var result = c.Execute();
             return string.IsNullOrEmpty(result) ? (c.Error ?? "") : result;
@@ -297,19 +348,19 @@ public sealed class HeadlessBridgeHost : IBridgeHost
         }
     }
 
-    /// <summary>死会话原地重连（复用下标，agent 的 session 号不变）。线程池执行，对齐 mac 的 reconnectIfNeeded。</summary>
-    private Task<bool> ReconnectSessionAsync(int session, HeadlessSession s)
+    private Task<bool> ReconnectSessionAsync(HeadlessSession session)
     {
         return Task.Run(() =>
         {
+            SshClient? ssh = null;
+            ShellStream? shell = null;
             try
             {
-                var h = s.Host;
+                var h = session.Host;
                 if (h.IsRdp || h.IsLocal) return false;
-                var pw = s.Password;
+                var pw = session.Password;
                 if (string.IsNullOrEmpty(pw)) pw = CredentialStore.GetPassword(h.Id) ?? "";
                 if (string.IsNullOrEmpty(pw) && string.IsNullOrEmpty(h.KeyPath)) return false;
-                // Web 标记剥掉（对齐 ConnectOnPool）
                 if (h.IsWebSsh)
                 {
                     h = new HostEntry
@@ -320,105 +371,136 @@ public sealed class HeadlessBridgeHost : IBridgeHost
                     };
                 }
                 var proxy = ProxyStore.Find(h.ProxyId);
-                var connectHost = ResolveFast(h.Host);
-                var info = TerminalSession.BuildConnectionInfo(connectHost, h.Port, h.Username, pw, h.KeyPath, proxy);
+                var info = TerminalSession.BuildConnectionInfo(ResolveFast(h.Host), h.Port, h.Username, pw, h.KeyPath, proxy);
                 info.Timeout = TimeSpan.FromSeconds(20);
-                var ssh = new SshClient(info) { KeepAliveInterval = TimeSpan.FromSeconds(30) };
+                ssh = new SshClient(info) { KeepAliveInterval = TimeSpan.FromSeconds(30) };
                 ssh.Connect();
-                var shell = ssh.CreateShellStream("xterm-256color", 100, 30, 0, 0, 4096);
+                shell = ssh.CreateShellStream("xterm-256color", 100, 30, 0, 0, 4096);
 
-                // 原地替换旧会话的 Ssh/Shell（锁内换，下标不变）
+                SshClient? oldSsh;
+                ShellStream? oldShell;
+                long generation;
                 lock (_lock)
                 {
-                    var cur = Valid(session, out var v) ? v : null;
-                    if (cur == null) { ssh.Dispose(); return false; }
-                    var oldSsh = cur.Ssh;
-                    var oldShell = cur.Shell;
-                    cur.Ssh = ssh;
-                    cur.Shell = shell;
-                    cur.Connected = true;
-                    // 旧连接后台释放
-                    try { oldShell?.Dispose(); } catch { }
-                    try { oldSsh?.Dispose(); } catch { }
+                    if (!_sessions.Contains(session)) return false;
+                    if (IsTransportConnected(session)) return true;
+                    oldSsh = session.Ssh;
+                    oldShell = session.Shell;
+                    session.Ssh = ssh;
+                    session.Shell = shell;
+                    session.Connected = true;
+                    generation = ++session.Generation;
                 }
-                // 重启读线程
-                var readThread = new Thread(() => ReadPump(WithLock(() => Valid(session, out var v) ? v : null!)))
+                try { oldShell?.Dispose(); } catch { }
+                try { oldSsh?.Dispose(); } catch { }
+                var readThread = new Thread(() => ReadPump(session, shell, generation))
                 {
                     IsBackground = true,
                     Name = "headless-ssh-read",
                 };
                 readThread.Start();
+                ssh = null;
+                shell = null;
                 return true;
             }
             catch (Exception ex)
             {
-                Log.Warn($"无头自动重连失败 {s.Host.Username}@{s.Host.Host}:{s.Host.Port}: {ex.Message}", "bridge");
+                Log.Warn($"无头自动重连失败 {session.Host.Username}@{session.Host.Host}:{session.Host.Port}: {ex.Message}", "bridge");
                 return false;
+            }
+            finally
+            {
+                try { shell?.Dispose(); } catch { }
+                try { ssh?.Dispose(); } catch { }
             }
         });
     }
 
-    public string BridgeScreen(int session, int lines)
+    public string BridgeScreen(string session, int lines)
     {
-        return WithLock(() =>
-        {
-            if (!Valid(session, out var s)) return "";
-            return s.RecentOutput(lines);
-        });
+        lock (_lock) return FindSession(session)?.RecentOutput(lines) ?? "";
     }
 
-    public Task<List<Dictionary<string, object?>>> BridgeSftpListAsync(int session, string path)
+    public Task<List<Dictionary<string, object?>>> BridgeSftpListAsync(string session, string path)
     {
+        var binding = CaptureConnectedSession(session);
         return Task.Run(() =>
         {
-            using var sftp = OpenSftp(session);
-            return sftp.ListDirectory(path)
-                .Where(f => f.Name != "." && f.Name != "..")
-                .Select(f => new Dictionary<string, object?>
-                {
-                    ["name"] = f.Name,
-                    ["isDir"] = f.IsDirectory,
-                    ["size"] = f.Length,
-                    ["mtime"] = f.LastWriteTime.ToUniversalTime().ToString("o"),
-                })
-                .ToList();
+            try
+            {
+                using var sftp = OpenSftp(binding.Session);
+                var entries = sftp.ListDirectory(path)
+                    .Where(f => f.Name != "." && f.Name != "..")
+                    .Select(f => new Dictionary<string, object?>
+                    {
+                        ["name"] = f.Name,
+                        ["isDir"] = f.IsDirectory,
+                        ["size"] = f.Length,
+                        ["mtime"] = f.LastWriteTime.ToUniversalTime().ToString("o"),
+                    })
+                    .ToList();
+                EnsureCurrent(binding.Session, binding.Ssh, binding.Generation, session, "SFTP 列目录");
+                return entries;
+            }
+            catch (BridgeSessionUnavailableException) { throw; }
+            catch
+            {
+                EnsureCurrent(binding.Session, binding.Ssh, binding.Generation, session, "SFTP 列目录");
+                throw;
+            }
         });
     }
 
-    public Task<string?> BridgeSftpDownloadAsync(int session, string remote, string local)
+    public Task<string?> BridgeSftpDownloadAsync(string session, string remote, string local)
     {
+        var binding = CaptureConnectedSession(session);
         return Task.Run<string?>(() =>
         {
             try
             {
-                using var sftp = OpenSftp(session);
+                using var sftp = OpenSftp(binding.Session);
                 var dir = Path.GetDirectoryName(local);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
                 using var fs = File.Create(local);
                 sftp.DownloadFile(remote, fs);
+                EnsureCurrent(binding.Session, binding.Ssh, binding.Generation, session, "SFTP 下载");
                 return local;
             }
+            catch (BridgeSessionUnavailableException) { throw; }
             catch (Exception ex)
             {
+                try
+                {
+                    EnsureCurrent(binding.Session, binding.Ssh, binding.Generation, session, "SFTP 下载");
+                }
+                catch (BridgeSessionUnavailableException) { throw; }
                 Log.Warn($"无头 SFTP 下载失败 {remote}: {ex.Message}", "bridge");
                 return null;
             }
         });
     }
 
-    public Task<string?> BridgeSftpUploadAsync(int session, string local, string remote)
+    public Task<string?> BridgeSftpUploadAsync(string session, string local, string remote)
     {
+        var binding = CaptureConnectedSession(session);
         return Task.Run<string?>(() =>
         {
             try
             {
-                using var sftp = OpenSftp(session);
+                using var sftp = OpenSftp(binding.Session);
                 using var fs = File.OpenRead(local);
                 sftp.UploadFile(fs, remote, true);
+                EnsureCurrent(binding.Session, binding.Ssh, binding.Generation, session, "SFTP 上传");
                 return remote;
             }
+            catch (BridgeSessionUnavailableException) { throw; }
             catch (Exception ex)
             {
+                try
+                {
+                    EnsureCurrent(binding.Session, binding.Ssh, binding.Generation, session, "SFTP 上传");
+                }
+                catch (BridgeSessionUnavailableException) { throw; }
                 Log.Warn($"无头 SFTP 上传失败 {local} → {remote}: {ex.Message}", "bridge");
                 return null;
             }
@@ -435,27 +517,44 @@ public sealed class HeadlessBridgeHost : IBridgeHost
     // 内部
     // =====================================================================
 
-    private bool Valid(int session, out HeadlessSession s)
+    private static bool IsTransportConnected(HeadlessSession session) =>
+        session.Connected && session.Shell != null && session.Ssh is { IsConnected: true };
+
+    private HeadlessSession? FindSession(string session) =>
+        _sessions.FirstOrDefault(candidate => candidate.Id == session);
+
+    private (HeadlessSession Session, SshClient Ssh, long Generation) CaptureConnectedSession(string session)
     {
-        if (session >= 0 && session < _sessions.Count)
+        lock (_lock)
         {
-            s = _sessions[session];
-            return true;
+            var target = FindSession(session);
+            if (target == null || !IsTransportConnected(target))
+                throw new BridgeSessionUnavailableException($"会话 {session} 已断开，请重新连接后再试");
+            return (target, target.Ssh, target.Generation);
         }
-        s = null!;
-        return false;
+    }
+
+    private void EnsureCurrent(HeadlessSession session, SshClient ssh, long generation, string sessionId, string operation)
+    {
+        lock (_lock)
+        {
+            if (!_sessions.Contains(session)
+                || !session.Connected
+                || session.Generation != generation
+                || !ReferenceEquals(session.Ssh, ssh)
+                || !ssh.IsConnected)
+                throw new BridgeSessionUnavailableException($"会话 {sessionId} 在{operation}期间已断开或重连");
+        }
     }
 
     /// <summary>与终端同主机+凭据新建独立 SftpClient（对齐 MainWindow 走 CreateSftpClient，
     /// 但无头不能调 TerminalSession.CreateSftpClient()——它检查 _connected/_isLocal/_isOpenSSH）。
     /// 调用方负责 Dispose。</summary>
-    private SftpClient OpenSftp(int session)
+    private static SftpClient OpenSftp(HeadlessSession session)
     {
-        var s = WithLock(() => Valid(session, out var v) ? v : null);
-        if (s == null) throw new Exception("会话不存在");
-        var proxy = ProxyStore.Find(s.Host.ProxyId);
-        var info = TerminalSession.BuildConnectionInfo(ResolveFast(s.Host.Host), s.Host.Port,
-            s.Host.Username, s.Password, s.Host.KeyPath, proxy);
+        var proxy = ProxyStore.Find(session.Host.ProxyId);
+        var info = TerminalSession.BuildConnectionInfo(ResolveFast(session.Host.Host), session.Host.Port,
+            session.Host.Username, session.Password, session.Host.KeyPath, proxy);
         info.Timeout = TimeSpan.FromSeconds(30);
         var sftp = new SftpClient(info) { OperationTimeout = TimeSpan.FromSeconds(30) };
         sftp.Connect();

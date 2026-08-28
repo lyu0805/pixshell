@@ -28,8 +28,11 @@ public partial class CommandPanel : UserControl
     /// <summary>发送回调：(命令文本, 目标)。文本已含换行/回车。</summary>
     public Action<string, SendTarget>? OnSendTo { get; set; }
 
-    /// <summary>目标下拉数据源：所有会话标题 + 是否已连接（由宿主提供）。</summary>
-    public Func<List<(string title, bool connected)>>? SessionsProvider { get; set; }
+    /// <summary>目标下拉数据源：所有会话的稳定 ID、标题与连接状态（由宿主提供）。</summary>
+    public Func<List<(string id, string title, bool connected)>>? SessionsProvider { get; set; }
+
+    private const string CurrentTargetId = "__current__";
+    private const string AllConnectedTargetId = "__all_connected__";
 
     private string? _selectedGroup;
     private string? _selectedCmdId;   // 列表里被选中的那条（左栏「发送」用）
@@ -60,34 +63,26 @@ public partial class CommandPanel : UserControl
     {
         foreach (var combo in new[] { EdTargetCombo })
         {
-            var keep = combo.SelectedIndex;
+            var keep = (combo.SelectedItem as ComboBoxItem)?.Tag as string ?? CurrentTargetId;
             combo.Items.Clear();
-            combo.Items.Add(L10n.T("cmd.current"));
-            combo.Items.Add(L10n.T("cmd.allConnected"));
-            foreach (var s in SessionsProvider?.Invoke() ?? new List<(string, bool)>())
-                if (s.connected) combo.Items.Add(s.title);
-            combo.SelectedIndex = keep >= 0 && keep < combo.Items.Count ? keep : 0;
+            combo.Items.Add(new ComboBoxItem { Content = L10n.T("cmd.current"), Tag = CurrentTargetId });
+            combo.Items.Add(new ComboBoxItem { Content = L10n.T("cmd.allConnected"), Tag = AllConnectedTargetId });
+            foreach (var s in SessionsProvider?.Invoke() ?? new List<(string id, string title, bool connected)>())
+                if (s.connected) combo.Items.Add(new ComboBoxItem { Content = s.title, Tag = s.id });
+            combo.SelectedItem = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(item => Equals(item.Tag, keep))
+                ?? combo.Items.OfType<ComboBoxItem>().First();
         }
     }
 
     private void TargetCombo_DropDownOpened(object? sender, EventArgs e) => ReloadTargets();
 
-    /// <summary>把某个下拉选中项解析成 SendTarget（下标 2 起对应"已连接会话"出现顺序）。</summary>
+    /// <summary>把某个下拉选中项解析成稳定会话 ID，避免连接状态变化后目标漂移。</summary>
     private SendTarget TargetOf(ComboBox combo)
     {
-        var idx = combo.SelectedIndex;
-        if (idx <= 0) return SendTarget.Current;
-        if (idx == 1) return SendTarget.AllConnected;
-        var connectedIdx = idx - 2;
-        var all = SessionsProvider?.Invoke() ?? new List<(string, bool)>();
-        var seen = -1;
-        for (int i = 0; i < all.Count; i++)
-        {
-            if (!all[i].connected) continue;
-            seen++;
-            if (seen == connectedIdx) return SendTarget.Session(i);
-        }
-        return SendTarget.Current;
+        var id = (combo.SelectedItem as ComboBoxItem)?.Tag as string;
+        if (id == AllConnectedTargetId) return SendTarget.AllConnected;
+        if (string.IsNullOrEmpty(id) || id == CurrentTargetId) return SendTarget.Current;
+        return SendTarget.Session(id);
     }
 
     // =====================================================================

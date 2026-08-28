@@ -339,6 +339,11 @@ public class UiPrefs
     public double SidebarWidth { get; set; } = 240;
     /// <summary>底部文件/命令坞高度（对齐 mac pixshell.bottomHeight）。</summary>
     public double BottomHeight { get; set; } = 230;
+    public double? WindowLeft { get; set; }
+    public double? WindowTop { get; set; }
+    public double? WindowWidth { get; set; }
+    public double? WindowHeight { get; set; }
+    public bool WindowMaximized { get; set; }
 }
 
 public static class UiStore

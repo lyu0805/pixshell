@@ -1,5 +1,19 @@
 import AppKit
 import SwiftTerm
+import ObjectiveC
+
+private final class QuickConnectLayoutSnapshot: NSObject {
+    let sideCollapsed: Bool
+    let dockCollapsed: Bool
+
+    init(sideCollapsed: Bool, dockCollapsed: Bool) {
+        self.sideCollapsed = sideCollapsed
+        self.dockCollapsed = dockCollapsed
+    }
+}
+
+private var quickConnectLayoutSnapshotKey: UInt8 = 0
+private var quickConnectRestorePendingKey: UInt8 = 0
 
 /// 可拖动窗口的顶栏（点空白处拖窗）。
 final class DragBar: NSView { override var mouseDownCanMoveWindow: Bool { true } }
@@ -217,7 +231,15 @@ extension AppDelegate {
         toolsPanel.onSelectSession = { [weak self] i in self?.selectSession(i) }
         toolsPanel.onExec = { [weak self] cmd, done in
             guard let self = self, self.sessions.indices.contains(self.current), let ssh = self.sessions[self.current].ssh else { done(""); return }
-            ssh.exec(cmd) { done($0) }
+            let sess = self.sessions[self.current]
+            ssh.exec(cmd) { [weak self, weak sess] out in
+                guard let self = self, let sess = sess,
+                      self.sessions.indices.contains(self.current),
+                      self.sessions[self.current] === sess,
+                      sess.connected,
+                      sess.ssh === ssh else { done(""); return }
+                done(out)
+            }
         }
         toolsPanel.onPickDownloadDir = { [weak self] in self?.pickDownloadDir() }
         toolsPanel.onOpenDownloadDir = { [weak self] in
@@ -228,12 +250,25 @@ extension AppDelegate {
         toolsPanel.onKill = { [weak self] pid, sig in
             guard let self = self, self.sessions.indices.contains(self.current),
                   let ssh = self.sessions[self.current].ssh else { return }
+            let sess = self.sessions[self.current]
             Log.info("结束进程 PID \(pid) 信号 \(sig)", "tools")
-            ssh.exec("kill -\(sig) \(pid) 2>&1") { out in
+            ssh.exec("kill -\(sig) \(pid) 2>&1") { [weak self, weak sess] out in
+                guard let self = self, let sess = sess,
+                      self.sessions.indices.contains(self.current),
+                      self.sessions[self.current] === sess,
+                      sess.connected,
+                      sess.ssh === ssh else { return }
                 if !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Log.warn("kill 输出: \(out)", "tools")
                 }
-                ssh.exec(ToolsPanel.cmdProcess) { list in self.toolsPanel.showProcesses(list) }
+                ssh.exec(ToolsPanel.cmdProcess) { [weak self, weak sess] list in
+                    guard let self = self, let sess = sess,
+                          self.sessions.indices.contains(self.current),
+                          self.sessions[self.current] === sess,
+                          sess.connected,
+                          sess.ssh === ssh else { return }
+                    self.toolsPanel.showProcesses(list)
+                }
             }
         }
         toolsPanel.onClose = { [weak self] in self?.toolsPanel.isHidden = true }
@@ -382,7 +417,10 @@ extension AppDelegate {
 
     static let sidebarRail: CGFloat = 26   // 折叠后保留的窄轨（放「⟩ 侧栏」竖条，避免压住终端）
 
-    @objc func toggleSidebar() { setSidebarCollapsed(!sideCollapsed) }
+    @objc func toggleSidebar() {
+        clearQuickConnectRestorePending()
+        setSidebarCollapsed(!sideCollapsed)
+    }
     func setSidebarCollapsed(_ collapsed: Bool) {
         guard collapsed != sideCollapsed else { return }   // 快速反向切换时丢弃过期动画请求
         Log.debug("侧栏折叠=\(collapsed)", "ui")
@@ -434,7 +472,14 @@ extension AppDelegate {
         monitorWidthC?.constant = sidebarWidth
     }
     // 连上/断开时统一展开/收起 chrome（对齐老仓库 applyChromeForTab）
-    func expandChrome() { setSidebarCollapsed(false); setBottomCollapsed(false) }
+    func expandChrome() {
+        if quickConnectRestorePending() {
+            clearQuickConnectRestorePending()
+            return
+        }
+        setSidebarCollapsed(false)
+        setBottomCollapsed(false)
+    }
     func collapseChrome() { setSidebarCollapsed(true); setBottomCollapsed(true) }
 
     // 侧栏折叠竖条「⟩ 侧栏」
@@ -803,7 +848,10 @@ extension AppDelegate {
     }
 
     // 命令栏 ▾/▴：隐藏/显示整个 文件/命令 坞（tab 行 + 面板体一起消失），终端补满。
-    @objc func toggleDock() { setBottomCollapsed(!dockCollapsed) }
+    @objc func toggleDock() {
+        clearQuickConnectRestorePending()
+        setBottomCollapsed(!dockCollapsed)
+    }
     func setBottomCollapsed(_ collapsed: Bool) {
         guard collapsed != dockCollapsed else { return }   // 过期动画请求直接丢弃
         Log.debug("底栏折叠=\(collapsed)", "ui")
@@ -861,7 +909,7 @@ extension AppDelegate {
         let gh = GitHubMarkButton()
         gh.target = self; gh.action = #selector(menuRepo)
         let brand = NSTextField(labelWithString: "PixShell"); brand.font = Theme.ui(12, .bold); brand.textColor = Theme.text
-        let ver = NSTextField(labelWithString: "v0.1.9"); ver.font = Theme.ui(11); ver.textColor = Theme.muted
+        let ver = NSTextField(labelWithString: "v0.2.0"); ver.font = Theme.ui(11); ver.textColor = Theme.muted
         statusDot = Dot(Theme.warn, size: 8)
         statusLabel = NSTextField(labelWithString: "CLI 未开启"); statusLabel.font = Theme.ui(11); statusLabel.textColor = Theme.muted
         let leftStack = NSStackView(views: [gh, brand, ver, statusDot, statusLabel])
@@ -887,14 +935,69 @@ extension AppDelegate {
     // MARK: 顶栏动作
     @objc func openConnMgr() { connMgr.show() }
     // ＋/网格 = 打开"快速连接/历史"落地页（而非直接连 SSH）。
-    @objc func newQuickTab() { showQuickConnect() }
-    func showQuickConnect() {
+    @objc func newQuickTab() { showQuickConnect(preserveLayout: !sessions.isEmpty) }
+
+    private func quickConnectLayoutSnapshot() -> QuickConnectLayoutSnapshot? {
+        objc_getAssociatedObject(self, &quickConnectLayoutSnapshotKey) as? QuickConnectLayoutSnapshot
+    }
+
+    private func clearQuickConnectLayoutSnapshot() {
+        objc_setAssociatedObject(self, &quickConnectLayoutSnapshotKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
+    private func quickConnectRestorePending() -> Bool {
+        (objc_getAssociatedObject(self, &quickConnectRestorePendingKey) as? NSNumber)?.boolValue ?? false
+    }
+
+    func clearQuickConnectRestorePending() {
+        objc_setAssociatedObject(self, &quickConnectRestorePendingKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
+    private func markQuickConnectRestorePending() {
+        objc_setAssociatedObject(self, &quickConnectRestorePendingKey, NSNumber(value: true), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
+    private func captureQuickConnectLayoutSnapshot() {
+        guard !sessions.isEmpty, quickConnectLayoutSnapshot() == nil else { return }
+        clearQuickConnectRestorePending()
+        let snapshot = QuickConnectLayoutSnapshot(sideCollapsed: sideCollapsed, dockCollapsed: dockCollapsed)
+        objc_setAssociatedObject(self, &quickConnectLayoutSnapshotKey, snapshot, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
+    /// 供会话切换/重连判断是否需要走快速连接统一退出出口。
+    func isQuickConnectShown() -> Bool {
+        !sessions.isEmpty && ((quickConnect.map { !$0.isHidden } ?? false) || quickConnectLayoutSnapshot() != nil)
+    }
+
+    /// 离开快速连接：先隐藏落地页，再恢复进入前的侧栏/底栏快照。
+    /// 无会话落地页没有快照，不会改变当前 chrome 状态。
+    func leaveQuickConnect() {
+        let snapshot = quickConnectLayoutSnapshot()
+        clearQuickConnectLayoutSnapshot()
+        quickConnect?.isHidden = true
+        quickConnect?.showsBack = false
+        guard !sessions.isEmpty, let snapshot = snapshot else { return }
+        setSidebarCollapsed(snapshot.sideCollapsed)
+        setBottomCollapsed(snapshot.dockCollapsed)
+        // 会话成功回调可能随后调用 expandChrome；让它消费此标记而不是覆盖快照。
+        markQuickConnectRestorePending()
+    }
+
+    func showQuickConnect(preserveLayout: Bool = false) {
         guard let qc = quickConnect else { return }
+        let hasSessions = !sessions.isEmpty
+        if hasSessions && preserveLayout {
+            captureQuickConnectLayoutSnapshot()
+        } else if !hasSessions {
+            clearQuickConnectLayoutSnapshot()
+            clearQuickConnectRestorePending()
+        }
         // 有活动会话时显示返回箭头；无会话（启动/关完最后标签）不显示
-        qc.showsBack = !sessions.isEmpty
+        qc.showsBack = hasSessions
         qc.reload(); qc.isHidden = false
         qc.superview?.addSubview(qc)   // 置顶于终端之上
-        collapseChrome()               // 落地页默认：收起侧栏 + 收起文件/命令坞（对齐老仓库）
+        // 只有从已有会话主动打开时才收起 chrome；无会话启动落地页保留当前布局。
+        if hasSessions { collapseChrome() }
     }
     /// 顶栏主题按钮：深色 → 浅色 → 水墨 → 深色 循环（水墨也要能从顶栏摸到）
     @objc func toggleTheme() {
@@ -908,6 +1011,7 @@ extension AppDelegate {
         guard sessions.indices.contains(current), let ssh = sessions[current].ssh else {
             Log.warn("系统信息：无活动会话，忽略", "ui"); return
         }
+        let sess = sessions[current]
         Log.info("打开系统信息，开始采集", "ui")
         if sysInfoWindow == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
@@ -936,9 +1040,14 @@ extension AppDelegate {
         sysInfoWindow?.center()
         sysInfoWindow?.makeKeyAndOrderFront(nil)
         sysInfo.show("采集中…")
-        ssh.exec(SysInfoPanel.command) { [weak self] out in
+        ssh.exec(SysInfoPanel.command) { [weak self, weak sess] out in
+            guard let self = self, let sess = sess,
+                  self.sessions.indices.contains(self.current),
+                  self.sessions[self.current] === sess,
+                  sess.connected,
+                  sess.ssh === ssh else { return }
             Log.info("系统信息采集完成（\(out.count) 字节）", "ui")
-            self?.sysInfo.show(out)
+            self.sysInfo.show(out)
         }
     }
 

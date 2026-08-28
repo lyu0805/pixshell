@@ -238,10 +238,13 @@ extension AppDelegate {
         sess.connected = false
         sess.shellOpened = false
         sess.closeHandled = false
-        setStatus("连接 \(host.subtitle) …")
+        let isCurrent = sessions.indices.contains(current) && sessions[current] === sess
+        if isCurrent {
+            setStatus("连接 \(host.subtitle) …")
+            showConnectOverlay(for: host)
+        }
         let t = sess.termView.getTerminal()
         // 连接过程用覆盖层动画表达，不再往终端里 feed「连接中…」——终端只留远端真实输出。
-        showConnectOverlay(for: host)
         // 代理：主机上配置了 proxyId 就带上（老仓库 h.proxyId → settings.proxyList 匹配）
         let proxy = host.proxyId.isEmpty ? nil : proxyStore.list().first { $0.id == host.proxyId }
         if let p = proxy { Log.info("经代理连接 \(p.type.rawValue) \(p.host):\(p.port)", "proxy") }
@@ -267,9 +270,12 @@ extension AppDelegate {
     func reconnectCurrent() {
         guard sessions.indices.contains(current) else { return }
         let sess = sessions[current]
+        if isQuickConnectShown() { leaveQuickConnect() }
         // 应用内 Web 终端：只 reload WKWebView，不建 SSH
         if sess.isWebSSH {
             sess.webSSHView?.reload()
+            leaveQuickConnect() // Web 重连成功：先收 QC 再恢复 chrome
+            clearQuickConnectRestorePending()
             setStatus("Web 终端已刷新")
             return
         }
@@ -329,7 +335,10 @@ extension AppDelegate {
         // /etc/os-release 的 ID 最准（ubuntu/debian/centos/alpine/openwrt…），退回 uname。
         let cmd = ". /etc/os-release 2>/dev/null && printf '%s' \"$ID\" || uname -s 2>/dev/null"
         ssh.exec(cmd) { [weak self, weak sess] out in
-            guard let self = self, let sess = sess else { return }
+            guard let self = self, let sess = sess,
+                  self.sessions.contains(where: { $0 === sess }),
+                  sess.connected,
+                  sess.ssh === ssh else { return }
             let id = out.trimmingCharacters(in: .whitespacesAndNewlines)
                 .split(separator: "\n").last.map(String.init)?
                 .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
@@ -361,23 +370,48 @@ extension AppDelegate {
 
     /// 认证失败后重新要密码并重连（勾选记住则写回钥匙串）。
     /// 延后一拍再弹：didCloseWith 还在 SSH 回调栈里，直接弹 sheet 会和正在关闭的会话打架。
-    func promptRetryPassword(for host: Host) {
-        guard !retryPrompting else { return }   // 防止连续失败叠出多个密码框
+    func promptRetryPassword(for sess: TermSession) {
+        guard !retryPrompting,
+              sessions.indices.contains(current),
+              sessions[current] === sess,
+              let ssh = sess.ssh else { return }
+        let host = sess.host
         retryPrompting = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            guard let self = self else { return }
-            self.promptPassword(for: host, prefill: "") { [weak self] pw, remember in
-                guard let self = self else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self, weak sess] in
+            guard let self = self, let sess = sess else { return }
+            guard self.sessions.indices.contains(self.current),
+                  self.sessions[self.current] === sess,
+                  sess.ssh === ssh,
+                  sess.closeHandled,
+                  !sess.connected else {
                 self.retryPrompting = false
-                guard let pw = pw, !pw.isEmpty else { return }
+                return
+            }
+            self.promptPassword(for: host, prefill: "") { [weak self, weak sess] pw, remember in
+                guard let self = self, let sess = sess else { return }
+                self.retryPrompting = false
+                guard self.sessions.indices.contains(self.current),
+                      self.sessions[self.current] === sess,
+                      sess.ssh === ssh,
+                      sess.closeHandled,
+                      !sess.connected,
+                      let pw = pw,
+                      !pw.isEmpty else { return }
                 if remember { Keychain.setPassword(pw, for: host.id, label: host.host.isEmpty ? host.name : host.host) }
-                self.beginSession(to: host, password: pw)
+                self.startSSH(for: sess, password: pw)
             }
         }
     }
 
     func selectSession(_ i: Int) {
         guard i >= 0, i < sessions.count else { return }
+        let leavingQuickConnect = isQuickConnectShown()
+        if leavingQuickConnect {
+            leaveQuickConnect()
+            if sessions[i].connected { clearQuickConnectRestorePending() }
+        } else {
+            clearQuickConnectRestorePending()
+        }
         current = i
         // 先立刻藏 QC（返回箭头 / 点标签回会话），避免动画期间再点无效
         quickConnect?.isHidden = true
@@ -400,13 +434,13 @@ extension AppDelegate {
         window.makeFirstResponder(content)
         window.title = sessions[i].title
         rebuildTabs()
-        if sessions[i].connected { expandChrome() }   // 切到已连接会话 → 展开 chrome
+        if sessions[i].connected && !leavingQuickConnect { expandChrome() }   // 普通切到已连接会话 → 展开 chrome；QC 返回恢复快照
         // Web SSH 标签不挂 SFTP / 监控（它只是当前会话的网页镜像视图）
         if sessions[i].isWebSSH {
             stopMonitor()
         } else {
             if let sp = sftpPanel, !sp.isHidden { connectSFTPToActive() }
-            if sessions[i].ssh != nil { startMonitor(for: sessions[i]) } else { stopMonitor() }
+            if sessions[i].connected && sessions[i].ssh != nil { startMonitor(for: sessions[i]) } else { stopMonitor() }
         }
     }
 
@@ -604,11 +638,9 @@ extension AppDelegate {
         clearPendingOutput(for: sess)
         sessions.remove(at: i)
         if sessions.isEmpty {
-            current = 0
+            current = -1
             stopMonitor()
-            placeholder.isHidden = false
-            quickConnect?.isHidden = false      // 没会话了 → 回落地页
-            collapseChrome()
+            showQuickConnect()                    // 没会话了 → 无快照落地页，保留当前布局
         } else {
             if i == current {
                 // 拖走的是当前标签：termContainer 已空，选下一个（或末位）会话补上
@@ -626,27 +658,40 @@ extension AppDelegate {
 
     // MARK: - 监控采集（定时 exec 监控命令 → 解析 → 刷新仪表盘侧栏）
     func startMonitor(for sess: TermSession) {
+        guard sess.connected, sess.ssh != nil else { stopMonitor(); return }
         monTimer?.invalidate()
         monitor?.setConnected(true, ip: sess.host.host)
         let poll: () -> Void = { [weak self, weak sess] in
-            guard let self = self, let sess = sess, let ssh = sess.ssh,
+            guard let self = self, let sess = sess, sess.connected, let ssh = sess.ssh,
                   self.sessions.indices.contains(self.current), self.sessions[self.current] === sess else { return }
-            ssh.exec(Self.monitorCommand) { [weak self] out in
-                guard let self = self, self.sessions.indices.contains(self.current), self.sessions[self.current] === sess else { return }
-                if out.contains("===mon===") { self.monitor?.update(self.parseMonitor(out)) }
-                // 本地 ping SSH 主机（本机→服务器延迟）；ICMP 常被云防火墙禁，回落测 SSH 端口 TCP RTT
-                self.pingHost(sess.host.host, port: sess.host.port)
+            ssh.exec(Self.monitorCommand) { [weak self, weak sess, weak ssh] out in
+                DispatchQueue.main.async {
+                    guard let self = self, let sess = sess, let ssh = ssh, sess.connected, sess.ssh === ssh,
+                          self.sessions.indices.contains(self.current), self.sessions[self.current] === sess else { return }
+                    if out.contains("===mon===") { self.monitor?.update(self.parseMonitor(out)) }
+                    // 本地 ping SSH 主机（本机→服务器延迟）；ICMP 常被云防火墙禁，回落测 SSH 端口 TCP RTT
+                    self.pingHost(sess.host.host, port: sess.host.port, for: sess, ssh: ssh)
+                }
             }
         }
         poll()
         monTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in poll() }
     }
     func stopMonitor() { monTimer?.invalidate(); monTimer = nil; monitor?.setConnected(false, ip: "") }
-    func pingHost(_ host: String, port: Int = 22) {
+    func pingHost(_ host: String, port: Int = 22, for sess: TermSession, ssh: SSHSession) {
+        guard sess.connected, sess.ssh === ssh,
+              sessions.indices.contains(current), sessions[current] === sess else { return }
         let now = Date()
         if now.timeIntervalSince(lastPingAt) < 3 { return }
         lastPingAt = now
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        DispatchQueue.global(qos: .utility).async { [weak self, weak sess, weak ssh] in
+            func publish(_ ms: Double) {
+                DispatchQueue.main.async {
+                    guard let self = self, let sess = sess, let ssh = ssh, sess.connected, sess.ssh === ssh,
+                          self.sessions.indices.contains(self.current), self.sessions[self.current] === sess else { return }
+                    self.monitor?.pushPingMs(ms)
+                }
+            }
             // 1) 先试 ICMP ping（-t 2 给远程 VPS 更宽容的超时）
             let task = Process()
             task.launchPath = "/sbin/ping"
@@ -662,14 +707,14 @@ extension AppDelegate {
                 let rest = out[range.upperBound...]
                 let msStr = rest.prefix { $0.isNumber || $0 == "." }
                 if let ms = Double(msStr) {
-                    DispatchQueue.main.async { self?.monitor?.pushPingMs(ms) }
+                    publish(ms)
                     return
                 }
             }
             // 2) ICMP 无回应（云服务器普遍禁 ping）→ 回落测到 SSH 端口的 TCP 握手 RTT。
             //    SSH 已连上说明端口可达，这个值就是「到 SSH 服务的延迟」，比 ICMP 更贴合场景。
             if let ms = Self.tcpConnectRTT(host: host, port: port, timeout: 2.0) {
-                DispatchQueue.main.async { self?.monitor?.pushPingMs(ms) }
+                publish(ms)
             }
         }
     }

@@ -19,6 +19,7 @@ public sealed class LocalProcessTransport : ITerminalTransport
     private Stream? _localStdin;
     private Thread? _readThread;
     private volatile bool _connected;
+    private int _closeReported;
 
     public bool Connected => _connected;
 
@@ -67,18 +68,11 @@ public sealed class LocalProcessTransport : ITerminalTransport
 
         _localProc = proc;
         _localStdin = proc.StandardInput.BaseStream;
+        Interlocked.Exchange(ref _closeReported, 0);
         _connected = true;
 
-        proc.Exited += (_, _) =>
-        {
-            if (_connected)
-            {
-                _connected = false;
-                Log.Info("本机 shell 已退出", "local");
-                StatusChanged?.Invoke("本机终端已关闭");
-                ConnectedChanged?.Invoke(false);
-            }
-        };
+        proc.Exited += (_, _) => ReportProcessClosed();
+        if (proc.HasExited) ReportProcessClosed();
 
         _readThread = new Thread(() => LocalReadPump(proc))
         {
@@ -162,6 +156,16 @@ public sealed class LocalProcessTransport : ITerminalTransport
             try { t.Join(); } catch { }
         }
         try { proc.WaitForExit(500); } catch { }
+        if (proc.HasExited) ReportProcessClosed();
+    }
+
+    private void ReportProcessClosed()
+    {
+        if (Interlocked.Exchange(ref _closeReported, 1) != 0 || !_connected) return;
+        _connected = false;
+        Log.Info("本机 shell 已退出", "local");
+        StatusChanged?.Invoke("本机终端已关闭");
+        ConnectedChanged?.Invoke(false);
     }
 
     public void Write(byte[] bytes)

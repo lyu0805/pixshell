@@ -159,10 +159,10 @@ public partial class QuickConnectView : UserControl
                 System.Windows.Media.Effects.DropShadowEffect.BlurRadiusProperty,
                 new System.Windows.Media.Animation.DoubleAnimation(12, TimeSpan.FromSeconds(0.2)));
         };
-        // 双击卡片 = 连接（按钮被挡时的兜底）
+        // 双击卡片 = 编辑（按钮被挡时的兜底）
         box.MouseLeftButtonDown += (_, e) =>
         {
-            if (e.ClickCount == 2) { OnConnect?.Invoke(h); e.Handled = true; }
+            if (e.ClickCount == 2) { OnEdit?.Invoke(h); e.Handled = true; }
         };
 
         var textBrush = (Brush)Application.Current.Resources["BrushText"];
